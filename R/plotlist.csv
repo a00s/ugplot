@@ -1,0 +1,4 @@
+name;img;code
+HeatMap 1;1.png;heatmap({{dataset}})
+HeatMap 2;2.png;heatmap({{dataset}}, col = cm.colors(256))
+Heat scale;3.png;heatmap(scale({{dataset}}), col = topo.colors(200, alpha=0.5), Colv=F, scale='none')
