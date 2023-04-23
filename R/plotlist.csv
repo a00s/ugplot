@@ -1,11 +1,5 @@
-name;img;code
-HeatMap 1;1.png;heatmap({{dataset}})
-HeatMap 2;2.png;heatmap({{dataset}}, col = cm.colors(256))
-Heat scale;3.png;heatmap(scale({{dataset}}), col = topo.colors(200, alpha=0.5), Colv=F, scale='none')
-Heatmap 3;2.png;heatmap3({{dataset}})
-realHeatmap;1.png;heatmap(scale({{dataset}}), scale='none')
-realHeatmap;1.png;heatmap(scale({{dataset}}), Colv=TRUE, Rowv=TRUE, scale="none", col= colorRampPalette(c("blue", "white", "red"))(25))
-realHeatmap;1.png;heatmap.2(scale({{dataset}}), trace="none", col= colorRampPalette(c("blue", "white", "red"))(25))
-realHeatmap;1.png;heatmap.2(scale({{dataset}}), trace="none", dendrogram="both", col= colorRampPalette(c("blue", "white", "red"))(25))
-realHeatmap;1.png;heatmap3(scale({{dataset}}), showColDendro=FALSE, showRowDendro=FALSE, col= colorRampPalette(c("blue", "white", "red"))(25))
-
+name;img;palette;code
+HeatMap 1;1.png;;heatmap({{dataset}})
+HeatMap 2;2.png;;heatmap({{dataset}}, col = {{palette}})
+Heat scale;3.png;topo.colors(200, alpha=0.5);heatmap(scale({{dataset}}), col = {{palette}}, Colv=F, scale='none')
+Heatmap 3;2.png;;heatmap3({{dataset}})

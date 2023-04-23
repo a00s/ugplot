@@ -1,0 +1,4 @@
+name;img;code
+Palette 1;p_1.png;cm.colors(256)
+Palette 2;p_2.png;topo.colors(200, alpha=0.5)
+Palette 3;p_3.png;colorRampPalette(c('blue', 'white', 'red'))(256)
