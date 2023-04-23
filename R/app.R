@@ -31,8 +31,8 @@ ui <- fluidPage(
              ),
              tags$div(
                style = "display: inline-block; vertical-align: top;",
-               actionButton("transpose_table", "Transpose table",
-                            style = "height: 100%;")
+               selectInput(inputId = "separator", label = "CSV separator:", choices = c("space"=" ", "tab"="\t", ";", ",", "|"), selected = ","),
+               actionButton("transpose_table", "Transpose table"),
              ),
              div(style = "width: 100%; overflow-x: auto;",
                  DTOutput("contents")
@@ -74,19 +74,22 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   changed_table <<- ""
+  numeric_table <<- ""
   transpose_table2 <<- reactiveVal(0)
   refresh_counter <<- reactiveVal(0)
+  tab_separator <<- reactiveVal(",")
   file_click_count <<- reactiveVal(0) # Initialize the counter
   last_file_click_count <<- 0
   observeEvent(input$file1, {
+    print("Observe file")
     file_click_count(file_click_count() + 1)
   })
 
   output$contents <- renderDT({
-    if(last_file_click_count == 0){
+    if(last_file_click_count == 0 | (last_file_click_count != file_click_count())){
       filepath <- req(input$file1$datapath)
-      filepath <- "sample_dataset.txt" ### temporary to speed up
-      df <<- read.csv2(filepath, header = TRUE, sep = "\t", row.names=1, dec=".", stringsAsFactors=FALSE, strip.white = TRUE)
+      # filepath <- "sample_dataset.txt" ### temporary to speed up
+      df <<- read.table(filepath, header = TRUE, sep = tab_separator(), row.names=1, dec=".", stringsAsFactors=FALSE, strip.white = TRUE)
 
       changed_table <<- as.matrix(df)
       last_file_click_count <<- file_click_count()
@@ -100,7 +103,8 @@ server <- function(input, output, session) {
     observeEvent(input[[bname]], {
       output$plot <- renderPlot({
         comandtorun <- plotlist$code[i]
-        comandtorun <- gsub("\\{\\{dataset\\}\\}", "changed_table[input$row_checkbox_group,input$column_checkbox_group]", comandtorun)
+        numeric_table <<- apply(changed_table[input$row_checkbox_group,input$column_checkbox_group], c(1, 2), as.numeric)
+        comandtorun <- gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
         eval(parse(text = comandtorun))
       })
     })
@@ -134,7 +138,6 @@ server <- function(input, output, session) {
     )
   })
   observeEvent(input$transpose_table, {
-
     if(transpose_table2() == 0){
       transpose_table2(1)
     } else {
@@ -143,6 +146,10 @@ server <- function(input, output, session) {
     df <<- data.frame(t(as.matrix(df)))
     changed_table <<- as.matrix(df)
     load_checkbox_group()
+  })
+
+  observeEvent(input$separator, {
+    tab_separator(input$separator)
   })
 }
 
