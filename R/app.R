@@ -5,6 +5,10 @@ library(DT)
 library(gplots)
 library(viridis)
 library(RColorBrewer)
+library(rsconnect)
+rsconnect::setAccountInfo(name='ugplot',
+                          token='A384F61E20E58D384A86C5FFB84346BF',
+                          secret='63yYHHCavMf444iAW/rz/I31PMeUD1RPE6/zdARG')
 plotlist <- read.csv("plotlist.csv", sep=";", header = TRUE)
 palettelist <- read.csv("palette.csv", sep=";", header = TRUE)
 
