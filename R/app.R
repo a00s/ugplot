@@ -3,18 +3,14 @@ library(ggplot2)
 library(heatmap3)
 library(DT)
 library(gplots)
-
+library(viridis)
+library(RColorBrewer)
 plotlist <- read.csv("plotlist.csv", sep=";", header = TRUE)
 palettelist <- read.csv("palette.csv", sep=";", header = TRUE)
 
 df <- ""
 ui <- fluidPage(
-  tags$style(HTML("
-    .scrollable-table {
-      height: 200px;
-      overflow-y: auto;
-    }
-  ")),
+  includeCSS("www/styles.css"),
   titlePanel(tags$img(src = "ugplot.png", height = "50px"),"ugPlot"),
   tabsetPanel(
     tabPanel("TABLE",
@@ -53,28 +49,34 @@ ui <- fluidPage(
                     )
              ),
     ),
+
     tabPanel("PLOT",
              sidebarLayout(
                sidebarPanel(
-                 lapply(1:nrow(plotlist), function(i){
-                   bname <- paste0("buttonplot",i)
-                   imgname <- paste0("img/",plotlist$img[i])
-                   print(imgname)
-                   fluidRow(
-                     tags$img(src = imgname, width = 130, height = 130),
-                     actionButton(bname, plotlist$name[i])
-                   )}),
-                 lapply(1:nrow(plotlist), function(i){
-                   bname <- paste0("buttonpalette",i)
-                   imgname <- paste0("img/",palettelist$img[i])
-                   print(imgname)
-                   if(imgname != "img/NA"){
-                     fluidRow(
-                       tags$img(src = imgname, width = 130, height = 130),
-                       actionButton(bname, palettelist$name[i])
+                 class = "sidebar-panel-custom",
+                 div(class = "rowplotlist",
+                     lapply(1:nrow(plotlist), function(i){
+                       bname <- paste0("buttonplot",i)
+                       imgname <- paste0("img/",plotlist$img[i])
+                       print(imgname)
+                       fluidRow(
+                         tags$img(src = imgname, width = 130, height = 130),
+                         actionButton(bname, plotlist$name[i])
+                       )})
+                 ),
+                 div(class = "rowpalettelist",
+                     lapply(1:nrow(palettelist), function(i){
+                       bname <- paste0("buttonpalette",i)
+                       imgname <- paste0("img/",palettelist$img[i])
+                       print(bname)
+                       if(imgname != "img/NA"){
+                         fluidRow(
+                           tags$img(src = imgname, width = 130, height = 20),
+                           actionButton(bname, palettelist$name[i])
+                         )
+                       }
+                     }
                      )
-                   }
-                 }
                  )
                ),
                mainPanel(
@@ -90,7 +92,6 @@ server <- function(input, output, session) {
   numeric_table <<- ""
   changed_palette <<- 0
   defaultpalette <<- reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
-
   transpose_table2 <<- reactiveVal(0)
   refresh_counter <<- reactiveVal(0)
   tab_separator <<- reactiveVal(",")
@@ -211,4 +212,3 @@ load_checkbox_group <- function() {
 }
 
 shinyApp(ui, server)
-

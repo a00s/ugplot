@@ -1,0 +1,20 @@
+.scrollable-table {
+      height: 200px;
+      overflow-y: auto;
+}
+
+.rowplotlist {
+  height: 600px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.rowpalettelist {
+  height: 200px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.sidebar-panel-custom {
+  width: 300px;
+}
