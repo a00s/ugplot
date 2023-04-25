@@ -1,4 +1,7 @@
 name;img;palette;code
+Plot 1 pearson-average-both;1.png;colorRampPalette(c('blue','white','red'))(n = 50);heatmap3({{dataset}}, dendrogram = 'both',Rowv=as.dendrogram(hclust(as.dist(1-cor(t({{dataset}}), method = 'pearson')), method = 'average')),Colv = NA, col = {{palette}}, keysize = 1.0, symkey = FALSE, density.info ='none', trace = 'none',scale='row',labRow=NA, ColSideColors = c(rep('blue', 40), rep('red', 40)), breaks=seq(-1,1,length.out = length({{palette}})+1))
+Plot 2 pearson-average-both;1.png;colorRampPalette(c('blue','white','red'))(n = 50);heatmap3({{dataset}}, dendrogram = 'both', Rowv=as.dendrogram(hclust(as.dist(1-cor({{dataset}}, method = 'pearson')),Colv = as.dendrogram(hclust(as.dist(1-cor(t({{dataset}}), method = 'pearson')))
+Plot 2 bkp pearson-average-both;1.png;colorRampPalette(c('blue','white','red'))(n = 50);heatmap3(dataset, dendrogram = ifelse(is.na(col.clust), 'row', 'both'), Rowv=as.dendrogram(hr),Colv = as.dendrogram(hc),col = my_palette, keysize = 1.0,symkey = FALSE, density.info ='none', trace = 'none',scale="row", RowSideColors = rep("blue", nrow(dataset)),#labRow = NA,ColSideColors = cbind(col2,col1), breaks=seq(-4,4,length.out = (length(my_palette)+1)), ColSideLabs = c("rrrrr", "treatment"),margin=margin.plot)
 HeatMap 1;1.png;;heatmap({{dataset}})
 HeatMap 2;2.png;;heatmap({{dataset}}, col = {{palette}})
 Heat scale;3.png;topo.colors(200, alpha=0.5);heatmap(scale({{dataset}}), col = {{palette}}, Colv=F, scale='none')

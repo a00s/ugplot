@@ -6,6 +6,7 @@ library(gplots)
 library(viridis)
 library(RColorBrewer)
 library(rsconnect)
+library(dendextend)
 rsconnect::setAccountInfo(name='ugplot',
                           token='A384F61E20E58D384A86C5FFB84346BF',
                           secret='63yYHHCavMf444iAW/rz/I31PMeUD1RPE6/zdARG')
