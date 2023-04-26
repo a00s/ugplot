@@ -7,6 +7,7 @@ library(viridis)
 library(RColorBrewer)
 library(rsconnect)
 library(dendextend)
+library(pheatmap)
 rsconnect::setAccountInfo(name='ugplot',
                           token='A384F61E20E58D384A86C5FFB84346BF',
                           secret='63yYHHCavMf444iAW/rz/I31PMeUD1RPE6/zdARG')
@@ -109,7 +110,7 @@ server <- function(input, output, session) {
   output$contents <- renderDT({
     if(last_file_click_count == 0 | (last_file_click_count != file_click_count())){
       filepath <- req(input$file1$datapath)
-      filepath <- "sample_dataset.txt" ### temporary to speed up
+      # filepath <- "sample_dataset.txt" ### temporary to speed up
       df <<- read.table(filepath, header = TRUE, sep = tab_separator(), row.names=1, dec=".", stringsAsFactors=FALSE, strip.white = TRUE)
       changed_palette <<- 0
       changed_table <<- as.matrix(df)
