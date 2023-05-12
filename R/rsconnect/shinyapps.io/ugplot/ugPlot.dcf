@@ -5,9 +5,9 @@ account: ugplot
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 8936832
-bundleId: 7128939
+bundleId: 7138984
 url: https://ugplot.shinyapps.io/ugPlot/
-when: 1682354761.07139
-lastSyncTime: 1682354761.0714
+when: 1682523880.69041
+lastSyncTime: 1682523880.69043
 asMultiple: FALSE
 asStatic: FALSE
