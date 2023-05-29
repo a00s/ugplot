@@ -172,10 +172,8 @@ ui <- fluidPage(
           "play_random_forest_regression",
           "PLAY - RANDOM FOREST REGRESSION"
         ),
-        actionButton(
-          "play_elastic_net_regression",
-          "PLAY - ELASTIC NET REGRESSION"
-        )
+        actionButton("play_elastic_net_regression",
+                     "PLAY - ELASTIC NET REGRESSION")
       )
     )
   )
@@ -235,6 +233,11 @@ server <- function(input, output, session) {
       # print("Aqui 3")
       # print(head(df))
     }
+    current_target_selection <- input$ml_target
+    updateSelectInput(session,
+                      "ml_target",
+                      choices = names(df),
+                      selected = current_target_selection)
     return(changed_table[input$row_checkbox_group, input$column_checkbox_group])
   })
 
@@ -259,19 +262,10 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$process_table_content, {
-    print("Go to the next tab")
     column_names <- strsplit(input$textarea_columns, "\n")[[1]]
     rown_names <- strsplit(input$textarea_rows, "\n")[[1]]
-
-    # updateSelectInput(session, "ml_target", choices = strsplit(input$textarea_columns, "\n")[[1]])
-    # update_ml_target()
-    updateSelectInput(session, "ml_target", choices = column_names)
-
-    # print(column_names)
     df <<- df_pre[rown_names, column_names, drop = FALSE]
-    # changed_table <<- df_pre[rown_names, column_names, drop=FALSE]
     changed_table <<- as.matrix(df)
-    # changed_table <<- as.matrix(df)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
   })
@@ -358,20 +352,22 @@ server <- function(input, output, session) {
   observeEvent(input$play_random_forest_regression, {
     # ntree_values <- seq(100, 1000, by=100)
     # for (ntree in ntree_values) {
-    # df3 <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
-
     target_name <- input$ml_target
-    X <- df[, -which(names(df) %in% target_name)]  # all columns except 'age'
+    X <-
+      changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
     Y <- df[[target_name]]  # 'age' column
-
     # Run randomForest
-    rf_model <- randomForest(X, Y, ntree=input$ml_rfg_trees, importance=TRUE)
+    rf_model <-
+      randomForest(X,
+                   Y,
+                   ntree = input$ml_rfg_trees,
+                   importance = TRUE)
 
     # Calculate R-squared
     rsq <- 1 - rf_model$mse[input$ml_rfg_trees] / var(Y)
     print(rsq)
 
-        ################# variance #################
+    ################# variance #################
     # Predict values
     Y_pred <- predict(rf_model, newdata = X)
 
@@ -386,7 +382,8 @@ server <- function(input, output, session) {
     importance_table <- importance(rf_model)
 
     # Order by importance
-    importance_ordered <- importance_table[order(importance_table[,1], decreasing=TRUE),]
+    importance_ordered <-
+      importance_table[order(importance_table[, 1], decreasing = TRUE), ]
 
     # Print
     print(head(importance_ordered))
@@ -397,7 +394,8 @@ server <- function(input, output, session) {
     library(glmnet)
 
     # Let's assume df is your data frame, and 'age' is the target variable
-    X <- model.matrix(age ~ ., df)[,-1]  # we remove the intercept column
+    X <-
+      model.matrix(age ~ ., df)[, -1]  # we remove the intercept column
     Y <- df$age
 
     # Elastic net uses a combination of L1 and L2 regularization.
@@ -407,31 +405,34 @@ server <- function(input, output, session) {
 
     # Now let's fit the model. Note that glmnet uses its own 'cv.glmnet' function for cross-validation
     set.seed(123)  # for reproducibility
-    cv_fit <- cv.glmnet(X, Y, alpha=alpha)
+    cv_fit <- cv.glmnet(X, Y, alpha = alpha)
 
     # The best lambda (regularization parameter) found by cross-validation
     best_lambda <- cv_fit$lambda.min
     print(paste("Best lambda: ", best_lambda))
 
     # Now we can predict using the best model
-    Y_pred <- predict(cv_fit, newx=X, s=best_lambda)
+    Y_pred <- predict(cv_fit, newx = X, s = best_lambda)
 
     # And calculate R-squared
-    rsq <- 1 - sum((Y - Y_pred)^2) / sum((Y - mean(Y))^2)
+    rsq <- 1 - sum((Y - Y_pred) ^ 2) / sum((Y - mean(Y)) ^ 2)
     print(paste("R-squared: ", rsq))
 
     ################## the most important variables
     # Get the coefficients at the best lambda
-    coefs <- coef(cv_fit, s=best_lambda)
+    coefs <- coef(cv_fit, s = best_lambda)
 
     # Convert the coefficients to a regular matrix
     coefs_mat <- as.matrix(coefs)
 
     # Create a data frame from the matrix
-    coefs_df <- data.frame(Coefficient = as.vector(coefs_mat), Variable = rownames(coefs_mat))
+    coefs_df <-
+      data.frame(Coefficient = as.vector(coefs_mat),
+                 Variable = rownames(coefs_mat))
 
     # Sort the coefficients in decreasing order of absolute value
-    coefs_df <- coefs_df[order(abs(coefs_df$Coefficient), decreasing = TRUE),]
+    coefs_df <-
+      coefs_df[order(abs(coefs_df$Coefficient), decreasing = TRUE), ]
 
     # Print the sorted coefficients along with variable names
     print(coefs_df)
