@@ -10,6 +10,8 @@ library(dendextend)
 library(pheatmap)
 library(randomForest)
 library(glmnet)
+# library(caret)
+library(keras)
 #https://ugplot.shinyapps.io/ugPlot/
 
 rsconnect::setAccountInfo(name = 'ugplot',
@@ -173,13 +175,23 @@ ui <- fluidPage(
           "PLAY - RANDOM FOREST REGRESSION"
         ),
         actionButton("play_elastic_net_regression",
-                     "PLAY - ELASTIC NET REGRESSION")
+                     "PLAY - ELASTIC NET REGRESSION"),
+        actionButton("play_deep_learning",
+                     "PLAY - DEEP LEARNING"),
+        div(style = "width: 100%; overflow-x: auto;",
+            DTOutput("ml_table_results")),
+        # plotOutput("importance_plot"),
+        div(style = "width: 100%; overflow-x: auto;",
+            DTOutput("ml_table"))
       )
     )
   )
 )
 
 server <- function(input, output, session) {
+  ml_data_table <- reactiveVal()
+  ml_table_results <- reactiveVal()
+  ml_plot_importance <- reactiveVal()
   changed_table <<- ""
   numeric_table <<- ""
   changed_palette <<- 0
@@ -349,9 +361,50 @@ server <- function(input, output, session) {
     load_checkbox_group()
   })
   ####### 4) Machine learning
+  output$ml_table_results = renderDT(
+    ml_table_results(), options = list(lengthChange = FALSE, paging = FALSE, searching = FALSE, info = FALSE), rownames = FALSE
+  )
+
+  output$ml_table = renderDT(
+    ml_data_table(), options = list(lengthChange = FALSE)
+  )
+
+  # output$ml_table <- renderDT({
+  #   my_dataframe
+  # })
+  # output$importance_plot <- renderPlot({
+    # importance_ordered <- importance_table[order(importance_table[, 1], decreasing = TRUE), ]
+    # ml_plot_importance
+    # Create a bar plot
+    # ggplot(ml_plot_importance(), aes(x = Variable, y = Importance)) +
+    #   geom_bar(stat = "identity", fill = "steelblue") +
+    #   xlab("Variable") +
+    #   ylab("Importance") +
+    #   ggtitle("Variable Importance")
+    # ggplot(ml_plot_importance(), aes(x = Variable, y = Importance))
+    # x <- c(1, 2, 3, 4, 5)
+    # y <- c(2, 4, 6, 8, 10)
+    # plot(x, y, main = "Scatter Plot", xlab = "X", ylab = "Y")
+    # print("aqui no plot")
+    # print(ml_plot_importance())
+    # print(ml_data_table(importance_ordered))
+    # dfl <- data.frame(
+    #   Sample = rep(c("Sample1", "Sample2", "Sample3"), each = 5),
+    #   Value = c(1, 2, 3, 4, 5, 2, 4, 6, 8, 10, 3, 6, 9, 12, 15)
+    # )
+    # ggplot(dfl, aes(x = Value, y = Sample, group = Sample, color = Sample)) +
+    #   geom_line() +
+    #   xlab("Value") +
+    #   ylab("Sample") +
+    #   ggtitle("Line Chart")
+  #   ggplot(ml_data_table())
+  #
+  # })
+
   observeEvent(input$play_random_forest_regression, {
     # ntree_values <- seq(100, 1000, by=100)
     # for (ntree in ntree_values) {
+    ml_table_results("")
     target_name <- input$ml_target
     X <-
       changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
@@ -365,7 +418,8 @@ server <- function(input, output, session) {
 
     # Calculate R-squared
     rsq <- 1 - rf_model$mse[input$ml_rfg_trees] / var(Y)
-    print(rsq)
+    # result <- data.frame(Title = "R^2", Result = rsq)
+    ml_table_results(rbind(ml_table_results(), data.frame(Title = "R^2", Result = rsq)))
 
     ################# variance #################
     # Predict values
@@ -373,10 +427,7 @@ server <- function(input, output, session) {
 
     # Calculate residuals
     residuals <- Y - Y_pred
-
-    # Calculate variance of residuals
-    residual_variance <- var(residuals)
-    print(residual_variance)
+    ml_table_results(rbind(ml_table_results(), data.frame(Title = "Variance of residuals (Y - Y_pred)", Result = var(residuals))))
     ###########################################
     # Get variable importance
     importance_table <- importance(rf_model)
@@ -384,19 +435,31 @@ server <- function(input, output, session) {
     # Order by importance
     importance_ordered <-
       importance_table[order(importance_table[, 1], decreasing = TRUE), ]
-
+    ml_data_table(importance_ordered)
+    # print(rownames(importance_ordered))
+    print(ml_data_table()[,1])
+    # ggplot(importance_ordered, aes(x = Variable, y = Importance)) +
+    #   geom_bar(stat = "identity", fill = "steelblue") +
+    #   xlab("Variable") +
+    #   ylab("Importance") +
+    #   ggtitle("Variable Importance")
+    # ggplot(importance_ordered)
     # Print
-    print(head(importance_ordered))
+    # print(head(importance_ordered))
 
   })
   observeEvent(input$play_elastic_net_regression, {
+    ml_table_results("")
     #install.packages("glmnet")
-    library(glmnet)
-
     # Let's assume df is your data frame, and 'age' is the target variable
+    #X <-
+    #  model.matrix(age ~ ., df)[, -1]  # we remove the intercept column
+    target_name <- input$ml_target
     X <-
-      model.matrix(age ~ ., df)[, -1]  # we remove the intercept column
-    Y <- df$age
+      changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
+    Y <- df[[target_name]]
+
+        # Y <- df$age
 
     # Elastic net uses a combination of L1 and L2 regularization.
     # alpha=0 is equivalent to Ridge, and alpha=1 is equivalent to Lasso.
@@ -417,6 +480,7 @@ server <- function(input, output, session) {
     # And calculate R-squared
     rsq <- 1 - sum((Y - Y_pred) ^ 2) / sum((Y - mean(Y)) ^ 2)
     print(paste("R-squared: ", rsq))
+    ml_table_results(rbind(ml_table_results(), data.frame(Title = "R^2", Result = rsq)))
 
     ################## the most important variables
     # Get the coefficients at the best lambda
@@ -436,7 +500,69 @@ server <- function(input, output, session) {
 
     # Print the sorted coefficients along with variable names
     print(coefs_df)
+    ml_data_table(coefs_df)
+  })
 
+  observeEvent(input$play_deep_learning, {
+    print("playing deep learning")
+    target_name <- input$ml_target
+    X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
+    y <- df[[target_name]]
+
+
+    # Example data
+    # Assuming you have your data stored in 'X' (input features) and 'y' (target variable)
+
+    # Define the model using a function
+    create_model <- function(units, dropout_rate) {
+      model <- keras_model_sequential()
+      model %>%
+        layer_dense(units = units, activation = 'relu', input_shape = dim(X)[2]) %>%
+        layer_dropout(rate = dropout_rate) %>%
+        layer_dense(units = 1, activation = 'linear')
+    }
+
+    # Define the hyperparameters to tune
+    units <- c(32, 64, 128)
+    dropout_rates <- c(0.2, 0.4, 0.6)
+
+    best_model <- NULL
+    best_rmse <- Inf
+
+    # Hyperparameter tuning loop
+    for (unit in units) {
+      for (dropout_rate in dropout_rates) {
+        # Create and compile the model
+        model <- create_model(units = unit, dropout_rate = dropout_rate)
+        model %>% compile(loss = 'mean_squared_error', optimizer = 'adam')
+
+        # Train the model
+        model %>% fit(X, y, epochs = 50, batch_size = 32, verbose = 0)
+
+        # Evaluate the model
+        predictions <- model %>% predict(X)
+        rmse <- sqrt(mean((predictions - y)^2))
+
+        # Calculate R-squared
+        y_mean <- mean(y)
+        r_squared <- 1 - sum((y - predictions)^2) / sum((y - y_mean)^2)
+
+        # Update best model if RMSE is lower
+        if (rmse < best_rmse) {
+          best_model <- model
+          best_rmse <- rmse
+          best_r_squared <- r_squared
+        }
+      }
+    }
+
+    # Print the best model's summary
+    # summary(best_model)
+
+    # Print the best model's R-squared
+    print(paste("R^2)  ",best_r_squared))
+    ml_table_results("")
+    ml_table_results(rbind(ml_table_results(), data.frame(Title = "R^2", Result = best_r_squared)))
   })
 }
 
