@@ -11,6 +11,7 @@ library(dendextend)
 library(pheatmap)
 library(randomForest)
 library(glmnet)
+library(plotly)
 
 library(keras)
 library(caret)
@@ -162,6 +163,15 @@ ui <- fluidPage(
                sidebarPanel(
                  class = "sidebar-panel-custom",
                  div(class = "rowplotlist",
+                     sliderInput(
+                       inputId = "correlation_threshhold",
+                       label = "Correlation >=",
+                       min = 0,
+                       max = 1,
+                       value = 0.5,
+                       step = 0.1
+                     ),
+                     actionButton("plotButton", "Plot"),
                      lapply(1:nrow(plotlist2d), function(i) {
                        bname <- paste0("buttonplot2d", i)
                        imgname <- paste0("img/", plotlist$img[i])
@@ -192,7 +202,9 @@ ui <- fluidPage(
                        }
                      }))
                ),
-               mainPanel(plotOutput("plot2d", height = "800px"))
+               mainPanel(uiOutput("plots")
+                 # plotOutput("plot2d", height = "800px")
+              )
              )),
     tabPanel(
       "5) MACHINE LEARNING",
@@ -413,104 +425,246 @@ server <- function(input, output, session) {
     load_checkbox_group()
   })
 
-  ####################### TAB 4) Plot 2D
+  observeEvent(input$plotButton, {
+    print("Cheguei aqui .......")
+    output$plots <- renderUI({
+      X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
+      cor_matrix <- cor(X)
+      # Get the number of columns in the dataset
+      num_cols <- ncol(X)
 
-  lapply(1:nrow(plotlist2d), function(i) {
-    print("aqui")
+      # Create an empty list to store the plots
+      plots_list <- list()
 
-    bname <- paste0("buttonplot2d", i)
-    observeEvent(input[[bname]], {
-      print("Aqui 2")
+      # Loop through each column and create a scatter plot with correlations
+      for (i in 1:num_cols) {
+        # Extract the column name
+        col_name <- colnames(X)[i]
 
-      output$plot2d <- renderPlot({
-        print("Gerando plot 2d")
+        # Loop through all other columns
+        for (j in i:num_cols) {
+          if (j != i && cor_matrix[i, j] >= input$correlation_threshhold) {
+            # Extract the second column name
+            col_name2 <- colnames(X)[j]
+            # Create the scatter plot
+            p <- plot_ly(
+              x = X[, col_name],
+              y = X[, col_name2],
+              type = "scatter",
+              mode = "markers",
+              marker = list(size = 8)
+            )
 
+            # Set the plot title and axis labels using the layout function
+            p <- layout(
+              p,
+              title = paste(col_name, col_name2),
+              xaxis = list(title = col_name),
+              yaxis = list(title = col_name2)
+            )
 
-
-        # Load the mtcars dataset
-        data(mtcars)
-
-        # Calculate the correlation matrix
-        cor_matrix <- cor(mtcars)
-
-        # Get the number of columns in the dataset
-        num_cols <- ncol(mtcars)
-
-        # Create a blank canvas for the plots
-        par(mfrow = c(ceiling(sqrt(num_cols)), ceiling(sqrt(num_cols))))
-
-        # Loop through each column and create a scatter plot with correlations
-        for (i in 1:num_cols) {
-          # Extract the column name
-          col_name <- colnames(mtcars)[i]
-
-          # Loop through all other columns
-          for (j in 1:num_cols) {
-            if (j != i) {
-              # Extract the second column name
-              col_name2 <- colnames(mtcars)[j]
-
-              # Plot the two columns against each other
-              plot(
-                mtcars[, col_name],
-                mtcars[, col_name2],
-                xlab = col_name,
-                ylab = col_name2,
-                main = paste(
-                  "Correlation between",
-                  col_name,
-                  "and",
-                  col_name2
-                )
-              )
-            }
+            # Add the plot to the list
+            plots_list[[length(plots_list) + 1]] <- p
           }
         }
+      }
 
-
-
-
-
-
-
-        #       comandtorun <- plotlist$code[i]
-        #       print("looking for how data is used")
-        #       print(input$plot_xy)
-        #       numeric_table <<-
-        #         apply(changed_table[input$row_checkbox_group, input$column_checkbox_group], c(1, 2), as.numeric)
-        #
-        #       if (input$plot_xy == "LINES x COLUMNS") {
-        #
-        #       } else if (input$plot_xy == "COLUMNS x COLUMNS") {
-        #         numeric_table <<- cor(numeric_table)
-        #       }
-        #
-        #       comandtorun <-
-        #         gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
-        #       if (plotlist$palette[i] != "" && changed_palette == 0) {
-        #         comandpalette <- paste("defaultpalette(", plotlist$palette[i], ")")
-        #         eval(parse(text = comandpalette))
-        #       }
-        #       comandtorun <-
-        #         gsub("\\{\\{palette\\}\\}",
-        #              "defaultpalette()",
-        #              comandtorun)
-        #       print(comandtorun)
-        #       eval(parse(text = comandtorun))
-      })
+      # Return the list of plots to be rendered
+      do.call(tagList, plots_list)
     })
   })
+  ####################### TAB 4) Plot 2D
+  # output$plots <- renderUI({
+  #   X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
+  #   cor_matrix <- cor(X)
+  #   # Get the number of columns in the dataset
+  #   num_cols <- ncol(X)
   #
-  # lapply(1:nrow(palettelist), function(i) {
-  #   bname <- paste0("buttonpalette", i)
+  #   # Create an empty list to store the plots
+  #   plots_list <- list()
+  #
+  #   # Loop through each column and create a scatter plot with correlations
+  #   for (i in 1:num_cols) {
+  #     # Extract the column name
+  #     col_name <- colnames(X)[i]
+  #
+  #     # Loop through all other columns
+  #     for (j in i:num_cols) {
+  #       if (j != i && cor_matrix[i, j] >= input$correlation_threshhold) {
+  #         # Extract the second column name
+  #         col_name2 <- colnames(X)[j]
+  #         # Create the scatter plot
+  #         p <- plot_ly(
+  #           x = X[, col_name],
+  #           y = X[, col_name2],
+  #           type = "scatter",
+  #           mode = "markers",
+  #           marker = list(size = 8)
+  #         )
+  #
+  #         # Set the plot title and axis labels using the layout function
+  #         p <- layout(
+  #           p,
+  #           title = paste(col_name, col_name2),
+  #           xaxis = list(title = col_name),
+  #           yaxis = list(title = col_name2)
+  #         )
+  #
+  #         # Add the plot to the list
+  #         plots_list[[length(plots_list) + 1]] <- p
+  #       }
+  #     }
+  #   }
+  #
+  #   # Return the list of plots to be rendered
+  #   do.call(tagList, plots_list)
+  # })
+
+
+
+
+  # Create a blank canvas for the plots
+  # output$plot2d <- renderPlot({
+  #   X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
+  #   cor_matrix <- cor(X)
+  #   # Get the number of columns in the dataset
+  #   num_cols <- ncol(X)
+  #
+  #   # Create a list to store the scatter plots
+  #   plot_list <- lapply(1:num_cols, function(i) {
+  #     # Extract the column name
+  #     col_name <- colnames(X)[i]
+  #
+  #     # Loop through all other columns
+  #     plots <- lapply(i:num_cols, function(j) {
+  #       if (j != i && cor_matrix[i, j] >= input$correlation_threshhold) {
+  #         # Extract the second column name
+  #         col_name2 <- colnames(X)[j]
+  #         # Create the scatter plot
+  #         plot(
+  #           X[, col_name],
+  #           X[, col_name2],
+  #           xlab = col_name,
+  #           ylab = col_name2,
+  #           main = paste(
+  #             col_name,
+  #             col_name2
+  #           )
+  #         )
+  #       }
+  #     })
+  #     # Remove NULL values from the list
+  #     plots <- plots[!sapply(plots, is.null)]
+  #     # Return the list of plots for each column
+  #     plots
+  #   })
+  #
+  #   # Flatten the list of plots into a single list
+  #   plot_list <- unlist(plot_list)
+  #
+  #   # Check if there are any plots to arrange before calling grid.arrange
+  #   if (length(plot_list) > 0) {
+  #     # Arrange the plots in a grid layout using gridExtra::grid.arrange()
+  #     grid.arrange(grobs = plot_list, ncol = 3)  # Adjust ncol as needed
+  #   }
+  # })
+
+
+  lapply(1:nrow(plotlist2d), function(i) {
+    renderPlot({
+      X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
+      cor_matrix <- cor(X)
+      # Get the number of columns in the dataset
+      num_cols <- ncol(X)
+
+      # Create a list to store the scatter plots
+      plot_list <- lapply(1:num_cols, function(i) {
+        # Extract the column name
+        col_name <- colnames(X)[i]
+
+        # Loop through all other columns
+        plots <- lapply(i:num_cols, function(j) {
+          if (j != i && cor_matrix[i, j] >= input$correlation_threshhold) {
+            # Extract the second column name
+            col_name2 <- colnames(X)[j]
+            # Create the scatter plot
+            plot(
+              X[, col_name],
+              X[, col_name2],
+              xlab = col_name,
+              ylab = col_name2,
+              main = paste(
+                col_name,
+                col_name2
+              )
+            )
+          }
+        })
+        # Remove NULL values from the list
+        plots <- plots[!sapply(plots, is.null)]
+        # Return the list of plots for each column
+        plots
+      })
+
+      # Flatten the list of plots into a single list
+      plot_list <- unlist(plot_list)
+
+      # Check if there are any plots to arrange before calling grid.arrange
+      if (length(plot_list) > 0) {
+        # Arrange the plots in a grid layout using gridExtra::grid.arrange()
+        grid.arrange(grobs = plot_list, ncol = 3)  # Adjust ncol as needed
+      }
+    })
+  })
+
+  #
+  #
+  # lapply(1:nrow(plotlist2d), function(i) {
+  #   print("aqui")
+  #
+  #   bname <- paste0("buttonplot2d", i)
   #   observeEvent(input[[bname]], {
-  #     changed_palette <<- 1
-  #     comandpalette <-
-  #       paste("defaultpalette(", palettelist$code[i], ")")
-  #     eval(parse(text = comandpalette))
+  #     print("Aqui 2")
+  #
+  #     output$plot2d <- renderPlot({
+  #       print("Gerando plot 2d")
+  #       X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
+  #       cor_matrix <- cor(X)
+  #       # Get the number of columns in the dataset
+  #       num_cols <- ncol(X)
+  #       print(paste("Numero de colunas",num_cols))
+  #
+  #       # Create a blank canvas for the plots
+  #       par(mfrow = c(ceiling(sqrt(num_cols)), ceiling(sqrt(num_cols))))
+  #
+  #       # Loop through each column and create a scatter plot with correlations
+  #       for (i in 1:num_cols) {
+  #         # Extract the column name
+  #         col_name <- colnames(X)[i]
+  #
+  #         # Loop through all other columns
+  #         for (j in i:num_cols) {
+  #           if (j != i && cor_matrix[i,j] >= input$correlation_threshhold) {
+  #             # Extract the second column name
+  #             col_name2 <- colnames(X)[j]
+  #             # Plot the two columns against each other
+  #             plot(
+  #               X[, col_name],
+  #               X[, col_name2],
+  #               xlab = col_name,
+  #               ylab = col_name2,
+  #               main = paste(
+  #                 col_name,
+  #                 col_name2
+  #               )
+  #             )
+  #           }
+  #         }
+  #       }
+  #
+  #     })
   #   })
   # })
-  #
 
   ####### 4) Machine learning
   output$ml_table_results = renderDT(
@@ -1032,11 +1186,16 @@ server <- function(input, output, session) {
       data.frame(Title = "R^2", Result = best_r_squared)
     ))
   })
+
+  # output$correlation_threshhold <- renderText({
+  #   threshold <- input$correlation_threshhold
+  #   paste("Threshold value:", threshold)
+  # })
+
   load_ml_list()
 }
 
 load_ml_list <- function() {
-  print("Loading ML LIST")
   all_models <- getModelInfo()
   ml_available <<- list()
   for (model_name in names(all_models)) {
