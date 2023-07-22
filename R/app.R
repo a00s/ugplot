@@ -165,10 +165,18 @@ ui <- fluidPage(
                  div(class = "rowplotlist",
                      sliderInput(
                        inputId = "correlation_threshhold",
-                       label = "Correlation >=",
+                       label = "Correlation >= x",
                        min = 0,
                        max = 1,
                        value = 0.5,
+                       step = 0.1
+                     ),
+                     sliderInput(
+                       inputId = "correlation_threshhold_negative",
+                       label = "Negative correlation <= x",
+                       min = -1,
+                       max = 0,
+                       value = -0.5,
                        step = 0.1
                      ),
                      actionButton("plotButton", "Plot"),
@@ -443,7 +451,8 @@ server <- function(input, output, session) {
 
         # Loop through all other columns
         for (j in i:num_cols) {
-          if (j != i && cor_matrix[i, j] >= input$correlation_threshhold) {
+          if (j != i && (cor_matrix[i, j] >= input$correlation_threshhold || cor_matrix[i, j] <= input$correlation_threshhold_negative)) {
+            print(cor_matrix[i, j])
             # Extract the second column name
             col_name2 <- colnames(X)[j]
             # Create the scatter plot
