@@ -732,7 +732,12 @@ server <- function(input, output, session) {
       # }
       # library(model_name, character.only = TRUE)
       result <- tryCatch({
-        library(model_name, character.only = TRUE)
+        model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
+        model_libraries <- model_info$library
+        print("Carregando libreria:")
+        print(model_libraries)
+        library(model_libraries, character.only = TRUE)
+        # library(model_name, character.only = TRUE)
       }, error = function(e) {
         print(paste("Failed to load", model_name))
         return(NULL)
