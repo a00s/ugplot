@@ -168,21 +168,20 @@ ui <- fluidPage(
                        label = "Correlation >= x",
                        min = 0,
                        max = 1,
-                       value = 0.5,
-                       step = 0.1
+                       value = 0.7,
+                       step = 0.01
                      ),
                      sliderInput(
                        inputId = "correlation_threshhold_negative",
                        label = "Negative correlation <= x",
                        min = -1,
                        max = 0,
-                       value = -0.5,
-                       step = 0.1
+                       value = -0.7,
+                       step = 0.01
                      ),
-                     actionButton("plotButton", "Plot"),
                      lapply(1:nrow(plotlist2d), function(i) {
                        bname <- paste0("buttonplot2d", i)
-                       imgname <- paste0("img/", plotlist$img[i])
+                       imgname <- paste0("img/", plotlist2d$img[i])
                        print(bname)
                        fluidRow(
                          tags$img(
@@ -190,28 +189,26 @@ ui <- fluidPage(
                            width = 130,
                            height = 130
                          ),
-                         actionButton(bname, plotlist$name[i])
+                         actionButton(bname, plotlist2d$name[i])
                        )
                      })),
-                 div(class = "rowpalettelist",
-                     lapply(1:nrow(palettelist), function(i) {
-                       bname <- paste0("buttonpalette2d", i)
-                       imgname <- paste0("img/", palettelist$img[i])
-                       # print(bname)
-                       if (imgname != "img/NA") {
-                         fluidRow(
-                           tags$img(
-                             src = imgname,
-                             width = 130,
-                             height = 20
-                           ),
-                           actionButton(bname, palettelist$name[i])
-                         )
-                       }
-                     }))
+                 # div(class = "rowpalettelist",
+                 #     lapply(1:nrow(palettelist), function(i) {
+                 #       bname <- paste0("buttonpalette2d", i)
+                 #       imgname <- paste0("img/", palettelist$img[i])
+                 #       if (imgname != "img/NA") {
+                 #         fluidRow(
+                 #           tags$img(
+                 #             src = imgname,
+                 #             width = 130,
+                 #             height = 20
+                 #           ),
+                 #           actionButton(bname, palettelist$name[i])
+                 #         )
+                 #       }
+                 #     }))
                ),
                mainPanel(uiOutput("plots")
-                 # plotOutput("plot2d", height = "800px")
               )
              )),
     tabPanel(
@@ -433,247 +430,34 @@ server <- function(input, output, session) {
     load_checkbox_group()
   })
 
-  observeEvent(input$plotButton, {
-    print("Cheguei aqui .......")
-    output$plots <- renderUI({
-      X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
-      cor_matrix <- cor(X)
-      # Get the number of columns in the dataset
-      num_cols <- ncol(X)
 
-      # Create an empty list to store the plots
-      plots_list <- list()
-
-      # Loop through each column and create a scatter plot with correlations
-      for (i in 1:num_cols) {
-        # Extract the column name
-        col_name <- colnames(X)[i]
-
-        # Loop through all other columns
-        for (j in i:num_cols) {
-          if (j != i && (cor_matrix[i, j] >= input$correlation_threshhold || cor_matrix[i, j] <= input$correlation_threshhold_negative)) {
-            print(cor_matrix[i, j])
-            # Extract the second column name
-            col_name2 <- colnames(X)[j]
-            # Create the scatter plot
-            p <- plot_ly(
-              x = X[, col_name],
-              y = X[, col_name2],
-              type = "scatter",
-              mode = "markers",
-              marker = list(size = 8)
-            )
-
-            # Set the plot title and axis labels using the layout function
-            p <- layout(
-              p,
-              title = paste(col_name, col_name2),
-              xaxis = list(title = col_name),
-              yaxis = list(title = col_name2)
-            )
-
-            # Add the plot to the list
-            plots_list[[length(plots_list) + 1]] <- p
+  ####################### TAB 4) Plot 2D
+  lapply(1:nrow(plotlist2d), function(i) {
+    bname <- paste0("buttonplot2d", i)
+    observeEvent(input[[bname]], {
+      output$plots <- renderUI({
+        comandtorun <- plotlist2d$code[i]
+        X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
+        cor_matrix <- cor(X)
+        num_cols <- ncol(X)
+        plots_list <- list()
+        for (i in 1:num_cols) {
+          for (j in i:num_cols) {
+            if (j != i && (cor_matrix[i, j] >= input$correlation_threshhold || cor_matrix[i, j] <= input$correlation_threshhold_negative)) {
+              comandtorun <- gsub("\\{\\{X\\}\\}", "X[, colnames(X)[i]]", comandtorun)
+              comandtorun <- gsub("\\{\\{Y\\}\\}", "X[, colnames(X)[j]]", comandtorun)
+              comandtorun <- gsub("\\{\\{X_NAME\\}\\}", "colnames(X)[i]", comandtorun)
+              comandtorun <- gsub("\\{\\{Y_NAME\\}\\}", "colnames(X)[j]", comandtorun)
+              comandtorun <- gsub("\\{\\{CORRELATION\\}\\}", "cor_matrix[i, j]", comandtorun)
+              p <-eval(parse(text = comandtorun))
+              plots_list[[length(plots_list) + 1]] <- p
+            }
           }
         }
-      }
-
-      # Return the list of plots to be rendered
-      do.call(tagList, plots_list)
-    })
-  })
-  ####################### TAB 4) Plot 2D
-  # output$plots <- renderUI({
-  #   X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
-  #   cor_matrix <- cor(X)
-  #   # Get the number of columns in the dataset
-  #   num_cols <- ncol(X)
-  #
-  #   # Create an empty list to store the plots
-  #   plots_list <- list()
-  #
-  #   # Loop through each column and create a scatter plot with correlations
-  #   for (i in 1:num_cols) {
-  #     # Extract the column name
-  #     col_name <- colnames(X)[i]
-  #
-  #     # Loop through all other columns
-  #     for (j in i:num_cols) {
-  #       if (j != i && cor_matrix[i, j] >= input$correlation_threshhold) {
-  #         # Extract the second column name
-  #         col_name2 <- colnames(X)[j]
-  #         # Create the scatter plot
-  #         p <- plot_ly(
-  #           x = X[, col_name],
-  #           y = X[, col_name2],
-  #           type = "scatter",
-  #           mode = "markers",
-  #           marker = list(size = 8)
-  #         )
-  #
-  #         # Set the plot title and axis labels using the layout function
-  #         p <- layout(
-  #           p,
-  #           title = paste(col_name, col_name2),
-  #           xaxis = list(title = col_name),
-  #           yaxis = list(title = col_name2)
-  #         )
-  #
-  #         # Add the plot to the list
-  #         plots_list[[length(plots_list) + 1]] <- p
-  #       }
-  #     }
-  #   }
-  #
-  #   # Return the list of plots to be rendered
-  #   do.call(tagList, plots_list)
-  # })
-
-
-
-
-  # Create a blank canvas for the plots
-  # output$plot2d <- renderPlot({
-  #   X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
-  #   cor_matrix <- cor(X)
-  #   # Get the number of columns in the dataset
-  #   num_cols <- ncol(X)
-  #
-  #   # Create a list to store the scatter plots
-  #   plot_list <- lapply(1:num_cols, function(i) {
-  #     # Extract the column name
-  #     col_name <- colnames(X)[i]
-  #
-  #     # Loop through all other columns
-  #     plots <- lapply(i:num_cols, function(j) {
-  #       if (j != i && cor_matrix[i, j] >= input$correlation_threshhold) {
-  #         # Extract the second column name
-  #         col_name2 <- colnames(X)[j]
-  #         # Create the scatter plot
-  #         plot(
-  #           X[, col_name],
-  #           X[, col_name2],
-  #           xlab = col_name,
-  #           ylab = col_name2,
-  #           main = paste(
-  #             col_name,
-  #             col_name2
-  #           )
-  #         )
-  #       }
-  #     })
-  #     # Remove NULL values from the list
-  #     plots <- plots[!sapply(plots, is.null)]
-  #     # Return the list of plots for each column
-  #     plots
-  #   })
-  #
-  #   # Flatten the list of plots into a single list
-  #   plot_list <- unlist(plot_list)
-  #
-  #   # Check if there are any plots to arrange before calling grid.arrange
-  #   if (length(plot_list) > 0) {
-  #     # Arrange the plots in a grid layout using gridExtra::grid.arrange()
-  #     grid.arrange(grobs = plot_list, ncol = 3)  # Adjust ncol as needed
-  #   }
-  # })
-
-
-  lapply(1:nrow(plotlist2d), function(i) {
-    renderPlot({
-      X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
-      cor_matrix <- cor(X)
-      # Get the number of columns in the dataset
-      num_cols <- ncol(X)
-
-      # Create a list to store the scatter plots
-      plot_list <- lapply(1:num_cols, function(i) {
-        # Extract the column name
-        col_name <- colnames(X)[i]
-
-        # Loop through all other columns
-        plots <- lapply(i:num_cols, function(j) {
-          if (j != i && cor_matrix[i, j] >= input$correlation_threshhold) {
-            # Extract the second column name
-            col_name2 <- colnames(X)[j]
-            # Create the scatter plot
-            plot(
-              X[, col_name],
-              X[, col_name2],
-              xlab = col_name,
-              ylab = col_name2,
-              main = paste(
-                col_name,
-                col_name2
-              )
-            )
-          }
-        })
-        # Remove NULL values from the list
-        plots <- plots[!sapply(plots, is.null)]
-        # Return the list of plots for each column
-        plots
+        do.call(tagList, plots_list)
       })
-
-      # Flatten the list of plots into a single list
-      plot_list <- unlist(plot_list)
-
-      # Check if there are any plots to arrange before calling grid.arrange
-      if (length(plot_list) > 0) {
-        # Arrange the plots in a grid layout using gridExtra::grid.arrange()
-        grid.arrange(grobs = plot_list, ncol = 3)  # Adjust ncol as needed
-      }
     })
   })
-
-  #
-  #
-  # lapply(1:nrow(plotlist2d), function(i) {
-  #   print("aqui")
-  #
-  #   bname <- paste0("buttonplot2d", i)
-  #   observeEvent(input[[bname]], {
-  #     print("Aqui 2")
-  #
-  #     output$plot2d <- renderPlot({
-  #       print("Gerando plot 2d")
-  #       X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
-  #       cor_matrix <- cor(X)
-  #       # Get the number of columns in the dataset
-  #       num_cols <- ncol(X)
-  #       print(paste("Numero de colunas",num_cols))
-  #
-  #       # Create a blank canvas for the plots
-  #       par(mfrow = c(ceiling(sqrt(num_cols)), ceiling(sqrt(num_cols))))
-  #
-  #       # Loop through each column and create a scatter plot with correlations
-  #       for (i in 1:num_cols) {
-  #         # Extract the column name
-  #         col_name <- colnames(X)[i]
-  #
-  #         # Loop through all other columns
-  #         for (j in i:num_cols) {
-  #           if (j != i && cor_matrix[i,j] >= input$correlation_threshhold) {
-  #             # Extract the second column name
-  #             col_name2 <- colnames(X)[j]
-  #             # Plot the two columns against each other
-  #             plot(
-  #               X[, col_name],
-  #               X[, col_name2],
-  #               xlab = col_name,
-  #               ylab = col_name2,
-  #               main = paste(
-  #                 col_name,
-  #                 col_name2
-  #               )
-  #             )
-  #           }
-  #         }
-  #       }
-  #
-  #     })
-  #   })
-  # })
 
   ####### 4) Machine learning
   output$ml_table_results = renderDT(
