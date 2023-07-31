@@ -736,17 +736,21 @@ server <- function(input, output, session) {
         model_libraries <- model_info$library
         print("Carregando libreria:")
         print(model_libraries)
-        library(model_libraries, character.only = TRUE)
+        for (lib in model_libraries) {
+          print(lib)
+          library(lib, character.only = TRUE)
+        }
+        # library(model_libraries, character.only = TRUE)
         # library(model_name, character.only = TRUE)
       }, error = function(e) {
         print(paste("Failed to load", model_name))
-        return(NULL)
+        # return(NULL)
       })
 
       # If loading was successful, continue with the next iteration
-      if (is.null(result)){
-        next
-      }
+      # if (is.null(result)){
+      #   next
+      # }
 
       # Train the model
       tryCatch({
@@ -783,9 +787,6 @@ server <- function(input, output, session) {
         print(paste("Error in model", model_name, ": ", conditionMessage(e)))
       })
     }
-
-
-
   })
 
   observeEvent(input$play_search_best_model, {
