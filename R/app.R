@@ -12,6 +12,7 @@ library(pheatmap)
 library(randomForest)
 library(glmnet)
 library(plotly)
+library(tidyr)
 
 library(keras)
 library(caret)
@@ -32,7 +33,7 @@ palettelist <- read.csv("palette.csv", sep = ";", header = TRUE)
 df_pre <- ""
 df <- ""
 ml_available <- ""
-ml_not_available <- ""
+ml_not_available <- NULL
 ui <- fluidPage(
   includeCSS("www/styles.css"),
   titlePanel(tags$img(src = "ugplot.png", height = "50px"), "ugPlot"),
@@ -236,8 +237,9 @@ ui <- fluidPage(
                      "PLAY - ELASTIC NET REGRESSION"),
         actionButton("play_deep_learning",
                      "PLAY - DEEP LEARNING"),
-        actionButton("play_search_best_model",
-                     "Search best model"),
+        # actionButton("play_search_best_model",
+        #              "Search best model"),
+        verbatimTextOutput("console_output"),
 
         column(
           width = 6,
@@ -262,6 +264,7 @@ ui <- fluidPage(
         # plotOutput("importance_plot"),
         div(style = "width: 100%; overflow-x: auto;",
             DTOutput("ml_table"))
+
       )
     )
   )
@@ -271,6 +274,7 @@ server <- function(input, output, session) {
   ml_data_table <- reactiveVal()
   ml_table_results <- reactiveVal()
   ml_plot_importance <- reactiveVal()
+  text_output <- reactiveVal("")
   changed_table <<- ""
   numeric_table <<- ""
   changed_palette <<- 0
@@ -526,6 +530,15 @@ server <- function(input, output, session) {
   #   ggplot(ml_data_table())
   #
   # })
+  output$console_output <- renderPrint({
+    text_output()
+  })
+
+  # Event to update the text when the button is clicked
+  # observeEvent(input$btn_update_text, {
+  #   # Update the text stored in the reactiveVal
+  #   text_output("New Text")
+  # })
 
   observeEvent(input$play_random_forest_regression, {
     # ntree_values <- seq(100, 1000, by=100)
@@ -634,18 +647,19 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$install_missing_modules, {
-    # counter_model = 0
     all_models <- getModelInfo()
-    for (model_name in names(all_models)) {
-      # counter_model <- counter_model + 1
-      # if (counter_model > 5) {
-      #   next
-      # }
-      # print(paste("Modelo", model_name))
-      # Skip models that require additional packages
-      if (any(!all_models[[model_name]]$library %in% installed.packages())) {
-        print(paste("Installing", model_name))
-        install.packages(model_name)
+    models_to_install <- input$ml_missing_checkbox_group
+    for(model_name in models_to_install){
+      print(model_name)
+      model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
+      model_libraries <- model_info$library
+      for(librarytoinst in model_libraries){
+        print(librarytoinst)
+        if (!(librarytoinst %in% installed.packages())){
+          install.packages(librarytoinst)
+        } else {
+          print("Biblioteca ja estava instalada")
+        }
       }
     }
   })
@@ -702,35 +716,9 @@ server <- function(input, output, session) {
     }
 
     # Get the list of all available models
-    # all_models <- getModelInfo()
     all_models <- input$ml_checkbox_group
-    # for (model_name in names(all_models)) {
-    #   print(paste("Modelo",model_name))
-    #   print(all_models[[model_name]]$library)
-    #   # Skip models that require additional packages
-    #   if (any(!all_models[[model_name]]$library %in% installed.packages())) {
-    #     print(paste("Ignoring",model_name))
-    #     next
-    #   }
-    # }
-    # Loop through the models
-    # counter_model <- 0
-    # for (model_name in names(all_models)) {
     for (model_name in all_models) {
       print(model_name)
-      # next
-      # counter_model <- counter_model + 1
-      # if (counter_model > 50) {
-      #   # next
-      # }
-      # print(paste("Modelo", model_name))
-      # Skip models that require additional packages
-      # if (any(!all_models[[model_name]]$library %in% installed.packages())) {
-      # if (any(!model_name$library %in% installed.packages())) {
-      #   print(paste("Ignoring", model_name))
-      #   next
-      # }
-      # library(model_name, character.only = TRUE)
       result <- tryCatch({
         model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
         model_libraries <- model_info$library
@@ -740,21 +728,14 @@ server <- function(input, output, session) {
           print(lib)
           library(lib, character.only = TRUE)
         }
-        # library(model_libraries, character.only = TRUE)
-        # library(model_name, character.only = TRUE)
       }, error = function(e) {
         print(paste("Failed to load", model_name))
-        # return(NULL)
       })
-
-      # If loading was successful, continue with the next iteration
-      # if (is.null(result)){
-      #   next
-      # }
 
       # Train the model
       tryCatch({
         print(paste("Modelo 2", model_name))
+        text_output(model_name)
         formula <- as.formula(paste(target_name, "~ ."))
         model <-
           train(
@@ -774,15 +755,7 @@ server <- function(input, output, session) {
                      MAE = result_pred["MAE"])
 
         ml_table_results(rbind(ml_table_results(), model_results))
-
-        # Print the results
-        # print(paste("Results for", model_name))
-        # print(result_pred["Rsquared"])
-        # print(result_pred["MAE"])
-        # Code to handle the successful model training here
-
       }, error = function(e) {
-        # print(paste("Error in model", model_name))
         # Code to handle the error here (e.g., print an error message)
         print(paste("Error in model", model_name, ": ", conditionMessage(e)))
       })
@@ -892,20 +865,32 @@ server <- function(input, output, session) {
         Sys.sleep(0.5)
         # print(postResample(pred, testSet[[target_name]]))
       }
-      # Compare the results
-      # results <- resamples(res_list)
-      # summary(results)
-
-      # Predict and evaluate on testSet
-      # for(i in models){
-      #   pred <- predict(res_list[[i]], newdata = testSet)
-      #   print(paste("Results for", i))
-      #   print(postResample(pred, testSet[[target_name]]))
-      # }
     })
 
   })
 
+  # observeEvent(input$run_code, {
+  #   # Your R code here
+  #   print("Hello, this is an example console output.")
+  #   message("This is a message from the R code.")
+  # })
+
+  # output$console_output <- renderPrint({
+  #   # Código que deseja executar e capturar as mensagens de log
+  #   # Por exemplo, aqui estamos apenas imprimindo uma mensagem de log
+  #   message("This is a log message.")
+  #
+  #   # Captura as mensagens de log e as retorna para serem exibidas na interface
+  #   capture.output({
+  #     res <- 2 + 2
+  #     print(res)
+  #   })
+  # })
+  #
+  # observeEvent(input$btn_run_code, {
+  #   # Este observeEvent é apenas para ilustrar o exemplo de captura de mensagens
+  #   # Pode ser usado para acionar a execução de código que gera mensagens de log
+  # })
 
 
   observeEvent(input$play_deep_learning, {
