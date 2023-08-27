@@ -745,19 +745,19 @@ server <- function(input, output, session) {
 
     specific_model <- all_models_reactive()[[selected_model_name]]
 
-    # Complete summary of the model
-    print("=== Summary of the Model ===")
-    print(summary(specific_model))
-
-    # Best model parameters
-    print("=== Best Tuning Parameters ===")
-    print(specific_model$bestTune)
-
-    # Resampling results (if available)
-    if (!is.null(specific_model$resample)) {
-      print("=== Resampling Results ===")
-      print(specific_model$resample)
-    }
+    # # Complete summary of the model
+    # print("=== Summary of the Model ===")
+    # print(summary(specific_model))
+    #
+    # # Best model parameters
+    # print("=== Best Tuning Parameters ===")
+    # print(specific_model$bestTune)
+    #
+    # # Resampling results (if available)
+    # if (!is.null(specific_model$resample)) {
+    #   print("=== Resampling Results ===")
+    #   print(specific_model$resample)
+    # }
 
     # Variable importance (for models that support it)
     tryCatch({
@@ -769,25 +769,25 @@ server <- function(input, output, session) {
     })
 
     # Confusion Matrix and related metrics (for classification models)
-    # Assuming 'predictions' and 'actual_values' are available
-    if ("confusionMatrix" %in% rownames(specific_model$results)) {
-      predictions <- predict(specific_model, newdata = your_test_data)
-      actual_values <- your_test_data$Your_Target_Column
-      confusion <- confusionMatrix(predictions, actual_values)
-      print("=== Confusion Matrix ===")
-      print(confusion)
-      print("=== Classification Metrics ===")
-      print(confusion$overall)
-    }
-
-    # Regression metrics like RMSE, R^2 (for regression models)
-    # Assuming 'predictions' and 'actual_values' are available
-    if ("RMSE" %in% rownames(specific_model$results)) {
-      predictions <- predict(specific_model, newdata = your_test_data)
-      actual_values <- your_test_data$Your_Target_Column
-      print("=== Regression Metrics ===")
-      print(postResample(predictions, actual_values))
-    }
+    # # Assuming 'predictions' and 'actual_values' are available
+    # if ("confusionMatrix" %in% rownames(specific_model$results)) {
+    #   predictions <- predict(specific_model, newdata = your_test_data)
+    #   actual_values <- your_test_data$Your_Target_Column
+    #   confusion <- confusionMatrix(predictions, actual_values)
+    #   print("=== Confusion Matrix ===")
+    #   print(confusion)
+    #   print("=== Classification Metrics ===")
+    #   print(confusion$overall)
+    # }
+    #
+    # # Regression metrics like RMSE, R^2 (for regression models)
+    # # Assuming 'predictions' and 'actual_values' are available
+    # if ("RMSE" %in% rownames(specific_model$results)) {
+    #   predictions <- predict(specific_model, newdata = your_test_data)
+    #   actual_values <- your_test_data$Your_Target_Column
+    #   print("=== Regression Metrics ===")
+    #   print(postResample(predictions, actual_values))
+    # }
 
   })
 
