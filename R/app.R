@@ -695,9 +695,9 @@ server <- function(input, output, session) {
             train(
               formula,
               data = trainSet,
-              method = model_name,
-              trControl = ctrl
+              method = model_name
             )
+          # trControl = ctrl
           # Make predictions
           pred <- predict(model, newdata = testSet)
 
