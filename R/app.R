@@ -13,11 +13,8 @@ library(randomForest)
 library(glmnet)
 library(plotly)
 library(tidyr)
-
 library(keras)
 library(caret)
-# library(rpart)
-# library(ada)
 
 #https://ugplot.shinyapps.io/ugPlot/
 
@@ -29,6 +26,23 @@ options(shiny.maxRequestSize = 800 * 1024 * 1024)
 plotlist2d <- read.csv("2dplotlist.csv", sep = ";", header = TRUE)
 plotlist <- read.csv("plotlist.csv", sep = ";", header = TRUE)
 palettelist <- read.csv("palette.csv", sep = ";", header = TRUE)
+
+slow_models <-
+  c(
+    'bam',
+    'ANFIS',
+    'DENFIS',
+    'FIR.DM',
+    'FS.HGD',
+    'gam',
+    'GFS.LT.RS',
+    'GFS.FR.MOGUL',
+    'GFS.THRIFT',
+    'HYFIS'
+  )
+slow_models_text <-
+  paste("Slow models automaticaly removed:",
+        paste(slow_models, collapse = ", "))
 
 df_pre <- ""
 df <- ""
@@ -163,36 +177,38 @@ ui <- fluidPage(
              sidebarLayout(
                sidebarPanel(
                  class = "sidebar-panel-custom",
-                 div(class = "rowplotlist",
-                     sliderInput(
-                       inputId = "correlation_threshhold",
-                       label = "Correlation >= x",
-                       min = 0,
-                       max = 1,
-                       value = 0.7,
-                       step = 0.01
-                     ),
-                     sliderInput(
-                       inputId = "correlation_threshhold_negative",
-                       label = "Negative correlation <= x",
-                       min = -1,
-                       max = 0,
-                       value = -0.7,
-                       step = 0.01
-                     ),
-                     lapply(1:nrow(plotlist2d), function(i) {
-                       bname <- paste0("buttonplot2d", i)
-                       imgname <- paste0("img/", plotlist2d$img[i])
-                       print(bname)
-                       fluidRow(
-                         tags$img(
-                           src = imgname,
-                           width = 130,
-                           height = 130
-                         ),
-                         actionButton(bname, plotlist2d$name[i])
-                       )
-                     })),
+                 div(
+                   class = "rowplotlist",
+                   sliderInput(
+                     inputId = "correlation_threshhold",
+                     label = "Correlation >= x",
+                     min = 0,
+                     max = 1,
+                     value = 0.7,
+                     step = 0.01
+                   ),
+                   sliderInput(
+                     inputId = "correlation_threshhold_negative",
+                     label = "Negative correlation <= x",
+                     min = -1,
+                     max = 0,
+                     value = -0.7,
+                     step = 0.01
+                   ),
+                   lapply(1:nrow(plotlist2d), function(i) {
+                     bname <- paste0("buttonplot2d", i)
+                     imgname <- paste0("img/", plotlist2d$img[i])
+                     print(bname)
+                     fluidRow(
+                       tags$img(
+                         src = imgname,
+                         width = 130,
+                         height = 130
+                       ),
+                       actionButton(bname, plotlist2d$name[i])
+                     )
+                   })
+                 ),
                  # div(class = "rowpalettelist",
                  #     lapply(1:nrow(palettelist), function(i) {
                  #       bname <- paste0("buttonpalette2d", i)
@@ -209,8 +225,7 @@ ui <- fluidPage(
                  #       }
                  #     }))
                ),
-               mainPanel(uiOutput("plots")
-              )
+               mainPanel(uiOutput("plots"))
              )),
     tabPanel(
       "5) MACHINE LEARNING",
@@ -221,50 +236,46 @@ ui <- fluidPage(
           label = "Target column (healthy, cancer, ...)",
           choices = ""
         ),
-        numericInput(
-          "ml_rfg_trees",
-          "Forest Regression - Number of decision trees",
-          value = 200,
-          min = 1,
-          max = 500,
-          step = 1
-        ),
-        actionButton(
-          "play_random_forest_regression",
-          "PLAY - RANDOM FOREST REGRESSION"
-        ),
-        actionButton("play_elastic_net_regression",
-                     "PLAY - ELASTIC NET REGRESSION"),
-        actionButton("play_deep_learning",
-                     "PLAY - DEEP LEARNING"),
-        # actionButton("play_search_best_model",
-        #              "Search best model"),
-        verbatimTextOutput("console_output"),
+        conditionalPanel(
+          condition = "input.ml_target != ''",
+          tags$div(
+            actionButton(
+              "play_random_forest_regression",
+              "PLAY - RANDOM FOREST REGRESSION"
+            ),
+            actionButton("play_elastic_net_regression",
+                         "PLAY - ELASTIC NET REGRESSION"),
+            actionButton("play_deep_learning",
+                         "PLAY - DEEP LEARNING"),
+            verbatimTextOutput("console_output"),
 
-        column(
-          width = 6,
-          actionButton("uncheck_all_ml", "Uncheck all"),
-          actionButton("check_all_ml", "Check all"),
-          actionButton("play_search_best_model_caret",
-                       "RUN"),
-          div(class = "scrollable-table",
-              div(id = "dynamic_machine_learning"))
-        ),
-        column(
-          width = 6,
-          actionButton("uncheck_all_ml_missing", "Uncheck all"),
-          actionButton("check_all_ml_missing", "Check all"),
-          actionButton("install_missing_modules",
-                       "Install libraries"),
-          div(class = "scrollable-table",
-              div(id = "dynamic_machine_learning_missing"))
-        ),
-        div(style = "width: 100%; overflow-x: auto;",
-            DTOutput("ml_table_results")),
-        # plotOutput("importance_plot"),
-        div(style = "width: 100%; overflow-x: auto;",
-            DTOutput("ml_table"))
-
+            column(
+              width = 6,
+              actionButton("uncheck_all_ml", "Uncheck all"),
+              actionButton("check_all_ml", "Check all"),
+              actionButton("play_search_best_model_caret",
+                           "RUN"),
+              div(class = "scrollable-table",
+                  div(id = "dynamic_machine_learning")),
+              tags$br(),
+              tags$p(slow_models_text, style = "color: gray; font-size: 11px;")
+            ),
+            column(
+              width = 6,
+              actionButton("uncheck_all_ml_missing", "Uncheck all"),
+              actionButton("check_all_ml_missing", "Check all"),
+              actionButton("install_missing_modules",
+                           "Install libraries"),
+              div(class = "scrollable-table",
+                  div(id = "dynamic_machine_learning_missing"))
+            ),
+            div(style = "width: 100%; overflow-x: auto;",
+                DTOutput("ml_table_results")),
+            verbatimTextOutput("ml_row_details"),
+            div(style = "width: 100%; overflow-x: auto;",
+                DTOutput("ml_table"))
+          )
+        )
       )
     )
   )
@@ -274,7 +285,6 @@ server <- function(input, output, session) {
   ml_data_table <- reactiveVal()
   ml_table_results <- reactiveVal()
   ml_plot_importance <- reactiveVal()
-  text_output <- reactiveVal("")
   changed_table <<- ""
   numeric_table <<- ""
   changed_palette <<- 0
@@ -441,19 +451,39 @@ server <- function(input, output, session) {
     observeEvent(input[[bname]], {
       output$plots <- renderUI({
         comandtorun <- plotlist2d$code[i]
-        X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
+        X <-
+          changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
         cor_matrix <- cor(X)
         num_cols <- ncol(X)
         plots_list <- list()
         for (i in 1:num_cols) {
           for (j in i:num_cols) {
-            if (j != i && (cor_matrix[i, j] >= input$correlation_threshhold || cor_matrix[i, j] <= input$correlation_threshhold_negative)) {
-              comandtorun <- gsub("\\{\\{X\\}\\}", "X[, colnames(X)[i]]", comandtorun)
-              comandtorun <- gsub("\\{\\{Y\\}\\}", "X[, colnames(X)[j]]", comandtorun)
-              comandtorun <- gsub("\\{\\{X_NAME\\}\\}", "colnames(X)[i]", comandtorun)
-              comandtorun <- gsub("\\{\\{Y_NAME\\}\\}", "colnames(X)[j]", comandtorun)
-              comandtorun <- gsub("\\{\\{CORRELATION\\}\\}", "cor_matrix[i, j]", comandtorun)
-              p <-eval(parse(text = comandtorun))
+            if (j != i &&
+                (
+                  cor_matrix[i, j] >= input$correlation_threshhold ||
+                  cor_matrix[i, j] <= input$correlation_threshhold_negative
+                )) {
+              comandtorun <-
+                gsub("\\{\\{X\\}\\}",
+                     "X[, colnames(X)[i]]",
+                     comandtorun)
+              comandtorun <-
+                gsub("\\{\\{Y\\}\\}",
+                     "X[, colnames(X)[j]]",
+                     comandtorun)
+              comandtorun <-
+                gsub("\\{\\{X_NAME\\}\\}",
+                     "colnames(X)[i]",
+                     comandtorun)
+              comandtorun <-
+                gsub("\\{\\{Y_NAME\\}\\}",
+                     "colnames(X)[j]",
+                     comandtorun)
+              comandtorun <-
+                gsub("\\{\\{CORRELATION\\}\\}",
+                     "cor_matrix[i, j]",
+                     comandtorun)
+              p <- eval(parse(text = comandtorun))
               plots_list[[length(plots_list) + 1]] <- p
             }
           }
@@ -464,16 +494,19 @@ server <- function(input, output, session) {
   })
 
   ####### 4) Machine learning
-  output$ml_table_results = renderDT(
-    ml_table_results(),
-    options = list(
-      lengthChange = FALSE,
-      paging = FALSE,
-      searching = FALSE,
-      info = FALSE
-    ),
-    rownames = FALSE
-  )
+  all_models_reactive <- reactiveVal(list())
+  output$ml_table_results = renderDT({
+    datatable(
+      ml_table_results(),
+      selection = "single",
+        options = list(
+          lengthChange = FALSE,
+          paging = FALSE,
+          searching = FALSE,
+          info = FALSE
+        ),
+        rownames = FALSE)
+  })
 
   observeEvent(input$uncheck_all_ml, {
     updateCheckboxGroupInput(session,
@@ -498,51 +531,7 @@ server <- function(input, output, session) {
   })
 
   output$ml_table = renderDT(ml_data_table(), options = list(lengthChange = FALSE))
-
-  # output$ml_table <- renderDT({
-  #   my_dataframe
-  # })
-  # output$importance_plot <- renderPlot({
-  # importance_ordered <- importance_table[order(importance_table[, 1], decreasing = TRUE), ]
-  # ml_plot_importance
-  # Create a bar plot
-  # ggplot(ml_plot_importance(), aes(x = Variable, y = Importance)) +
-  #   geom_bar(stat = "identity", fill = "steelblue") +
-  #   xlab("Variable") +
-  #   ylab("Importance") +
-  #   ggtitle("Variable Importance")
-  # ggplot(ml_plot_importance(), aes(x = Variable, y = Importance))
-  # x <- c(1, 2, 3, 4, 5)
-  # y <- c(2, 4, 6, 8, 10)
-  # plot(x, y, main = "Scatter Plot", xlab = "X", ylab = "Y")
-  # print("aqui no plot")
-  # print(ml_plot_importance())
-  # print(ml_data_table(importance_ordered))
-  # dfl <- data.frame(
-  #   Sample = rep(c("Sample1", "Sample2", "Sample3"), each = 5),
-  #   Value = c(1, 2, 3, 4, 5, 2, 4, 6, 8, 10, 3, 6, 9, 12, 15)
-  # )
-  # ggplot(dfl, aes(x = Value, y = Sample, group = Sample, color = Sample)) +
-  #   geom_line() +
-  #   xlab("Value") +
-  #   ylab("Sample") +
-  #   ggtitle("Line Chart")
-  #   ggplot(ml_data_table())
-  #
-  # })
-  output$console_output <- renderPrint({
-    text_output()
-  })
-
-  # Event to update the text when the button is clicked
-  # observeEvent(input$btn_update_text, {
-  #   # Update the text stored in the reactiveVal
-  #   text_output("New Text")
-  # })
-
   observeEvent(input$play_random_forest_regression, {
-    # ntree_values <- seq(100, 1000, by=100)
-    # for (ntree in ntree_values) {
     ml_table_results("")
     target_name <- input$ml_target
     X <-
@@ -553,11 +542,11 @@ server <- function(input, output, session) {
     rf_model <-
       randomForest(X,
                    Y,
-                   ntree = input$ml_rfg_trees,
+                   ntree = 500,
                    importance = TRUE)
 
     # Calculate R-squared
-    rsq <- 1 - rf_model$mse[input$ml_rfg_trees] / var(Y)
+    rsq <- 1 - rf_model$mse[500] / var(Y)
     # result <- data.frame(Title = "R^2", Result = rsq)
     ml_table_results(rbind(ml_table_results(), data.frame(Title = "R^2", Result = rsq)))
 
@@ -577,26 +566,12 @@ server <- function(input, output, session) {
 
     # Order by importance
     importance_ordered <-
-      importance_table[order(importance_table[, 1], decreasing = TRUE),]
+      importance_table[order(importance_table[, 1], decreasing = TRUE), ]
     ml_data_table(importance_ordered)
-    # print(rownames(importance_ordered))
-    # print(ml_data_table()[,1])
-    # ggplot(importance_ordered, aes(x = Variable, y = Importance)) +
-    #   geom_bar(stat = "identity", fill = "steelblue") +
-    #   xlab("Variable") +
-    #   ylab("Importance") +
-    #   ggtitle("Variable Importance")
-    # ggplot(importance_ordered)
-    # Print
-    # print(head(importance_ordered))
-
   })
+
   observeEvent(input$play_elastic_net_regression, {
     ml_table_results("")
-    #install.packages("glmnet")
-    # Let's assume df is your data frame, and 'age' is the target variable
-    #X <-
-    #  model.matrix(age ~ ., df)[, -1]  # we remove the intercept column
     target_name <- input$ml_target
     X <-
       changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
@@ -639,7 +614,7 @@ server <- function(input, output, session) {
 
     # Sort the coefficients in decreasing order of absolute value
     coefs_df <-
-      coefs_df[order(abs(coefs_df$Coefficient), decreasing = TRUE),]
+      coefs_df[order(abs(coefs_df$Coefficient), decreasing = TRUE), ]
 
     # Print the sorted coefficients along with variable names
     print(coefs_df)
@@ -649,13 +624,14 @@ server <- function(input, output, session) {
   observeEvent(input$install_missing_modules, {
     all_models <- getModelInfo()
     models_to_install <- input$ml_missing_checkbox_group
-    for(model_name in models_to_install){
+    for (model_name in models_to_install) {
       print(model_name)
-      model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
+      model_info <-
+        getModelInfo(model_name, regex = FALSE)[[model_name]]
       model_libraries <- model_info$library
-      for(librarytoinst in model_libraries){
+      for (librarytoinst in model_libraries) {
         print(librarytoinst)
-        if (!(librarytoinst %in% installed.packages())){
+        if (!(librarytoinst %in% installed.packages())) {
           install.packages(librarytoinst)
         } else {
           print("Biblioteca ja estava instalada")
@@ -664,234 +640,153 @@ server <- function(input, output, session) {
     }
   })
 
-  # observeEvent(input$temporario, {
-  #   all_models <- getModelInfo()
-  #   ml_available <<- list()
-  #   for (model_name in names(all_models)) {
-  #     if (any(!all_models[[model_name]]$library %in% installed.packages())) {
-  #       ml_not_available <<- c(ml_not_available, model_name)
-  #     } else {
-  #       ml_available <<- c(ml_available, model_name)
-  #     }
-  #   }
-  #   removeUI(selector = paste0("#", "ml_checkbox_group"))
-  #   insertUI(
-  #     selector = "#dynamic_machine_learning",
-  #     where = "afterEnd",
-  #     ui = checkboxGroupInput(
-  #       inputId = "ml_checkbox_group",
-  #       label = "ML available:",
-  #       choices = ml_available,
-  #       selected = ml_available
-  #     )
-  #   )
-  #   removeUI(selector = paste0("#", "ml_missing_checkbox_group"))
-  #   insertUI(
-  #     selector = "#dynamic_machine_learning_missing",
-  #     where = "afterEnd",
-  #     ui = checkboxGroupInput(
-  #       inputId = "ml_missing_checkbox_group",
-  #       label = "ML missing:",
-  #       choices = ml_not_available
-  #     )
-  #   )
-  # })
-
   observeEvent(input$play_search_best_model_caret, {
     print("Searching caret best model")
-    ml_table_results("")
-    target_name <- input$ml_target
-    trainIndex <-
-      createDataPartition(df[[target_name]],
-                          p = .8,
-                          list = FALSE,
-                          times = 1)
-    trainSet <- df[trainIndex, ]
-    testSet  <- df[-trainIndex, ]
-    if (!is.data.frame(trainSet)) {
-      trainSet <- as.data.frame(trainSet)
-    }
-    if (!is.data.frame(testSet)) {
-      testSet <- as.data.frame(testSet)
-    }
-
-    # Get the list of all available models
-    all_models <- input$ml_checkbox_group
-    for (model_name in all_models) {
-      print(model_name)
-      result <- tryCatch({
-        model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
-        model_libraries <- model_info$library
-        print("Carregando libreria:")
-        print(model_libraries)
-        for (lib in model_libraries) {
-          print(lib)
-          library(lib, character.only = TRUE)
-        }
-      }, error = function(e) {
-        print(paste("Failed to load", model_name))
-      })
-
-      # Train the model
-      tryCatch({
-        print(paste("Modelo 2", model_name))
-        text_output(model_name)
-        formula <- as.formula(paste(target_name, "~ ."))
-        model <-
-          train(
-            formula,
-            data = trainSet,
-            method = model_name,
-            trControl = ctrl
-          )
-        # Make predictions
-        pred <- predict(model, newdata = testSet)
-
-        # Evaluate the model
-        result_pred <- postResample(pred, testSet[[target_name]])
-        model_results <-
-          data.frame(Model = model_name,
-                     "R^2" = result_pred["Rsquared"],
-                     MAE = result_pred["MAE"])
-
-        ml_table_results(rbind(ml_table_results(), model_results))
-      }, error = function(e) {
-        # Code to handle the error here (e.g., print an error message)
-        print(paste("Error in model", model_name, ": ", conditionMessage(e)))
-      })
-    }
-  })
-
-  observeEvent(input$play_search_best_model, {
-    withProgress(message = 'Searching the best model...', value = 0, {
-      print("Search best model")
-      invalidateLater(100, session)
-      ml_table_results("")
+    temp_models_list <- list()
+    withProgress(message = 'Searching the best model...', min = 1, max = length(input$ml_checkbox_group), value = 0, {
+      best_r2 <- 0.00
+      best_model <- ""
       target_name <- input$ml_target
-      # X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
-      # Y <- df[[target_name]]
-      # Combine X and Y into a single data frame
-      # df2 <- cbind(X, Y)
-      # print("A 2")
-      # print(head(df2))
-      # Prepare the data
-      # Split data into training and testing sets
-      trainIndex <-
-        createDataPartition(df[[target_name]],
-                            p = .8,
-                            list = FALSE,
-                            times = 1)
-      trainSet <- df[trainIndex, ]
-      testSet  <- df[-trainIndex, ]
-      # Setup cross-validation method
-      ctrl <- trainControl(method = "cv", number = 10)
+      # X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]
+      X <-
+        changed_table[input$row_checkbox_group, input$column_checkbox_group]
+      Y <- df[[target_name]]
+      ml_table_results("")
+      # #
+      trainIndex <- createDataPartition(Y,
+                                        p = .8,
+                                        list = FALSE,
+                                        times = 1)
+      trainSet <- X[trainIndex,]
+      testSet  <- X[-trainIndex,]
 
-      # Linear Regression (lm)
-      # Generalized Linear Models (glm)
-      ###### Logistic Regression (glm with family = "binomial") nao pode ser usado pois espera 0 e 1
-      # Poisson Regression (glm with family = "poisson")
-      # Negative Binomial Regression (glm with family = "negative.binomial")
-      ###### Cox Proportional Hazards Model (coxph) é usado para sobrevivencia, entao considera tempo
-      ###### Generalized Estimating Equations (gee) ### tentar depois em detalhes
-      # Tobit Regression (censReg)
-      # Quantile Regression (quantreg)
-      # Decision Trees (rpart)
-      # Random Forest (rf)
-      # Gradient Boosting (gbm or xgboost)
-      # Support Vector Machines (svm)
-      # Elastic Net (glmnet)
-      # Bayesian Regression (bayeslm or brms)
-      # Neural Networks (nnet or keras)
-      # Generalized Additive Models (gam)
-      # Multivariate Adaptive Regression Splines (mars)
-      # Generalized Linear Mixed Models (lme4 or glmmTMB)
-      # Survival Analysis (survival)
-      # Bayesian Additive Regression Trees (bartMachine)
-      # Partial Least Squares Regression (pls)
-      # Lasso Regression (glmnet with alpha = 1)
-      # Ridge Regression (glmnet with alpha = 0)
-      # List of models
-      # models <- c("lm", "glm", "coxph", "gee","censReg","quantreg","rpart","rf","gbm","xgboost","svm", "glmnet", "bayeslm","brms","nnet","keras","gam","mars","lme4","glmmTMB","survival","bartMachine","pls")
-      models <-
-        c("lm", "rpart", "rf", "glmnet", "glm_poisson", "glm.nb")
-      #https://rdrr.io/cran/caret/man/models.html
-      ##adaboost
-      ##AdaBoost.M1
-      #amdai
-      #models <- c("amdai")
-      # Initialize a list to store the results
-      res_list <- list()
-      # Set a seed for reproducibility
-      set.seed(123)
-      print(head(trainSet))
-      # Loop over models
-      formula <- as.formula(paste(target_name, "~ ."))
-      counter <- 1
-      for (i in models) {
-        setProgress(message = paste('Fitting model', i, ': ', counter, 'of', length(models)))
-        counter <- counter + 1
-        if (i == "glm_poisson") {
-          fit <-
+      if (!is.data.frame(trainSet)) {
+        trainSet <- as.data.frame(trainSet)
+      }
+      if (!is.data.frame(testSet)) {
+        testSet <- as.data.frame(testSet)
+      }
+
+      # Get the list of all available models
+      all_models <- input$ml_checkbox_group
+      count_model <- 0;
+      for (model_name in all_models) {
+        count_model <- count_model + 1
+        print(model_name)
+        result <- tryCatch({
+          model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
+          model_libraries <- model_info$library
+          print("Carregando library:")
+          print(model_libraries)
+          for (lib in model_libraries) {
+            print(lib)
+            library(lib, character.only = TRUE)
+          }
+        }, error = function(e) {
+          print(paste("Failed to load", model_name))
+        })
+
+        # Train the model
+        tryCatch({
+          lmessage <- paste('Fitting model', model_name, ". ",count_model," of ",length(input$ml_checkbox_group), " (Best model: ",best_model," R^2: ",best_r2,")")
+          setProgress(message = lmessage , value = count_model)
+          formula <- as.formula(paste(target_name, "~ ."))
+          model <-
             train(
               formula,
               data = trainSet,
-              method = "glm",
-              trControl = ctrl,
-              family = "poisson"
+              method = model_name,
+              trControl = ctrl
             )
-        } else {
-          fit <- train(
-            formula,
-            data = trainSet,
-            method = i,
-            trControl = ctrl
-          )
-        }
-        # res_list[[i]] <- fit
-        pred <- predict(fit, newdata = testSet)
-        print(paste("Results for", i))
-        # RMSE tends to penalize larger errors more than MAE
-        result_pred <- postResample(pred, testSet[[target_name]])
-        print(result_pred["Rsquared"])
-        print(result_pred["MAE"])
-        print("----------------------------------------")
-        model_results <-
-          data.frame(Model = i,
-                     "R^2" = result_pred["Rsquared"],
-                     MAE = result_pred["MAE"])
+          # Make predictions
+          pred <- predict(model, newdata = testSet)
 
-        ml_table_results(rbind(ml_table_results(), model_results))
-        # Pause for a moment to allow the table to be rendered
-        Sys.sleep(0.5)
-        # print(postResample(pred, testSet[[target_name]]))
+          # Evaluate the model
+          result_pred <- postResample(pred, testSet[[target_name]])
+
+          if(result_pred["Rsquared"] > best_r2){
+            print("found a best model")
+            best_r2 <- result_pred["Rsquared"]
+            best_model <- model_name
+          }
+          model_results <-
+            data.frame(Model = model_name,
+                       "R^2" = result_pred["Rsquared"],
+                       MAE = result_pred["MAE"])
+          ml_table_results(rbind(ml_table_results(), model_results))
+          temp_models_list[[model_name]] <- model
+        }, error = function(e) {
+          # Code to handle the error here (e.g., print an error message)
+          print(paste(
+            "Error in model",
+            model_name,
+            ": ",
+            conditionMessage(e)
+          ))
+        })
       }
     })
-
+    all_models_reactive(temp_models_list)
   })
 
-  # observeEvent(input$run_code, {
-  #   # Your R code here
-  #   print("Hello, this is an example console output.")
-  #   message("This is a message from the R code.")
-  # })
+  output$ml_row_details <- renderPrint({
+    selected_row <- input$ml_table_results_rows_selected
+    if (length(selected_row) == 0) {
+      return("")
+    }
+    selected_data <- ml_table_results()[selected_row, ]
+    selected_model_name <- ml_table_results()[selected_row, ]$Model
 
-  # output$console_output <- renderPrint({
-  #   # Código que deseja executar e capturar as mensagens de log
-  #   # Por exemplo, aqui estamos apenas imprimindo uma mensagem de log
-  #   message("This is a log message.")
-  #
-  #   # Captura as mensagens de log e as retorna para serem exibidas na interface
-  #   capture.output({
-  #     res <- 2 + 2
-  #     print(res)
-  #   })
-  # })
-  #
-  # observeEvent(input$btn_run_code, {
-  #   # Este observeEvent é apenas para ilustrar o exemplo de captura de mensagens
-  #   # Pode ser usado para acionar a execução de código que gera mensagens de log
-  # })
+    # Do something with the selected model name
+    print(paste("Selected Model: ", selected_model_name))
 
+    specific_model <- all_models_reactive()[[selected_model_name]]
+
+    # Complete summary of the model
+    print("=== Summary of the Model ===")
+    print(summary(specific_model))
+
+    # Best model parameters
+    print("=== Best Tuning Parameters ===")
+    print(specific_model$bestTune)
+
+    # Resampling results (if available)
+    if (!is.null(specific_model$resample)) {
+      print("=== Resampling Results ===")
+      print(specific_model$resample)
+    }
+
+    # Variable importance (for models that support it)
+    tryCatch({
+      importance <- varImp(specific_model)
+      print("=== Variable Importance ===")
+      print(importance)
+    }, error = function(e) {
+      print("Variable importance not supported for this model.")
+    })
+
+    # Confusion Matrix and related metrics (for classification models)
+    # Assuming 'predictions' and 'actual_values' are available
+    if ("confusionMatrix" %in% rownames(specific_model$results)) {
+      predictions <- predict(specific_model, newdata = your_test_data)
+      actual_values <- your_test_data$Your_Target_Column
+      confusion <- confusionMatrix(predictions, actual_values)
+      print("=== Confusion Matrix ===")
+      print(confusion)
+      print("=== Classification Metrics ===")
+      print(confusion$overall)
+    }
+
+    # Regression metrics like RMSE, R^2 (for regression models)
+    # Assuming 'predictions' and 'actual_values' are available
+    if ("RMSE" %in% rownames(specific_model$results)) {
+      predictions <- predict(specific_model, newdata = your_test_data)
+      actual_values <- your_test_data$Your_Target_Column
+      print("=== Regression Metrics ===")
+      print(postResample(predictions, actual_values))
+    }
+
+  })
 
   observeEvent(input$play_deep_learning, {
     print("playing deep learning")
@@ -971,11 +866,6 @@ server <- function(input, output, session) {
     ))
   })
 
-  # output$correlation_threshhold <- renderText({
-  #   threshold <- input$correlation_threshhold
-  #   paste("Threshold value:", threshold)
-  # })
-
   load_ml_list()
 }
 
@@ -986,7 +876,9 @@ load_ml_list <- function() {
     if (any(!all_models[[model_name]]$library %in% installed.packages())) {
       ml_not_available <<- c(ml_not_available, model_name)
     } else {
-      ml_available <<- c(ml_available, model_name)
+      if (!(model_name %in% slow_models)) {
+        ml_available <<- c(ml_available, model_name)
+      }
     }
   }
   removeUI(selector = paste0("#", "ml_checkbox_group"))
