@@ -686,6 +686,8 @@ server <- function(input, output, session) {
           print(paste("Failed to load", model_name))
         })
 
+        ctrl <- trainControl(method = "cv", number = 10)
+
         # Train the model
         tryCatch({
           lmessage <- paste('Fitting model', model_name, ". ",count_model," of ",length(input$ml_checkbox_group), " (Best model: ",best_model," R^2: ",best_r2,")")
@@ -695,7 +697,8 @@ server <- function(input, output, session) {
             train(
               formula,
               data = trainSet,
-              method = model_name
+              method = model_name,
+              trControl = ctrl
             )
           # trControl = ctrl
           # Make predictions
