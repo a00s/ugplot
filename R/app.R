@@ -171,7 +171,9 @@ ui <- fluidPage(
                        }
                      }))
                ),
-               mainPanel(plotOutput("plot", height = "800px"))
+               mainPanel(
+                 plotOutput("plot", height = "800px")
+                 )
              )),
     tabPanel("4) 2D PLOT",
              sidebarLayout(
@@ -443,7 +445,6 @@ server <- function(input, output, session) {
     changed_table <<- as.matrix(df)
     load_checkbox_group()
   })
-
 
   ####################### TAB 4) Plot 2D
   lapply(1:nrow(plotlist2d), function(i) {
