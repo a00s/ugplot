@@ -1,4 +1,6 @@
 name;img;code
+Expression;p_15.png;colorRampPalette(c('blue', 'white', 'red'))(50)
+Methylation;p_16.png;colorRampPalette(c('blue', 'black', 'yellow'))(50)
 Viridis;p_1.png;viridis(10)
 Plasma;p_2.png;viridis(10, option = 'plasma')
 Inferno;p_3.png;viridis(10, option = 'inferno')
@@ -13,4 +15,3 @@ Greens;p_11.png;brewer.pal(10, 'Greens')
 BuPu;p_12.png;brewer.pal(10, 'BuPu')
 GnBu;p_13.png;brewer.pal(10, 'GnBu')
 OrRd;p_14.png;brewer.pal(10, 'OrRd')
-ColorRampPalette;p_15.png;colorRampPalette(colors = c('blue', 'red'))(10)

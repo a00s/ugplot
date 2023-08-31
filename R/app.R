@@ -715,8 +715,8 @@ server <- function(input, output, session) {
           }
           model_results <-
             data.frame(Model = model_name,
-                       "R^2" = result_pred["Rsquared"],
-                       MAE = result_pred["MAE"])
+                       "R2" = result_pred["Rsquared"],
+                       "MAE" = result_pred["MAE"])
           ml_table_results(rbind(ml_table_results(), model_results))
           temp_models_list[[model_name]] <- model
         }, error = function(e) {
