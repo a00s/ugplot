@@ -93,6 +93,7 @@ ui <- fluidPage(
         width = 6,
         actionButton("add_all_columns", "Add all"),
         actionButton("remove_all_columns", "Remove all"),
+        actionButton("merge_all_columns", "Merge tables"),
         textAreaInput(
           "textarea_columns",
           label = "One line per column",
@@ -104,6 +105,7 @@ ui <- fluidPage(
         width = 6,
         actionButton("add_all_rows", "Add all"),
         actionButton("remove_all_rows", "Remove all"),
+        actionButton("merge_all_rows", "Merge tables"),
         textAreaInput(
           "textarea_rows",
           label = "One line per column",
@@ -358,13 +360,30 @@ server <- function(input, output, session) {
     updateTextAreaInput(session, "textarea_rows", value = "")
   })
 
-  observeEvent(input$process_table_content, {
+  observeEvent(input$merge_all_columns, {
     column_names <- strsplit(input$textarea_columns, "\n")[[1]]
     rown_names <- strsplit(input$textarea_rows, "\n")[[1]]
-    df <<- df_pre[rown_names, column_names, drop = FALSE]
+    new_df <- as.data.frame(t(df_pre[rown_names, column_names, drop = FALSE]))
+    common_rownames <- intersect(rownames(df), rownames(new_df))
+    df[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
     changed_table <<- as.matrix(df)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
+  })
+
+  observeEvent(input$merge_all_rows, {
+    column_names <- strsplit(input$textarea_columns, "\n")[[1]]
+    rown_names <- strsplit(input$textarea_rows, "\n")[[1]]
+    new_df <- df_pre[rown_names, column_names, drop = FALSE]
+    common_rownames <- intersect(rownames(df), rownames(new_df))
+    df[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
+    changed_table <<- as.matrix(df)
+    load_checkbox_group()
+    updateTabsetPanel(session, "tabs", selected = "2) TABLE")
+  })
+
+  observeEvent(input$process_table_content, {
+    load_file_into_table(input$textarea_columns, input$textarea_rows, session)
   })
 
   observeEvent(input$separator, {
@@ -908,6 +927,15 @@ load_ml_list <- function() {
   )
 }
 
+load_file_into_table <- function(textarea_columns, textarea_rows, localsession) {
+  column_names <- strsplit(textarea_columns, "\n")[[1]]
+  rown_names <- strsplit(textarea_rows, "\n")[[1]]
+  df <<- df_pre[rown_names, column_names, drop = FALSE]
+  changed_table <<- as.matrix(df)
+  load_checkbox_group()
+  updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
+}
+
 load_checkbox_group <- function() {
   removeUI(selector = paste0("#", "column_checkbox_group"))
   removeUI(selector = paste0("#", "row_checkbox_group"))
@@ -932,6 +960,8 @@ load_checkbox_group <- function() {
       selected = rownames(df)
     )
   )
+
+
 }
 
 shinyApp(ui, server)
