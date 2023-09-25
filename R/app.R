@@ -16,6 +16,9 @@ library(tidyr)
 library(keras)
 library(caret)
 
+#Pending bugs
+# Warning: Error in randomForest.default: Can not handle categorical predictors with more than 53 categories.
+
 #https://ugplot.shinyapps.io/ugPlot/
 
 rsconnect::setAccountInfo(name = 'ugplot',
@@ -120,19 +123,26 @@ ui <- fluidPage(
       div(style = "width: 100%; overflow-x: auto;",
           DTOutput("contents")),
       column(
-        width = 6,
+        width = 4,
         actionButton("uncheck_all_columns", "Uncheck all"),
         actionButton("check_all_columns", "Check all"),
         div(class = "scrollable-table",
             div(id = "dynamic_columns"))
       ),
       column(
-        width = 6,
+        width = 4,
         actionButton("uncheck_all_rows", "Uncheck all"),
         actionButton("check_all_rows", "Check all"),
         div(class = "scrollable-table",
             div(id = "dynamic_rows"))
       ),
+      column(
+        width = 4,
+        div(class = "scrollable-table",
+        style="background-color: #FFFFD8;",
+        label = "Categories",
+        div(id = "dynamic_columns_categories"))
+      )
     ),
 
     tabPanel("3) HEATMAP PLOT",
@@ -247,8 +257,8 @@ ui <- fluidPage(
               "play_random_forest_regression",
               "PLAY - RANDOM FOREST REGRESSION"
             ),
-            actionButton("play_elastic_net_regression",
-                         "PLAY - ELASTIC NET REGRESSION"),
+            # actionButton("play_elastic_net_regression",
+            #              "PLAY - ELASTIC NET REGRESSION"),
             actionButton("play_deep_learning",
                          "PLAY - DEEP LEARNING"),
             verbatimTextOutput("console_output"),
@@ -337,6 +347,9 @@ server <- function(input, output, session) {
                       "ml_target",
                       choices = names(df),
                       selected = current_target_selection)
+    print("Vendo se changed table ja tem algo")
+    print(head(changed_table))
+    print("Vendo se changed table ja tem algo B")
     return(changed_table[input$row_checkbox_group, input$column_checkbox_group])
   })
 
@@ -366,6 +379,7 @@ server <- function(input, output, session) {
     new_df <- as.data.frame(t(df_pre[rown_names, column_names, drop = FALSE]))
     common_rownames <- intersect(rownames(df), rownames(new_df))
     df[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
+    print(" ----------- > aqui 1")
     changed_table <<- as.matrix(df)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
@@ -377,6 +391,7 @@ server <- function(input, output, session) {
     new_df <- df_pre[rown_names, column_names, drop = FALSE]
     common_rownames <- intersect(rownames(df), rownames(new_df))
     df[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
+    print(" ----------- > aqui 2")
     changed_table <<- as.matrix(df)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
@@ -554,9 +569,16 @@ server <- function(input, output, session) {
   observeEvent(input$play_random_forest_regression, {
     ml_table_results("")
     target_name <- input$ml_target
-    X <-
-      changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
+    X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
     Y <- df[[target_name]]  # 'age' column
+
+    cols_to_convert <- input$checkbox_group_categories
+    X <- as.data.frame(X)
+    if(length(cols_to_convert) > 0){
+      for(this_target in cols_to_convert){
+        X[[this_target]] <- as.factor(X[[this_target]])
+      }
+    }
 
     # Run randomForest
     rf_model <-
@@ -590,56 +612,65 @@ server <- function(input, output, session) {
     ml_data_table(importance_ordered)
   })
 
-  observeEvent(input$play_elastic_net_regression, {
-    ml_table_results("")
-    target_name <- input$ml_target
-    X <-
-      changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
-    Y <- df[[target_name]]
-
-    # Y <- df$age
-
-    # Elastic net uses a combination of L1 and L2 regularization.
-    # alpha=0 is equivalent to Ridge, and alpha=1 is equivalent to Lasso.
-    # We'll use 0.5 as a compromise, but this should be tuned using cross-validation.
-    alpha <- 0.5
-
-    # Now let's fit the model. Note that glmnet uses its own 'cv.glmnet' function for cross-validation
-    set.seed(123)  # for reproducibility
-    cv_fit <- cv.glmnet(X, Y, alpha = alpha)
-
-    # The best lambda (regularization parameter) found by cross-validation
-    best_lambda <- cv_fit$lambda.min
-    print(paste("Best lambda: ", best_lambda))
-
-    # Now we can predict using the best model
-    Y_pred <- predict(cv_fit, newx = X, s = best_lambda)
-
-    # And calculate R-squared
-    rsq <- 1 - sum((Y - Y_pred) ^ 2) / sum((Y - mean(Y)) ^ 2)
-    print(paste("R-squared: ", rsq))
-    ml_table_results(rbind(ml_table_results(), data.frame(Title = "R^2", Result = rsq)))
-
-    ################## the most important variables
-    # Get the coefficients at the best lambda
-    coefs <- coef(cv_fit, s = best_lambda)
-
-    # Convert the coefficients to a regular matrix
-    coefs_mat <- as.matrix(coefs)
-
-    # Create a data frame from the matrix
-    coefs_df <-
-      data.frame(Coefficient = as.vector(coefs_mat),
-                 Variable = rownames(coefs_mat))
-
-    # Sort the coefficients in decreasing order of absolute value
-    coefs_df <-
-      coefs_df[order(abs(coefs_df$Coefficient), decreasing = TRUE), ]
-
-    # Print the sorted coefficients along with variable names
-    print(coefs_df)
-    ml_data_table(coefs_df)
-  })
+  # observeEvent(input$play_elastic_net_regression, {
+  #   ml_table_results("")
+  #   target_name <- input$ml_target
+  #   X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
+  #   Y <- df[[target_name]]
+  #
+  #   cols_to_convert <- input$checkbox_group_categories
+  #   # X <- as.data.frame(X)
+  #   if(length(cols_to_convert) > 0){
+  #     for(this_target in cols_to_convert){
+  #       X[[this_target]] <- as.factor(X[[this_target]])
+  #     }
+  #   }
+  #   # X <- model.matrix(~ . - 1, data = X)
+  #
+  #
+  #   # Y <- df$age
+  #
+  #   # Elastic net uses a combination of L1 and L2 regularization.
+  #   # alpha=0 is equivalent to Ridge, and alpha=1 is equivalent to Lasso.
+  #   # We'll use 0.5 as a compromise, but this should be tuned using cross-validation.
+  #   alpha <- 0.5
+  #
+  #   # Now let's fit the model. Note that glmnet uses its own 'cv.glmnet' function for cross-validation
+  #   set.seed(123)  # for reproducibility
+  #   cv_fit <- cv.glmnet(X, Y, alpha = alpha)
+  #
+  #   # The best lambda (regularization parameter) found by cross-validation
+  #   best_lambda <- cv_fit$lambda.min
+  #   print(paste("Best lambda: ", best_lambda))
+  #
+  #   # Now we can predict using the best model
+  #   Y_pred <- predict(cv_fit, newx = X, s = best_lambda)
+  #
+  #   # And calculate R-squared
+  #   rsq <- 1 - sum((Y - Y_pred) ^ 2) / sum((Y - mean(Y)) ^ 2)
+  #   print(paste("R-squared: ", rsq))
+  #   ml_table_results(rbind(ml_table_results(), data.frame(Title = "R^2", Result = rsq)))
+  #
+  #   ################## the most important variables
+  #   # Get the coefficients at the best lambda
+  #   coefs <- coef(cv_fit, s = best_lambda)
+  #
+  #   # Convert the coefficients to a regular matrix
+  #   coefs_mat <- as.matrix(coefs)
+  #
+  #   # Create a data frame from the matrix
+  #   coefs_df <-
+  #     data.frame(Coefficient = as.vector(coefs_mat),
+  #                Variable = rownames(coefs_mat))
+  #
+  #   # Sort the coefficients in decreasing order of absolute value
+  #   coefs_df <-
+  #     coefs_df[order(abs(coefs_df$Coefficient), decreasing = TRUE), ]
+  #
+  #   # Print the sorted coefficients along with variable names
+  #   print(coefs_df)
+  #   ml_data_table(coefs_df)
+  # })
 
   observeEvent(input$install_missing_modules, {
     all_models <- getModelInfo()
@@ -668,9 +699,22 @@ server <- function(input, output, session) {
       best_model <- ""
       target_name <- input$ml_target
       # X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]
-      X <-
-        changed_table[input$row_checkbox_group, input$column_checkbox_group]
+      X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
       Y <- df[[target_name]]
+      print(class(X))
+      print(head(X))
+      #return()
+
+      cols_to_convert <- input$checkbox_group_categories
+      # X <- as.data.frame(X)
+      if(length(cols_to_convert) > 0){
+        for(this_target in cols_to_convert){
+          X[[this_target]] <- as.factor(X[[this_target]])
+        }
+      }
+
+      # X <- model.matrix(~ . - 1, data = X)
+
       ml_table_results("")
       # #
       trainIndex <- createDataPartition(Y,
@@ -680,12 +724,23 @@ server <- function(input, output, session) {
       trainSet <- X[trainIndex,]
       testSet  <- X[-trainIndex,]
 
+      #cols_to_convert <- input$checkbox_group_categories
+      # print("Colunas a converter A")
+      #print(cols_to_convert)
+      # print("Colunas a converter B")
+      #trainSet[cols_to_convert] <- lapply(trainSet[cols_to_convert], as.factor)
+      #testSet[cols_to_convert] <- lapply(testSet[cols_to_convert], as.factor)
+
+
       if (!is.data.frame(trainSet)) {
         trainSet <- as.data.frame(trainSet)
       }
       if (!is.data.frame(testSet)) {
         testSet <- as.data.frame(testSet)
       }
+      print(trainSet)
+      print("-------------------")
+      print(testSet)
 
       # Get the list of all available models
       all_models <- input$ml_checkbox_group
@@ -931,7 +986,8 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   column_names <- strsplit(textarea_columns, "\n")[[1]]
   rown_names <- strsplit(textarea_rows, "\n")[[1]]
   df <<- df_pre[rown_names, column_names, drop = FALSE]
-  changed_table <<- as.matrix(df)
+  # changed_table <<- as.matrix(df)
+  changed_table <<- df
   load_checkbox_group()
   updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
 }
@@ -939,6 +995,7 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
 load_checkbox_group <- function() {
   removeUI(selector = paste0("#", "column_checkbox_group"))
   removeUI(selector = paste0("#", "row_checkbox_group"))
+  removeUI(selector = paste0("#", "checkbox_group_categories"))
   insertUI(
     selector = "#dynamic_columns",
     where = "afterEnd",
@@ -958,6 +1015,16 @@ load_checkbox_group <- function() {
       label = "Rows:",
       choices = rownames(df),
       selected = rownames(df)
+    )
+  )
+
+   insertUI(
+    selector = "#dynamic_columns_categories",
+    where = "afterEnd",
+    ui = checkboxGroupInput(
+      inputId = "checkbox_group_categories",
+      label = "Categories:",
+      choices = names(df)
     )
   )
 
