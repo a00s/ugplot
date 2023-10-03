@@ -6,7 +6,7 @@ library(DT)
 library(gplots)
 library(viridis)
 library(RColorBrewer)
-library(rsconnect)
+# library(rsconnect)
 library(dendextend)
 library(pheatmap)
 library(randomForest)
@@ -21,9 +21,9 @@ library(caret)
 
 #https://ugplot.shinyapps.io/ugPlot/
 
-rsconnect::setAccountInfo(name = 'ugplot',
-                          token = 'A384F61E20E58D384A86C5FFB84346BF',
-                          secret = '63yYHHCavMf444iAW/rz/I31PMeUD1RPE6/zdARG')
+# rsconnect::setAccountInfo(name = 'ugplot',
+#                           token = 'A384F61E20E58D384A86C5FFB84346BF',
+#                           secret = '63yYHHCavMf444iAW/rz/I31PMeUD1RPE6/zdARG')
 options(shiny.maxRequestSize = 800 * 1024 * 1024)
 
 plotlist2d <- read.csv("2dplotlist.csv", sep = ";", header = TRUE)
@@ -414,8 +414,16 @@ server <- function(input, output, session) {
         comandtorun <- plotlist$code[i]
         print("looking for how data is used")
         print(input$plot_xy)
-        numeric_table <<-
-          apply(changed_table[input$row_checkbox_group, input$column_checkbox_group], c(1, 2), as.numeric)
+
+        cols_to_convert <- input$checkbox_group_categories
+        if(length(cols_to_convert) > 0){
+          for(this_target in cols_to_convert){
+            changed_table[[this_target]] <- as.factor(changed_table[[this_target]])
+          }
+        }
+
+        # numeric_table <<- apply(changed_table[input$row_checkbox_group, input$column_checkbox_group], c(1, 2), as.numeric)
+        numeric_table <<- changed_table[input$row_checkbox_group, input$column_checkbox_group]
 
         if (input$plot_xy == "LINES x COLUMNS") {
 
@@ -429,10 +437,14 @@ server <- function(input, output, session) {
           comandpalette <- paste("defaultpalette(", plotlist$palette[i], ")")
           eval(parse(text = comandpalette))
         }
+        plot_annotation <- data.frame(Condition=factor(rep(c('Control', 'Treatment'), each=5)))
         comandtorun <-
-          gsub("\\{\\{palette\\}\\}",
-               "defaultpalette()",
+          gsub("\\{\\{annotation\\}\\}",
+               "plot_annotation",
                comandtorun)
+
+        # data.frame(Condition=factor(rep(c('Control', 'Treatment'), each=5)))
+
         print(comandtorun)
         eval(parse(text = comandtorun))
       })
