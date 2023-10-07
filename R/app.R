@@ -6,7 +6,7 @@ library(DT)
 library(gplots)
 library(viridis)
 library(RColorBrewer)
-library(rsconnect)
+# library(rsconnect)
 library(dendextend)
 library(pheatmap)
 library(randomForest)
@@ -21,9 +21,9 @@ library(caret)
 
 #https://ugplot.shinyapps.io/ugPlot/
 
-rsconnect::setAccountInfo(name = 'ugplot',
-                          token = 'A384F61E20E58D384A86C5FFB84346BF',
-                          secret = '63yYHHCavMf444iAW/rz/I31PMeUD1RPE6/zdARG')
+# rsconnect::setAccountInfo(name = 'ugplot',
+#                           token = 'A384F61E20E58D384A86C5FFB84346BF',
+#                           secret = '63yYHHCavMf444iAW/rz/I31PMeUD1RPE6/zdARG')
 options(shiny.maxRequestSize = 800 * 1024 * 1024)
 
 plotlist2d <- read.csv("2dplotlist.csv", sep = ";", header = TRUE)
@@ -302,6 +302,7 @@ server <- function(input, output, session) {
   changed_table <<- ""
   numeric_table <<- ""
   changed_palette <<- 0
+  annotation_row <<- ""
   defaultpalette <<-
     reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
   transpose_table2 <<- reactiveVal(0)
@@ -347,9 +348,6 @@ server <- function(input, output, session) {
                       "ml_target",
                       choices = names(df),
                       selected = current_target_selection)
-    print("Vendo se changed table ja tem algo")
-    print(head(changed_table))
-    print("Vendo se changed table ja tem algo B")
     return(changed_table[input$row_checkbox_group, input$column_checkbox_group])
   })
 
@@ -379,7 +377,6 @@ server <- function(input, output, session) {
     new_df <- as.data.frame(t(df_pre[rown_names, column_names, drop = FALSE]))
     common_rownames <- intersect(rownames(df), rownames(new_df))
     df[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
-    print(" ----------- > aqui 1")
     changed_table <<- as.matrix(df)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
@@ -391,7 +388,6 @@ server <- function(input, output, session) {
     new_df <- df_pre[rown_names, column_names, drop = FALSE]
     common_rownames <- intersect(rownames(df), rownames(new_df))
     df[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
-    print(" ----------- > aqui 2")
     changed_table <<- as.matrix(df)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
@@ -412,10 +408,25 @@ server <- function(input, output, session) {
     observeEvent(input[[bname]], {
       output$plot <- renderPlot({
         comandtorun <- plotlist$code[i]
-        print("looking for how data is used")
-        print(input$plot_xy)
-        numeric_table <<-
-          apply(changed_table[input$row_checkbox_group, input$column_checkbox_group], c(1, 2), as.numeric)
+        annotation_table <<- data.frame()
+        cols_to_convert <- input$checkbox_group_categories
+        countdataframe <- 0
+        if(length(cols_to_convert) > 0){
+          for(this_target in cols_to_convert){
+            changed_table[[this_target]] <- as.factor(changed_table[[this_target]])
+            if(countdataframe == 0){
+              annotation_row <- setNames(data.frame(changed_table[[this_target]]), this_target)
+              rownames(annotation_row) <- rownames(changed_table)
+            } else {
+              annotation_row[[this_target]] <- changed_table[[this_target]]
+            }
+            countdataframe <- 1
+          }
+        }
+
+        numeric_table <<- changed_table[input$row_checkbox_group, input$column_checkbox_group]
+        numeric_table <<- numeric_table[, !(names(numeric_table) %in% input$checkbox_group_categories)]
+        numeric_table <<- apply(numeric_table, c(1, 2), as.numeric)
 
         if (input$plot_xy == "LINES x COLUMNS") {
 
@@ -433,7 +444,13 @@ server <- function(input, output, session) {
           gsub("\\{\\{palette\\}\\}",
                "defaultpalette()",
                comandtorun)
-        print(comandtorun)
+        comandtorun <-
+          gsub("\\{\\{annotation\\}\\}",
+               "annotation_row",
+               comandtorun)
+
+        annotation_colors_auto <- generate_annotation_colors(annotation_row)
+        comandtorun <- gsub("\\{\\{annotation_color\\}\\}", "annotation_colors_auto", comandtorun)
         eval(parse(text = comandtorun))
       })
     })
@@ -476,7 +493,8 @@ server <- function(input, output, session) {
       transpose_table2(0)
     }
     df <<- data.frame(t(as.matrix(df)))
-    changed_table <<- as.matrix(df)
+    # changed_table <<- as.matrix(df)
+    changed_table <<- df
     load_checkbox_group()
   })
 
@@ -701,8 +719,6 @@ server <- function(input, output, session) {
       # X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]
       X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
       Y <- df[[target_name]]
-      print(class(X))
-      print(head(X))
       #return()
 
       cols_to_convert <- input$checkbox_group_categories
@@ -991,6 +1007,23 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   load_checkbox_group()
   updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
 }
+
+generate_annotation_colors <- function(annotation_df) {
+  color_list <- list()
+
+  # Loop through each column in the annotation dataframe
+  for (colname in names(annotation_df)) {
+    unique_vals <- unique(annotation_df[[colname]])
+
+    # Generate colors for the unique values
+    colors <- rainbow(length(unique_vals))
+
+    color_list[[colname]] <- setNames(colors, unique_vals)
+  }
+
+  return(color_list)
+}
+
 
 load_checkbox_group <- function() {
   removeUI(selector = paste0("#", "column_checkbox_group"))
