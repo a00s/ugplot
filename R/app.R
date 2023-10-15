@@ -388,7 +388,8 @@ server <- function(input, output, session) {
     new_df <- df_pre[rown_names, column_names, drop = FALSE]
     common_rownames <- intersect(rownames(df), rownames(new_df))
     df[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
-    changed_table <<- as.matrix(df)
+    # changed_table <<- as.matrix(df)
+    changed_table <<- as.data.frame(df)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
   })
@@ -407,14 +408,17 @@ server <- function(input, output, session) {
     bname <- paste0("buttonplot", i)
     observeEvent(input[[bname]], {
       output$plot <- renderPlot({
-        comandtorun <- plotlist$code[i]
+        numeric_table <<- ""
+         comandtorun <- plotlist$code[i]
         annotation_table <<- data.frame()
-        cols_to_convert <- input$checkbox_group_categories
+        # cols_to_convert <- input$checkbox_group_categories
+        # categories_to_remove <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
+        cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
         countdataframe <- 0
-        if(length(cols_to_convert) > 0){
-          for(this_target in cols_to_convert){
-            changed_table[[this_target]] <- as.factor(changed_table[[this_target]])
-            if(countdataframe == 0){
+         if(length(cols_to_convert) > 0){
+           for(this_target in cols_to_convert){
+             changed_table[[this_target]] <- as.factor(changed_table[[this_target]])
+             if(countdataframe == 0){
               annotation_row <- setNames(data.frame(changed_table[[this_target]]), this_target)
               rownames(annotation_row) <- rownames(changed_table)
             } else {
@@ -423,17 +427,14 @@ server <- function(input, output, session) {
             countdataframe <- 1
           }
         }
-
-        numeric_table <<- changed_table[input$row_checkbox_group, input$column_checkbox_group]
-        numeric_table <<- numeric_table[, !(names(numeric_table) %in% input$checkbox_group_categories)]
+        numeric_table <<- data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
+        numeric_table <<- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
         numeric_table <<- apply(numeric_table, c(1, 2), as.numeric)
-
         if (input$plot_xy == "LINES x COLUMNS") {
 
         } else if (input$plot_xy == "COLUMNS x COLUMNS") {
           numeric_table <<- cor(numeric_table)
         }
-
         comandtorun <-
           gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
         if (plotlist$palette[i] != "" && changed_palette == 0) {
