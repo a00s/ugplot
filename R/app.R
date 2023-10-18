@@ -435,6 +435,8 @@ server <- function(input, output, session) {
         } else if (input$plot_xy == "COLUMNS x COLUMNS") {
           numeric_table <<- cor(numeric_table)
         }
+
+
         comandtorun <-
           gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
         if (plotlist$palette[i] != "" && changed_palette == 0) {
@@ -505,8 +507,12 @@ server <- function(input, output, session) {
     observeEvent(input[[bname]], {
       output$plots <- renderUI({
         comandtorun <- plotlist2d$code[i]
-        X <-
-          changed_table[input$row_checkbox_group, input$column_checkbox_group]  # all columns except 'age'
+        cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
+        numeric_table <<- data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
+        numeric_table <<- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
+        numeric_table <<- apply(numeric_table, c(1, 2), as.numeric)
+        X <- numeric_table
+        # X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
         cor_matrix <- cor(X)
         num_cols <- ncol(X)
         plots_list <- list()
@@ -588,8 +594,8 @@ server <- function(input, output, session) {
   observeEvent(input$play_random_forest_regression, {
     ml_table_results("")
     target_name <- input$ml_target
-    X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
-    Y <- df[[target_name]]  # 'age' column
+    X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]
+    Y <- df[[target_name]]
 
     cols_to_convert <- input$checkbox_group_categories
     X <- as.data.frame(X)
@@ -631,66 +637,6 @@ server <- function(input, output, session) {
     ml_data_table(importance_ordered)
   })
 
-  # observeEvent(input$play_elastic_net_regression, {
-  #   ml_table_results("")
-  #   target_name <- input$ml_target
-  #   X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
-  #   Y <- df[[target_name]]
-  #
-  #   cols_to_convert <- input$checkbox_group_categories
-  #   # X <- as.data.frame(X)
-  #   if(length(cols_to_convert) > 0){
-  #     for(this_target in cols_to_convert){
-  #       X[[this_target]] <- as.factor(X[[this_target]])
-  #     }
-  #   }
-  #   # X <- model.matrix(~ . - 1, data = X)
-  #
-  #
-  #   # Y <- df$age
-  #
-  #   # Elastic net uses a combination of L1 and L2 regularization.
-  #   # alpha=0 is equivalent to Ridge, and alpha=1 is equivalent to Lasso.
-  #   # We'll use 0.5 as a compromise, but this should be tuned using cross-validation.
-  #   alpha <- 0.5
-  #
-  #   # Now let's fit the model. Note that glmnet uses its own 'cv.glmnet' function for cross-validation
-  #   set.seed(123)  # for reproducibility
-  #   cv_fit <- cv.glmnet(X, Y, alpha = alpha)
-  #
-  #   # The best lambda (regularization parameter) found by cross-validation
-  #   best_lambda <- cv_fit$lambda.min
-  #   print(paste("Best lambda: ", best_lambda))
-  #
-  #   # Now we can predict using the best model
-  #   Y_pred <- predict(cv_fit, newx = X, s = best_lambda)
-  #
-  #   # And calculate R-squared
-  #   rsq <- 1 - sum((Y - Y_pred) ^ 2) / sum((Y - mean(Y)) ^ 2)
-  #   print(paste("R-squared: ", rsq))
-  #   ml_table_results(rbind(ml_table_results(), data.frame(Title = "R^2", Result = rsq)))
-  #
-  #   ################## the most important variables
-  #   # Get the coefficients at the best lambda
-  #   coefs <- coef(cv_fit, s = best_lambda)
-  #
-  #   # Convert the coefficients to a regular matrix
-  #   coefs_mat <- as.matrix(coefs)
-  #
-  #   # Create a data frame from the matrix
-  #   coefs_df <-
-  #     data.frame(Coefficient = as.vector(coefs_mat),
-  #                Variable = rownames(coefs_mat))
-  #
-  #   # Sort the coefficients in decreasing order of absolute value
-  #   coefs_df <-
-  #     coefs_df[order(abs(coefs_df$Coefficient), decreasing = TRUE), ]
-  #
-  #   # Print the sorted coefficients along with variable names
-  #   print(coefs_df)
-  #   ml_data_table(coefs_df)
-  # })
-
   observeEvent(input$install_missing_modules, {
     all_models <- getModelInfo()
     models_to_install <- input$ml_missing_checkbox_group
@@ -717,23 +663,22 @@ server <- function(input, output, session) {
       best_r2 <- 0.00
       best_model <- ""
       target_name <- input$ml_target
-      # X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]
       X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
       Y <- df[[target_name]]
-      #return()
-
       cols_to_convert <- input$checkbox_group_categories
-      # X <- as.data.frame(X)
       if(length(cols_to_convert) > 0){
         for(this_target in cols_to_convert){
           X[[this_target]] <- as.factor(X[[this_target]])
+          if(this_target == target_name){
+            Y <- as.factor(df[[target_name]])
+            if(length(levels(Y)) == 2) {
+              Y <- as.numeric(Y) - 1
+              X[[this_target]] <- as.numeric(X[[this_target]]) - 1
+            }
+          }
         }
       }
-
-      # X <- model.matrix(~ . - 1, data = X)
-
       ml_table_results("")
-      # #
       trainIndex <- createDataPartition(Y,
                                         p = .8,
                                         list = FALSE,
@@ -741,37 +686,24 @@ server <- function(input, output, session) {
       trainSet <- X[trainIndex,]
       testSet  <- X[-trainIndex,]
 
-      #cols_to_convert <- input$checkbox_group_categories
-      # print("Colunas a converter A")
-      #print(cols_to_convert)
-      # print("Colunas a converter B")
-      #trainSet[cols_to_convert] <- lapply(trainSet[cols_to_convert], as.factor)
-      #testSet[cols_to_convert] <- lapply(testSet[cols_to_convert], as.factor)
-
-
       if (!is.data.frame(trainSet)) {
         trainSet <- as.data.frame(trainSet)
       }
       if (!is.data.frame(testSet)) {
         testSet <- as.data.frame(testSet)
       }
-      print(trainSet)
-      print("-------------------")
-      print(testSet)
 
       # Get the list of all available models
       all_models <- input$ml_checkbox_group
       count_model <- 0;
       for (model_name in all_models) {
         count_model <- count_model + 1
-        print(model_name)
         result <- tryCatch({
           model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
           model_libraries <- model_info$library
           print("Carregando library:")
           print(model_libraries)
           for (lib in model_libraries) {
-            print(lib)
             library(lib, character.only = TRUE)
           }
         }, error = function(e) {
@@ -785,6 +717,8 @@ server <- function(input, output, session) {
           lmessage <- paste('Fitting model', model_name, ". ",count_model," of ",length(input$ml_checkbox_group), " (Best model: ",best_model," R^2: ",best_r2,")")
           setProgress(message = lmessage , value = count_model)
           formula <- as.formula(paste(target_name, "~ ."))
+          print("Formula")
+          print(formula)
           model <-
             train(
               formula,
@@ -792,7 +726,7 @@ server <- function(input, output, session) {
               method = model_name,
               trControl = ctrl
             )
-          # trControl = ctrl
+
           # Make predictions
           pred <- predict(model, newdata = testSet)
 
