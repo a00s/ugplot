@@ -4,7 +4,7 @@ library(ggplot2)
 library(heatmap3)
 library(DT)
 library(gplots)
-# library(viridis)
+library(viridis)
 library(RColorBrewer)
 # library(rsconnect)
 library(dendextend)
@@ -26,9 +26,17 @@ library(caret)
 #                           secret = '63yYHHCavMf444iAW/rz/I31PMeUD1RPE6/zdARG')
 options(shiny.maxRequestSize = 800 * 1024 * 1024)
 
-plotlist2d <- read.csv("2dplotlist.csv", sep = ";", header = TRUE)
-plotlist <- read.csv("plotlist.csv", sep = ";", header = TRUE)
-palettelist <- read.csv("palette.csv", sep = ";", header = TRUE)
+lines <- readLines("2dplotlist.csv")
+lines <- lines[!startsWith(trimws(lines), "#")]
+plotlist2d <- read.csv(text = lines, sep = ";", header = TRUE)
+
+lines <- readLines("plotlist.csv")
+lines <- lines[!startsWith(trimws(lines), "#")]
+plotlist <- read.csv(text = lines, sep = ";", header = TRUE)
+
+lines <- readLines("palette.csv")
+lines <- lines[!startsWith(trimws(lines), "#")]
+palettelist <- read.csv(text = lines, sep = ";", header = TRUE)
 
 slow_models <-
   c(
@@ -257,8 +265,6 @@ ui <- fluidPage(
               "play_random_forest_regression",
               "PLAY - RANDOM FOREST REGRESSION"
             ),
-            # actionButton("play_elastic_net_regression",
-            #              "PLAY - ELASTIC NET REGRESSION"),
             actionButton("play_deep_learning",
                          "PLAY - DEEP LEARNING"),
             verbatimTextOutput("console_output"),
