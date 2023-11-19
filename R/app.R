@@ -6,7 +6,6 @@ library(DT)
 library(gplots)
 library(viridis)
 library(RColorBrewer)
-# library(rsconnect)
 library(dendextend)
 library(pheatmap)
 library(randomForest)
@@ -16,28 +15,33 @@ library(tidyr)
 library(keras)
 library(caret)
 
+# ----------------- lines to build the package
+# library(devtools)
+# devtools::build()
+# devtools::install()
+# devtools::check()
+# library(ugplot)
+
 #Pending bugs
 # Warning: Error in randomForest.default: Can not handle categorical predictors with more than 53 categories.
 
-
 options(shiny.maxRequestSize = 800 * 1024 * 1024)
 
-lines <- readLines("2dplotlist.csv")
+
+path_to_2dplotlist <- function() system.file("extdata", "2dplotlist.csv", package = "ugplot")
+lines <- readLines(path_to_2dplotlist())
 lines <- lines[!startsWith(trimws(lines), "#")]
 plotlist2d <- read.csv(text = lines, sep = ";", header = TRUE)
 
-lines <- readLines("plotlist.csv")
+path_to_plotlist <- function() system.file("extdata", "plotlist.csv", package = "ugplot")
+lines <- readLines(path_to_plotlist())
 lines <- lines[!startsWith(trimws(lines), "#")]
 plotlist <- read.csv(text = lines, sep = ";", header = TRUE)
 
-lines <- readLines("palette.csv")
+path_to_palette <- function() system.file("extdata", "palette.csv", package = "ugplot")
+lines <- readLines(path_to_palette())
 lines <- lines[!startsWith(trimws(lines), "#")]
 palettelist <- read.csv(text = lines, sep = ";", header = TRUE)
-
-
-# plotlist2d <- read.csv("2dplotlist.csv", sep = ";", header = TRUE)
-# plotlist <- read.csv("plotlist.csv", sep = ";", header = TRUE)
-# palettelist <- read.csv("palette.csv", sep = ";", header = TRUE)
 
 slow_models <-
   c(
@@ -60,8 +64,9 @@ df_pre <- ""
 df <- ""
 ml_available <- ""
 ml_not_available <- NULL
+
 ui <- fluidPage(
-  includeCSS("www/styles.css"),
+  includeCSS(system.file("extdata", "styles.css", package = "ugplot")),
   titlePanel(tags$img(src = "ugplot.png", height = "50px"), "ugPlot"),
   tabsetPanel(
     id = "tabs",
@@ -232,21 +237,6 @@ ui <- fluidPage(
                      )
                    })
                  ),
-                 # div(class = "rowpalettelist",
-                 #     lapply(1:nrow(palettelist), function(i) {
-                 #       bname <- paste0("buttonpalette2d", i)
-                 #       imgname <- paste0("img/", palettelist$img[i])
-                 #       if (imgname != "img/NA") {
-                 #         fluidRow(
-                 #           tags$img(
-                 #             src = imgname,
-                 #             width = 130,
-                 #             height = 20
-                 #           ),
-                 #           actionButton(bname, palettelist$name[i])
-                 #         )
-                 #       }
-                 #     }))
                ),
                mainPanel(uiOutput("plots"))
              )),
@@ -395,7 +385,6 @@ server <- function(input, output, session) {
     new_df <- df_pre[rown_names, column_names, drop = FALSE]
     common_rownames <- intersect(rownames(df), rownames(new_df))
     df[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
-    # changed_table <<- as.matrix(df)
     changed_table <<- as.data.frame(df)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
@@ -418,8 +407,6 @@ server <- function(input, output, session) {
         numeric_table <<- ""
          comandtorun <- plotlist$code[i]
         annotation_table <<- data.frame()
-        # cols_to_convert <- input$checkbox_group_categories
-        # categories_to_remove <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
         cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
         countdataframe <- 0
          if(length(cols_to_convert) > 0){
@@ -503,7 +490,6 @@ server <- function(input, output, session) {
       transpose_table2(0)
     }
     df <<- data.frame(t(as.matrix(df)))
-    # changed_table <<- as.matrix(df)
     changed_table <<- df
     load_checkbox_group()
   })
@@ -519,7 +505,6 @@ server <- function(input, output, session) {
         numeric_table <<- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
         numeric_table <<- apply(numeric_table, c(1, 2), as.numeric)
         X <- numeric_table
-        # X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
         cor_matrix <- cor(X)
         num_cols <- ncol(X)
         plots_list <- list()
@@ -604,14 +589,6 @@ server <- function(input, output, session) {
     X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]
     Y <- df[[target_name]]
 
-    # cols_to_convert <- input$checkbox_group_categories
-    # X <- as.data.frame(X)
-    # if(length(cols_to_convert) > 0){
-    #   for(this_target in cols_to_convert){
-    #     X[[this_target]] <- as.factor(X[[this_target]])
-    #   }
-    # }
-
     cols_to_convert <- input$checkbox_group_categories
     if(length(cols_to_convert) > 0){
       for(this_target in cols_to_convert){
@@ -643,7 +620,6 @@ server <- function(input, output, session) {
 
     # Calculate R-squared
     rsq <- 1 - rf_model$mse[500] / var(Y)
-    # result <- data.frame(Title = "R^2", Result = rsq)
     ml_table_results(rbind(ml_table_results(), data.frame(Title = "R^2", Result = rsq)))
 
     ################# variance #################
@@ -828,22 +804,7 @@ server <- function(input, output, session) {
 
     # Do something with the selected model name
     print(paste("Selected Model: ", selected_model_name))
-
     specific_model <- all_models_reactive()[[selected_model_name]]
-
-    # # Complete summary of the model
-    # print("=== Summary of the Model ===")
-    # print(summary(specific_model))
-    #
-    # # Best model parameters
-    # print("=== Best Tuning Parameters ===")
-    # print(specific_model$bestTune)
-    #
-    # # Resampling results (if available)
-    # if (!is.null(specific_model$resample)) {
-    #   print("=== Resampling Results ===")
-    #   print(specific_model$resample)
-    # }
 
     # Variable importance (for models that support it)
     tryCatch({
@@ -853,28 +814,6 @@ server <- function(input, output, session) {
     }, error = function(e) {
       print("Variable importance not supported for this model.")
     })
-
-    # Confusion Matrix and related metrics (for classification models)
-    # # Assuming 'predictions' and 'actual_values' are available
-    # if ("confusionMatrix" %in% rownames(specific_model$results)) {
-    #   predictions <- predict(specific_model, newdata = your_test_data)
-    #   actual_values <- your_test_data$Your_Target_Column
-    #   confusion <- confusionMatrix(predictions, actual_values)
-    #   print("=== Confusion Matrix ===")
-    #   print(confusion)
-    #   print("=== Classification Metrics ===")
-    #   print(confusion$overall)
-    # }
-    #
-    # # Regression metrics like RMSE, R^2 (for regression models)
-    # # Assuming 'predictions' and 'actual_values' are available
-    # if ("RMSE" %in% rownames(specific_model$results)) {
-    #   predictions <- predict(specific_model, newdata = your_test_data)
-    #   actual_values <- your_test_data$Your_Target_Column
-    #   print("=== Regression Metrics ===")
-    #   print(postResample(predictions, actual_values))
-    # }
-
   })
 
   observeEvent(input$play_deep_learning, {
@@ -943,9 +882,6 @@ server <- function(input, output, session) {
       }
     }
 
-    # Print the best model's summary
-    # summary(best_model)
-
     # Print the best model's R-squared
     print(paste("R^2)  ", best_r_squared))
     ml_table_results("")
@@ -997,7 +933,6 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   column_names <- strsplit(textarea_columns, "\n")[[1]]
   rown_names <- strsplit(textarea_rows, "\n")[[1]]
   df <<- df_pre[rown_names, column_names, drop = FALSE]
-  # changed_table <<- as.matrix(df)
   changed_table <<- df
   load_checkbox_group()
   updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
@@ -1055,8 +990,10 @@ load_checkbox_group <- function() {
       choices = names(df)
     )
   )
+}
 
-
+ugPlot <- function() {
+  shinyApp(ui = ui, server = server)
 }
 
 shinyApp(ui, server)

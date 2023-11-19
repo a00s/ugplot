@@ -1,11 +1,28 @@
 Package: ugplot
 Type: Package
-Title: What the Package Does (Title Case)
+Title: Find the best ML model for your data and generate plots for papers
 Version: 0.1.0
-Author: Who wrote it
-Maintainer: The package maintainer <yourself@somewhere.net>
-Description: More about what it does (maybe more than one line)
-    Use four spaces when indenting paragraphs within the Description.
-License: What license is it under?
+Author: Thiago Benazzi Maia, Francesco Reggiani
+Maintainer: Thiago Benazzi Maia <a00s@a00s.com>
+Description: With ugPlot you can load genetic data, generate plots for papers
+      test hundreds of machine learning models to find which one fits to your data
+License: MIT
 Encoding: UTF-8
 LazyData: true
+Imports:
+    shiny,
+    shinyWidgets,
+    ggplot2,
+    heatmap3,
+    DT,
+    gplots,
+    viridis,
+    RColorBrewer,
+    dendextend,
+    pheatmap,
+    randomForest,
+    glmnet,
+    plotly,
+    tidyr,
+    keras,
+    caret
