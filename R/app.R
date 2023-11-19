@@ -34,6 +34,11 @@ lines <- readLines("palette.csv")
 lines <- lines[!startsWith(trimws(lines), "#")]
 palettelist <- read.csv(text = lines, sep = ";", header = TRUE)
 
+
+# plotlist2d <- read.csv("2dplotlist.csv", sep = ";", header = TRUE)
+# plotlist <- read.csv("plotlist.csv", sep = ";", header = TRUE)
+# palettelist <- read.csv("palette.csv", sep = ";", header = TRUE)
+
 slow_models <-
   c(
     'bam',
@@ -599,11 +604,33 @@ server <- function(input, output, session) {
     X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]
     Y <- df[[target_name]]
 
+    # cols_to_convert <- input$checkbox_group_categories
+    # X <- as.data.frame(X)
+    # if(length(cols_to_convert) > 0){
+    #   for(this_target in cols_to_convert){
+    #     X[[this_target]] <- as.factor(X[[this_target]])
+    #   }
+    # }
+
     cols_to_convert <- input$checkbox_group_categories
-    X <- as.data.frame(X)
     if(length(cols_to_convert) > 0){
       for(this_target in cols_to_convert){
-        X[[this_target]] <- as.factor(X[[this_target]])
+        if(!is.null(X[[this_target]])){
+          X[[this_target]] <- as.factor(X[[this_target]])
+          if(length(levels(X[[this_target]])) == 1) {
+            X[[this_target]] <- as.numeric(rep(1, nrow(X)))
+          }
+          if(this_target == target_name){
+            Y <- as.factor(df[[target_name]])
+            freq_table <- table(Y)
+            single_item_levels <- names(freq_table[freq_table <= 2])
+            toKeep <- !(Y %in% single_item_levels)
+            Y <- Y[toKeep]
+            X <- X[toKeep, ]
+            Y <- droplevels(Y)
+            X[[this_target]] <- droplevels(X[[this_target]])
+          }
+        }
       }
     }
 
@@ -662,7 +689,7 @@ server <- function(input, output, session) {
     print("Searching caret best model")
     temp_models_list <- list()
     withProgress(message = 'Searching the best model...', min = 1, max = length(input$ml_checkbox_group), value = 0, {
-      best_r2 <- 0.00
+      best_result <- 0.00
       best_model <- ""
       target_name <- input$ml_target
       X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
@@ -670,12 +697,20 @@ server <- function(input, output, session) {
       cols_to_convert <- input$checkbox_group_categories
       if(length(cols_to_convert) > 0){
         for(this_target in cols_to_convert){
-          X[[this_target]] <- as.factor(X[[this_target]])
-          if(this_target == target_name){
-            Y <- as.factor(df[[target_name]])
-            if(length(levels(Y)) == 2) {
-              Y <- as.numeric(Y) - 1
-              X[[this_target]] <- as.numeric(X[[this_target]]) - 1
+          if(!is.null(X[[this_target]])){
+            X[[this_target]] <- as.factor(X[[this_target]])
+            if(length(levels(X[[this_target]])) == 1) {
+              X[[this_target]] <- as.numeric(rep(1, nrow(X)))
+            }
+            if(this_target == target_name){
+              Y <- as.factor(df[[target_name]])
+              freq_table <- table(Y)
+              single_item_levels <- names(freq_table[freq_table <= 2])
+              toKeep <- !(Y %in% single_item_levels)
+              Y <- Y[toKeep]
+              X <- X[toKeep, ]
+              Y <- droplevels(Y)
+              X[[this_target]] <- droplevels(X[[this_target]])
             }
           }
         }
@@ -687,7 +722,6 @@ server <- function(input, output, session) {
                                         times = 1)
       trainSet <- X[trainIndex,]
       testSet  <- X[-trainIndex,]
-
       if (!is.data.frame(trainSet)) {
         trainSet <- as.data.frame(trainSet)
       }
@@ -703,7 +737,6 @@ server <- function(input, output, session) {
         result <- tryCatch({
           model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
           model_libraries <- model_info$library
-          print("Carregando library:")
           print(model_libraries)
           for (lib in model_libraries) {
             library(lib, character.only = TRUE)
@@ -716,11 +749,22 @@ server <- function(input, output, session) {
 
         # Train the model
         tryCatch({
-          lmessage <- paste('Fitting model', model_name, ". ",count_model," of ",length(input$ml_checkbox_group), " (Best model: ",best_model," R^2: ",best_r2,")")
+          lmessage <- paste('Fitting model', model_name, ". ",count_model," of ",length(input$ml_checkbox_group), " (Best model: ",best_model," Result: ",best_result,")")
+
+          # Check for missing values in the trainSet and print them
+          if (any(is.na(trainSet))) {
+            print("Missing values in trainSet:")
+            print(trainSet[!complete.cases(trainSet), ])
+          }
+
+          # Check for missing values in the testSet and print them
+          if (any(is.na(testSet))) {
+            print("Missing values in testSet:")
+            print(testSet[!complete.cases(testSet), ])
+          }
+
           setProgress(message = lmessage , value = count_model)
           formula <- as.formula(paste(target_name, "~ ."))
-          print("Formula")
-          print(formula)
           model <-
             train(
               formula,
@@ -728,24 +772,38 @@ server <- function(input, output, session) {
               method = model_name,
               trControl = ctrl
             )
-
           # Make predictions
           pred <- predict(model, newdata = testSet)
 
-          # Evaluate the model
-          result_pred <- postResample(pred, testSet[[target_name]])
+          if (is.factor(testSet[[target_name]])) {
+            accuracy <- sum(pred == testSet[[target_name]]) / length(pred)
+            if(accuracy > best_result){
+              print("found a best model")
+              best_result <- accuracy
+              best_model <- model_name
+            }
+            model_results <-
+              data.frame(Model = model_name,
+                         "Accuracy" = accuracy)
+            ml_table_results(rbind(ml_table_results(), model_results))
+            temp_models_list[[model_name]] <- mode
+          } else {
+            # Evaluate the model
+            print("Parte4")
+            result_pred <- postResample(pred, testSet[[target_name]])
 
-          if(result_pred["Rsquared"] > best_r2){
-            print("found a best model")
-            best_r2 <- result_pred["Rsquared"]
-            best_model <- model_name
+            if(result_pred["Rsquared"] > best_result){
+              print("found a best model")
+              best_result <- result_pred["Rsquared"]
+              best_model <- model_name
+            }
+            model_results <-
+              data.frame(Model = model_name,
+                         "R2" = result_pred["Rsquared"],
+                         "MAE" = result_pred["MAE"])
+            ml_table_results(rbind(ml_table_results(), model_results))
+            temp_models_list[[model_name]] <- mode
           }
-          model_results <-
-            data.frame(Model = model_name,
-                       "R2" = result_pred["Rsquared"],
-                       "MAE" = result_pred["MAE"])
-          ml_table_results(rbind(ml_table_results(), model_results))
-          temp_models_list[[model_name]] <- model
         }, error = function(e) {
           # Code to handle the error here (e.g., print an error message)
           print(paste(
