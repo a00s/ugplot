@@ -19,11 +19,7 @@ library(caret)
 #Pending bugs
 # Warning: Error in randomForest.default: Can not handle categorical predictors with more than 53 categories.
 
-#https://ugplot.shinyapps.io/ugPlot/
 
-# rsconnect::setAccountInfo(name = 'ugplot',
-#                           token = 'A384F61E20E58D384A86C5FFB84346BF',
-#                           secret = '63yYHHCavMf444iAW/rz/I31PMeUD1RPE6/zdARG')
 options(shiny.maxRequestSize = 800 * 1024 * 1024)
 
 lines <- readLines("2dplotlist.csv")
