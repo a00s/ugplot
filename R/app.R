@@ -2,18 +2,19 @@ library(shiny)
 library(shinyWidgets)
 library(ggplot2)
 library(heatmap3)
-library(DT)
+library(DT) # Conflit when using play
 library(gplots)
 library(viridis)
 library(RColorBrewer)
 library(dendextend)
 library(pheatmap)
-library(randomForest)
+# library(randomForest)
 library(glmnet)
 library(plotly)
 library(tidyr)
 library(keras)
 library(caret)
+library(base64enc)
 
 # ----------------- lines to build the package
 # library(devtools)
@@ -60,14 +61,19 @@ slow_models_text <-
   paste("Slow models automaticaly removed:",
         paste(slow_models, collapse = ", "))
 
-df_pre <- ""
-df <- ""
-ml_available <- ""
-ml_not_available <- NULL
+df_pre <<- ""
+dff <<- ""
+ml_available <<- ""
+# ml_not_available <- NULL
+
+getImage <- function(fileName) {
+  dataURI(file = system.file("extdata", fileName, package = "ugplot"), mime = "image/png")
+}
 
 ui <- fluidPage(
   includeCSS(system.file("extdata", "styles.css", package = "ugplot")),
-  titlePanel(tags$img(src = "ugplot.png", height = "50px"), "ugPlot"),
+  titlePanel(
+  tags$img(src = getImage("ugplot.png"), height = "50px")),
   tabsetPanel(
     id = "tabs",
     tabPanel(
@@ -135,7 +141,7 @@ ui <- fluidPage(
       "2) TABLE",
       actionButton("transpose_table", "Transpose table"),
       div(style = "width: 100%; overflow-x: auto;",
-          DTOutput("contents")),
+          DT::DTOutput("contents")),
       column(
         width = 4,
         actionButton("uncheck_all_columns", "Uncheck all"),
@@ -174,7 +180,7 @@ ui <- fluidPage(
                        imgname <- paste0("img/", plotlist$img[i])
                        fluidRow(
                          tags$img(
-                           src = imgname,
+                           src = getImage(imgname),
                            width = 130,
                            height = 130
                          ),
@@ -188,7 +194,7 @@ ui <- fluidPage(
                        if (imgname != "img/NA") {
                          fluidRow(
                            tags$img(
-                             src = imgname,
+                             src = getImage(imgname),
                              width = 130,
                              height = 20
                            ),
@@ -229,7 +235,7 @@ ui <- fluidPage(
                      print(bname)
                      fluidRow(
                        tags$img(
-                         src = imgname,
+                         src = getImage(imgname),
                          width = 130,
                          height = 130
                        ),
@@ -280,11 +286,10 @@ ui <- fluidPage(
               div(class = "scrollable-table",
                   div(id = "dynamic_machine_learning_missing"))
             ),
-            div(style = "width: 100%; overflow-x: auto;",
-                DTOutput("ml_table_results")),
+            # div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table_results")),
+            div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table_results_output")),
             verbatimTextOutput("ml_row_details"),
-            div(style = "width: 100%; overflow-x: auto;",
-                DTOutput("ml_table"))
+            div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table"))
           )
         )
       )
@@ -292,23 +297,48 @@ ui <- fluidPage(
   )
 )
 
+# myModuleServer <- function(id, tab_separator) {
+#   moduleServer(id, function(input, output, session) {
+#     # Module logic here
+#   })
+# }
+
+
 server <- function(input, output, session) {
+  # myModuleServer("myModuleID")
+  ml_not_available <- NULL
   ml_data_table <- reactiveVal()
-  ml_table_results <- reactiveVal()
+  ml_table_results <<- reactiveVal()
   ml_plot_importance <- reactiveVal()
-  changed_table <<- ""
-  numeric_table <<- ""
-  changed_palette <<- 0
-  annotation_row <<- ""
-  defaultpalette <<-
-    reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
-  transpose_table2 <<- reactiveVal(0)
-  refresh_counter <<- reactiveVal(0)
-  tab_separator <<- reactiveVal(",")
-  file_click_count <<- reactiveVal(0)
-  last_file_click_count <<- 0
   num_rows <- reactiveVal(0)
   num_cols <- reactiveVal(0)
+
+  # changed_table <<- ""
+  # numeric_table <<- ""
+  # changed_palette <<- 0
+  # annotation_row <<- ""
+  # defaultpalette <<- reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
+  # transpose_table2 <<- reactiveVal(0)
+  # refresh_counter <<- reactiveVal(0)
+  # tab_separator <<- reactiveVal(",")
+  # file_click_count <<- reactiveVal(0)
+  # last_file_click_count <<- 0
+
+  changed_table <<- ""
+  numeric_table <<- ""
+  changed_palette <- 0
+  annotation_row <- ""
+
+  defaultpalette <- reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
+  transpose_table2 <- reactiveVal(0)
+  refresh_counter <- reactiveVal(0)
+
+  tab_separator <- reactiveVal(",")
+  file_click_count <- reactiveVal(0)
+  last_file_click_count <- 0
+
+  # myModuleServer("myModuleID", tab_separator)
+
 
   ####################### TAB 1) LOAD DATA
   observeEvent(input$file1, {
@@ -335,7 +365,7 @@ server <- function(input, output, session) {
                         value = paste(rownames(df_pre), collapse = "\n"))
   })
 
-  output$contents <- renderDT({
+  output$contents <- DT::renderDT({
     if (last_file_click_count == 0 |
         (last_file_click_count != file_click_count())) {
       print("This part to deal when a second file got read")
@@ -343,7 +373,7 @@ server <- function(input, output, session) {
     current_target_selection <- input$ml_target
     updateSelectInput(session,
                       "ml_target",
-                      choices = names(df),
+                      choices = names(dff),
                       selected = current_target_selection)
     return(changed_table[input$row_checkbox_group, input$column_checkbox_group])
   })
@@ -372,9 +402,9 @@ server <- function(input, output, session) {
     column_names <- strsplit(input$textarea_columns, "\n")[[1]]
     rown_names <- strsplit(input$textarea_rows, "\n")[[1]]
     new_df <- as.data.frame(t(df_pre[rown_names, column_names, drop = FALSE]))
-    common_rownames <- intersect(rownames(df), rownames(new_df))
-    df[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
-    changed_table <<- as.matrix(df)
+    common_rownames <- intersect(rownames(dff), rownames(new_df))
+    dff[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
+    changed_table <<- as.matrix(dff)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
   })
@@ -383,9 +413,9 @@ server <- function(input, output, session) {
     column_names <- strsplit(input$textarea_columns, "\n")[[1]]
     rown_names <- strsplit(input$textarea_rows, "\n")[[1]]
     new_df <- df_pre[rown_names, column_names, drop = FALSE]
-    common_rownames <- intersect(rownames(df), rownames(new_df))
-    df[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
-    changed_table <<- as.data.frame(df)
+    common_rownames <- intersect(rownames(dff), rownames(new_df))
+    dff[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
+    changed_table <<- as.data.frame(dff)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
   })
@@ -471,7 +501,7 @@ server <- function(input, output, session) {
   observeEvent(input$check_all_columns, {
     updateCheckboxGroupInput(session,
                              inputId = "column_checkbox_group",
-                             selected = names(df))
+                             selected = names(dff))
   })
   observeEvent(input$uncheck_all_rows, {
     updateCheckboxGroupInput(session,
@@ -481,7 +511,7 @@ server <- function(input, output, session) {
   observeEvent(input$check_all_rows, {
     updateCheckboxGroupInput(session,
                              inputId = "row_checkbox_group",
-                             selected = rownames(df))
+                             selected = rownames(dff))
   })
   observeEvent(input$transpose_table, {
     if (transpose_table2() == 0) {
@@ -489,8 +519,8 @@ server <- function(input, output, session) {
     } else {
       transpose_table2(0)
     }
-    df <<- data.frame(t(as.matrix(df)))
-    changed_table <<- df
+    dff <<- data.frame(t(as.matrix(dff)))
+    changed_table <<- dff
     load_checkbox_group()
   })
 
@@ -547,7 +577,7 @@ server <- function(input, output, session) {
 
   ####### 4) Machine learning
   all_models_reactive <- reactiveVal(list())
-  output$ml_table_results = renderDT({
+  output$ml_table_results_output = DT::renderDT({
     datatable(
       ml_table_results(),
       selection = "single",
@@ -582,12 +612,12 @@ server <- function(input, output, session) {
                              selected = ml_not_available)
   })
 
-  output$ml_table = renderDT(ml_data_table(), options = list(lengthChange = FALSE))
+  output$ml_table = DT::renderDT(ml_data_table(), options = list(lengthChange = FALSE))
   observeEvent(input$play_random_forest_regression, {
     ml_table_results("")
     target_name <- input$ml_target
     X <- changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]
-    Y <- df[[target_name]]
+    Y <- dff[[target_name]]
 
     cols_to_convert <- input$checkbox_group_categories
     if(length(cols_to_convert) > 0){
@@ -598,7 +628,7 @@ server <- function(input, output, session) {
             X[[this_target]] <- as.numeric(rep(1, nrow(X)))
           }
           if(this_target == target_name){
-            Y <- as.factor(df[[target_name]])
+            Y <- as.factor(dff[[target_name]])
             freq_table <- table(Y)
             single_item_levels <- names(freq_table[freq_table <= 2])
             toKeep <- !(Y %in% single_item_levels)
@@ -669,7 +699,7 @@ server <- function(input, output, session) {
       best_model <- ""
       target_name <- input$ml_target
       X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
-      Y <- df[[target_name]]
+      Y <- dff[[target_name]]
       cols_to_convert <- input$checkbox_group_categories
       if(length(cols_to_convert) > 0){
         for(this_target in cols_to_convert){
@@ -679,7 +709,7 @@ server <- function(input, output, session) {
               X[[this_target]] <- as.numeric(rep(1, nrow(X)))
             }
             if(this_target == target_name){
-              Y <- as.factor(df[[target_name]])
+              Y <- as.factor(dff[[target_name]])
               freq_table <- table(Y)
               single_item_levels <- names(freq_table[freq_table <= 2])
               toKeep <- !(Y %in% single_item_levels)
@@ -821,7 +851,7 @@ server <- function(input, output, session) {
     target_name <- input$ml_target
     X <-
       changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
-    y <- df[[target_name]]
+    y <- dff[[target_name]]
 
 
     # Example data
@@ -897,6 +927,7 @@ server <- function(input, output, session) {
 load_ml_list <- function() {
   all_models <- getModelInfo()
   ml_available <<- list()
+  ml_not_available <<- NULL
   for (model_name in names(all_models)) {
     if (any(!all_models[[model_name]]$library %in% installed.packages())) {
       ml_not_available <<- c(ml_not_available, model_name)
@@ -932,8 +963,8 @@ load_ml_list <- function() {
 load_file_into_table <- function(textarea_columns, textarea_rows, localsession) {
   column_names <- strsplit(textarea_columns, "\n")[[1]]
   rown_names <- strsplit(textarea_rows, "\n")[[1]]
-  df <<- df_pre[rown_names, column_names, drop = FALSE]
-  changed_table <<- df
+  dff <<- df_pre[rown_names, column_names, drop = FALSE]
+  changed_table <<- dff
   load_checkbox_group()
   updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
 }
@@ -965,8 +996,8 @@ load_checkbox_group <- function() {
     ui = checkboxGroupInput(
       inputId = "column_checkbox_group",
       label = "Columns:",
-      choices = names(df),
-      selected = names(df)
+      choices = names(dff),
+      selected = names(dff)
     )
   )
 
@@ -976,8 +1007,8 @@ load_checkbox_group <- function() {
     ui = checkboxGroupInput(
       inputId = "row_checkbox_group",
       label = "Rows:",
-      choices = rownames(df),
-      selected = rownames(df)
+      choices = rownames(dff),
+      selected = rownames(dff)
     )
   )
 
@@ -987,13 +1018,30 @@ load_checkbox_group <- function() {
     ui = checkboxGroupInput(
       inputId = "checkbox_group_categories",
       label = "Categories:",
-      choices = names(df)
+      choices = names(dff)
     )
   )
 }
 
-ugPlot <- function() {
-  shinyApp(ui = ui, server = server)
+#' Open a window with the application
+#'
+#' @param dataset A data.frame to be automatically loaded. Leave empty to add later
+#' @param ml = TRUE for only machine learning without interface. Leave empty for full interface
+#'
+#' @return NULL when no error
+#' @export
+#'
+#' @examples ugPlot(dataset = mtcars, ml = TRUE)
+#'
+
+
+ugPlot <- function(dataset = data.frame(), ml = FALSE) {
+  print("testando dataset 1")
+  print(dataset)
+  print("testando dataset 2")
+  if(ml == FALSE){
+    shinyApp(ui = ui, server = server)
+  }
 }
 
 shinyApp(ui, server)
