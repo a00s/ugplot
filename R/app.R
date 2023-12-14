@@ -15,7 +15,8 @@ library(tidyr)
 library(keras)
 library(caret)
 library(base64enc)
-
+library(shinyjs)
+# library(bslib)
 # ----------------- lines to build the package
 # library(devtools)
 # devtools::build()
@@ -63,8 +64,6 @@ slow_models_text <-
 
 df_pre <<- ""
 dff <<- ""
-# ml_available <- ""
-# ml_not_available <- NULL
 
 getImage <- function(fileName) {
   dataURI(file = system.file("extdata", fileName, package = "ugplot"), mime = "image/png")
@@ -72,17 +71,26 @@ getImage <- function(fileName) {
 
 ui <- fluidPage(
   includeCSS(system.file("extdata", "styles.css", package = "ugplot")),
+  useShinyjs(),
+  # theme = bs_theme(bootswatch = "simplex"),
+  # quartz
+  # sandstone
+  # simplex
   titlePanel(
   tags$img(src = getImage("ugplot.png"), height = "50px")),
+
+  tags$style(".small-input { width: 100px; }") ,
+
   tabsetPanel(
     id = "tabs",
     tabPanel(
       "1) LOAD DATA",
       tags$div(
         style = "display: inline-block; vertical-align: top;",
+        class = "small-input",
         numericInput(
           "startfromline",
-          "Start from line:",
+          "Start at line",
           value = 1,
           min = 1,
           step = 1
@@ -90,9 +98,10 @@ ui <- fluidPage(
       ),
       tags$div(
         style = "display: inline-block; vertical-align: top;",
+        class = "small-input",
         selectInput(
           inputId = "separator",
-          label = "CSV separator:",
+          label = "Separator",
           choices = c("space" = " ", "tab" = "\t", ";", ",", "|"),
           selected = ","
         )
@@ -110,32 +119,41 @@ ui <- fluidPage(
       ),
       tags$div(
         style = "display: inline-block; vertical-align: top;",
-        actionButton("process_table_content", "GO TO STEP 2 (TABLE)")
-      ),
-      column(
-        width = 6,
-        actionButton("add_all_columns", "Add all"),
-        actionButton("remove_all_columns", "Remove all"),
-        actionButton("merge_all_columns", "Merge tables"),
-        textAreaInput(
-          "textarea_columns",
-          label = "One line per column",
-          rows = 20,
-          cols = 50
+        tags$div(
+          tags$span(style = "font-size: 17px; color: white;",".")
+        ),
+        tags$div(
+          actionButton("process_table_content", "GO TO STEP 2 (TABLE)")
         )
       ),
-      column(
-        width = 6,
-        actionButton("add_all_rows", "Add all"),
-        actionButton("remove_all_rows", "Remove all"),
-        actionButton("merge_all_rows", "Merge tables"),
-        textAreaInput(
-          "textarea_rows",
-          label = "One line per column",
-          rows = 20,
-          cols = 50
+      conditionalPanel(
+        condition = "input.textarea_columns != '' || input.textarea_rows != ''",
+        tags$div(
+          style = "display: inline-block; text-align: center; vertical-align: top;",
+          textAreaInput(
+            "textarea_columns",
+            label = "",
+            rows = 20,
+            cols = 50
+          ),
+          actionButton("add_all_columns", "Add all"),
+          actionButton("remove_all_columns", "Remove all"),
+          actionButton("merge_all_columns", "Join columns")
+        ),
+
+        tags$div(
+          style = "display: inline-block; text-align: center; vertical-align: top;",
+          textAreaInput(
+            "textarea_rows",
+            label = "",
+            rows = 20,
+            cols = 50
+          ),
+          actionButton("add_all_rows", "Add all"),
+          actionButton("remove_all_rows", "Remove all"),
+          actionButton("merge_all_rows", "Join columns")
         )
-      ),
+      )
     ),
     tabPanel(
       "2) TABLE",
@@ -338,6 +356,8 @@ server <- function(input, output, session) {
   file_click_count <- reactiveVal(0)
   last_file_click_count <- 0
 
+  disable("merge_all_columns")
+  disable("merge_all_rows")
   # myModuleServer("myModuleID", tab_separator)
 
 
@@ -968,6 +988,8 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   changed_table <<- dff
   load_checkbox_group()
   updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
+  enable("merge_all_columns")
+  enable("merge_all_rows")
 }
 
 generate_annotation_colors <- function(annotation_df) {
