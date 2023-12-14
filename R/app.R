@@ -2,7 +2,7 @@ library(shiny)
 library(shinyWidgets)
 library(ggplot2)
 library(heatmap3)
-library(DT) # Conflit when using play
+library(DT)
 library(gplots)
 library(viridis)
 library(RColorBrewer)
@@ -63,7 +63,7 @@ slow_models_text <-
 
 df_pre <<- ""
 dff <<- ""
-ml_available <<- ""
+# ml_available <- ""
 # ml_not_available <- NULL
 
 getImage <- function(fileName) {
@@ -306,9 +306,10 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   # myModuleServer("myModuleID")
+  ml_available <- ""
   ml_not_available <- NULL
   ml_data_table <- reactiveVal()
-  ml_table_results <<- reactiveVal()
+  ml_table_results <- reactiveVal()
   ml_plot_importance <- reactiveVal()
   num_rows <- reactiveVal(0)
   num_cols <- reactiveVal(0)
@@ -325,7 +326,7 @@ server <- function(input, output, session) {
   # last_file_click_count <<- 0
 
   changed_table <<- ""
-  numeric_table <<- ""
+  numeric_table <- ""
   changed_palette <- 0
   annotation_row <- ""
 
@@ -434,9 +435,9 @@ server <- function(input, output, session) {
     bname <- paste0("buttonplot", i)
     observeEvent(input[[bname]], {
       output$plot <- renderPlot({
-        numeric_table <<- ""
+        numeric_table <- ""
          comandtorun <- plotlist$code[i]
-        annotation_table <<- data.frame()
+        # annotation_table <<- data.frame()
         cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
         countdataframe <- 0
          if(length(cols_to_convert) > 0){
@@ -451,13 +452,13 @@ server <- function(input, output, session) {
             countdataframe <- 1
           }
         }
-        numeric_table <<- data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
-        numeric_table <<- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
-        numeric_table <<- apply(numeric_table, c(1, 2), as.numeric)
+        numeric_table <- data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
+        numeric_table <- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
+        numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
         if (input$plot_xy == "LINES x COLUMNS") {
 
         } else if (input$plot_xy == "COLUMNS x COLUMNS") {
-          numeric_table <<- cor(numeric_table)
+          numeric_table <- cor(numeric_table)
         }
 
 
@@ -531,9 +532,9 @@ server <- function(input, output, session) {
       output$plots <- renderUI({
         comandtorun <- plotlist2d$code[i]
         cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
-        numeric_table <<- data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
-        numeric_table <<- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
-        numeric_table <<- apply(numeric_table, c(1, 2), as.numeric)
+        numeric_table <- data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
+        numeric_table <- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
+        numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
         X <- numeric_table
         cor_matrix <- cor(X)
         num_cols <- ncol(X)
@@ -926,14 +927,14 @@ server <- function(input, output, session) {
 
 load_ml_list <- function() {
   all_models <- getModelInfo()
-  ml_available <<- list()
-  ml_not_available <<- NULL
+  ml_available <- list()
+  ml_not_available <- NULL
   for (model_name in names(all_models)) {
     if (any(!all_models[[model_name]]$library %in% installed.packages())) {
-      ml_not_available <<- c(ml_not_available, model_name)
+      ml_not_available <- c(ml_not_available, model_name)
     } else {
       if (!(model_name %in% slow_models)) {
-        ml_available <<- c(ml_available, model_name)
+        ml_available <- c(ml_available, model_name)
       }
     }
   }
