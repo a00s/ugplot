@@ -1,6 +1,7 @@
 export("ugPlot")
 import("shiny", except=c(dataTableOutput, renderDataTable))
 import("shinyWidgets")
+import("shinyjs", except=c(alert, runExample))
 import("ggplot2")
 import("heatmap3")
 import("DT")

@@ -71,11 +71,15 @@ getImage <- function(fileName) {
 
 ui <- fluidPage(
   includeCSS(system.file("extdata", "styles.css", package = "ugplot")),
+  # tags$head(
+  #   tags$style(HTML("
+  #           #merge_all_columns {
+  #               pointer-events: none;
+  #               opacity: 0.6;
+  #           }
+  #       "))
+  # ),
   useShinyjs(),
-  # theme = bs_theme(bootswatch = "simplex"),
-  # quartz
-  # sandstone
-  # simplex
   titlePanel(
   tags$img(src = getImage("ugplot.png"), height = "50px")),
 
@@ -88,6 +92,7 @@ ui <- fluidPage(
       tags$div(
         style = "display: inline-block; vertical-align: top;",
         class = "small-input",
+
         numericInput(
           "startfromline",
           "Start at line",
@@ -184,86 +189,86 @@ ui <- fluidPage(
     ),
 
     tabPanel("3) HEATMAP PLOT",
-             sidebarLayout(
-               sidebarPanel(
-                 class = "sidebar-panel-custom",
-                 selectInput(
-                   inputId = "plot_xy",
-                   label = "Data to use:",
-                   choices = c("LINES x COLUMNS", "COLUMNS x COLUMNS")
+     sidebarLayout(
+       sidebarPanel(
+         class = "sidebar-panel-custom",
+         selectInput(
+           inputId = "plot_xy",
+           label = "Data to use:",
+           choices = c("LINES x COLUMNS", "COLUMNS x COLUMNS")
+         ),
+         div(class = "rowplotlist",
+             lapply(1:nrow(plotlist), function(i) {
+               bname <- paste0("buttonplot", i)
+               imgname <- paste0("img/", plotlist$img[i])
+               fluidRow(
+                 tags$img(
+                   src = getImage(imgname),
+                   width = 130,
+                   height = 130
                  ),
-                 div(class = "rowplotlist",
-                     lapply(1:nrow(plotlist), function(i) {
-                       bname <- paste0("buttonplot", i)
-                       imgname <- paste0("img/", plotlist$img[i])
-                       fluidRow(
-                         tags$img(
-                           src = getImage(imgname),
-                           width = 130,
-                           height = 130
-                         ),
-                         actionButton(bname, plotlist$name[i])
-                       )
-                     })),
-                 div(class = "rowpalettelist",
-                     lapply(1:nrow(palettelist), function(i) {
-                       bname <- paste0("buttonpalette", i)
-                       imgname <- paste0("img/", palettelist$img[i])
-                       if (imgname != "img/NA") {
-                         fluidRow(
-                           tags$img(
-                             src = getImage(imgname),
-                             width = 130,
-                             height = 20
-                           ),
-                           actionButton(bname, palettelist$name[i])
-                         )
-                       }
-                     }))
-               ),
-               mainPanel(
-                 plotOutput("plot", height = "800px")
+                 actionButton(bname, plotlist$name[i])
+               )
+             })),
+         div(class = "rowpalettelist",
+             lapply(1:nrow(palettelist), function(i) {
+               bname <- paste0("buttonpalette", i)
+               imgname <- paste0("img/", palettelist$img[i])
+               if (imgname != "img/NA") {
+                 fluidRow(
+                   tags$img(
+                     src = getImage(imgname),
+                     width = 130,
+                     height = 20
+                   ),
+                   actionButton(bname, palettelist$name[i])
                  )
-             )),
+               }
+             }))
+       ),
+       mainPanel(
+         plotOutput("plot", height = "800px")
+         )
+     )),
     tabPanel("4) 2D PLOT",
-             sidebarLayout(
-               sidebarPanel(
-                 class = "sidebar-panel-custom",
-                 div(
-                   class = "rowplotlist",
-                   sliderInput(
-                     inputId = "correlation_threshhold",
-                     label = "Correlation >= x",
-                     min = 0,
-                     max = 1,
-                     value = 0.7,
-                     step = 0.01
-                   ),
-                   sliderInput(
-                     inputId = "correlation_threshhold_negative",
-                     label = "Negative correlation <= x",
-                     min = -1,
-                     max = 0,
-                     value = -0.7,
-                     step = 0.01
-                   ),
-                   lapply(1:nrow(plotlist2d), function(i) {
-                     bname <- paste0("buttonplot2d", i)
-                     imgname <- paste0("img/", plotlist2d$img[i])
-                     print(bname)
-                     fluidRow(
-                       tags$img(
-                         src = getImage(imgname),
-                         width = 130,
-                         height = 130
-                       ),
-                       actionButton(bname, plotlist2d$name[i])
-                     )
-                   })
-                 ),
+     sidebarLayout(
+       sidebarPanel(
+         class = "sidebar-panel-custom",
+         div(
+           class = "rowplotlist",
+           sliderInput(
+             inputId = "correlation_threshhold",
+             label = "Correlation >= x",
+             min = 0,
+             max = 1,
+             value = 0.7,
+             step = 0.01
+           ),
+           sliderInput(
+             inputId = "correlation_threshhold_negative",
+             label = "Negative correlation <= x",
+             min = -1,
+             max = 0,
+             value = -0.7,
+             step = 0.01
+           ),
+           lapply(1:nrow(plotlist2d), function(i) {
+             bname <- paste0("buttonplot2d", i)
+             imgname <- paste0("img/", plotlist2d$img[i])
+             print(bname)
+             fluidRow(
+               tags$img(
+                 src = getImage(imgname),
+                 width = 130,
+                 height = 130
                ),
-               mainPanel(uiOutput("plots"))
-             )),
+               actionButton(bname, plotlist2d$name[i])
+             )
+           })
+         ),
+       ),
+       mainPanel(uiOutput("plots"))
+     )),
     tabPanel(
       "5) MACHINE LEARNING",
       tags$div(
@@ -324,6 +329,14 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   # myModuleServer("myModuleID")
+
+  hideTab(inputId = "tabs", target = "2) TABLE")
+  hideTab(inputId = "tabs", target = "3) HEATMAP PLOT")
+  hideTab(inputId = "tabs", target = "4) 2D PLOT")
+  hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
+  disable("merge_all_columns")
+  disable("merge_all_rows")
+
   ml_available <- ""
   ml_not_available <- NULL
   ml_data_table <- reactiveVal()
@@ -356,8 +369,17 @@ server <- function(input, output, session) {
   file_click_count <- reactiveVal(0)
   last_file_click_count <- 0
 
-  disable("merge_all_columns")
-  disable("merge_all_rows")
+  # disable("merge_all_columns")
+  # disable("merge_all_rows")
+
+  # disable("tab2")
+  # shinyjs::disable(selector = '.tabs a[data-value="tab2"')
+  # shinyjs::disable(selector = '.tabs')
+  # showTab("inputId", target, select = FALSE, session = getDefaultReactiveDomain())
+  # hideTab("tabs", "tab2", session = getDefaultReactiveDomain())
+  # hideTab(inputId = "tabs", target = "tab2")
+  # runjs('$("#tab a[data-value=\'2) TABLE\']").addClass("disabled");')
+  # $('#tab a[data-value=\"2) TABLE\"]').addClass('disabled')
   # myModuleServer("myModuleID", tab_separator)
 
 
@@ -384,6 +406,8 @@ server <- function(input, output, session) {
     updateTextAreaInput(session,
                         "textarea_rows",
                         value = paste(rownames(df_pre), collapse = "\n"))
+    # disable("merge_all_columns")
+    # disable("merge_all_rows")
   })
 
   output$contents <- DT::renderDT({
@@ -990,6 +1014,13 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
   enable("merge_all_columns")
   enable("merge_all_rows")
+  #
+  # runjs('$("#merge_all_rows").css("pointer-events", "");')
+  # runjs('$("#merge_all_rows").css("opacity", "");')
+  showTab(inputId = "tabs", target = "2) TABLE")
+  showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
+  showTab(inputId = "tabs", target = "4) 2D PLOT")
+  showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
 }
 
 generate_annotation_colors <- function(annotation_df) {
