@@ -1,4 +1,4 @@
 name;img;palette;code
-Minimalista;c_1.png;;plot_ly(x = {{X}},y = {{Y}},type = 'scatter',mode = 'markers',marker = list(size = 8)) %>% layout(title = {{CORRELATION}}, xaxis = list(title = {{X_NAME}}), yaxis = list(title = {{Y_NAME}}))
-Minimalista red;c_2.png;;plot_ly(x = {{X}},y = {{Y}},type = 'scatter',mode = 'markers',marker = list(size = 8, color = 'red')) %>% layout(title = {{CORRELATION}}, xaxis = list(title = {{X_NAME}}), yaxis = list(title = {{Y_NAME}}))
+Minimalist;c_1.png;;plot_ly(x = {{X}},y = {{Y}},type = 'scatter',mode = 'markers',marker = list(size = 8)) %>% layout(title = {{CORRELATION}}, xaxis = list(title = {{X_NAME}}), yaxis = list(title = {{Y_NAME}}))
+Minimalist;c_2.png;;plot_ly(x = {{X}},y = {{Y}},type = 'scatter',mode = 'markers',marker = list(size = 8, color = 'red')) %>% layout(title = {{CORRELATION}}, xaxis = list(title = {{X_NAME}}), yaxis = list(title = {{Y_NAME}}))
 Distribution;c_3.png;;plot_ly(x = {{X}}) %>% layout(title = 'Distribuition', xaxis = list(title = {{X_NAME}}), yaxis = list(title = 'Sum'))

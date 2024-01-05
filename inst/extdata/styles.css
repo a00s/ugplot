@@ -4,9 +4,11 @@
 }
 
 .rowplotlist {
-  height: 600px;
+  /**height: 600px;**/
+  flex-grow: 1;
   overflow-y: auto;
   overflow-x: hidden;
+  background-color: red;
 }
 
 .rowpalettelist {
@@ -15,8 +17,62 @@
   overflow-x: hidden;
 }
 
-.sidebar-panel-custom {
+/*.sidebar-panel-custom {
   width: 400px;
+  height: calc(100vh - 145px);
+  overflow-y: auto;
+}*/
+
+.sidebar-layout {
+  background-color: blue;
 }
 
+.sidebar-panel-custom {
+  display: flex;
+  text-align: center;
+  flex-direction: column;
+  width: 170px;
+  height: calc(100vh - 145px);
+  overflow-y: auto;
+  background-color: white;
+}
 
+.sidebar-panel-custom-2d {
+  display: flex;
+  text-align: center;
+  flex-direction: column;
+  width: 300px;
+ /* height: calc(100vh - 145px);*/
+  overflow-y: auto;
+  background-color: orange !important;
+}
+
+.image-button {
+  border: none;
+  padding: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.image-button img {
+  display: block;
+}
+
+::-webkit-scrollbar {
+      -webkit-appearance: none;
+      width: 7px;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background-color: rgba(0,0,0,.5);
+  box-shadow: 0 0 1px rgba(255,255,255,.5);
+}
+
+.rowpalettelist {
+  overflow-y: scroll;
+}
+
+.plotheatmap {
+  height: calc(100vh - 145px);
+}

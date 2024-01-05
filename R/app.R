@@ -1,5 +1,6 @@
 library(shiny)
 library(shinyWidgets)
+library(shinybusy)
 library(ggplot2)
 library(heatmap3)
 library(DT)
@@ -45,6 +46,9 @@ lines <- readLines(path_to_palette())
 lines <- lines[!startsWith(trimws(lines), "#")]
 palettelist <- read.csv(text = lines, sep = ";", header = TRUE)
 
+path_to_css <- function() system.file("extdata", "styles.css", package = "ugplot")
+print(path_to_css())
+
 slow_models <-
   c(
     'bam',
@@ -70,18 +74,15 @@ getImage <- function(fileName) {
 }
 
 ui <- fluidPage(
-  includeCSS(system.file("extdata", "styles.css", package = "ugplot")),
-  # tags$head(
-  #   tags$style(HTML("
-  #           #merge_all_columns {
-  #               pointer-events: none;
-  #               opacity: 0.6;
-  #           }
-  #       "))
-  # ),
+  includeCSS(path_to_css()),
+  add_busy_spinner(spin = "fading-circle"),
+  # use_busy_spinner(spin = "fading-circle"),
+  # includeCSS(system.file("extdata", "styles.css", package = "ugplot")),
   useShinyjs(),
   titlePanel(
   tags$img(src = getImage("ugplot.png"), height = "50px")),
+  # div(id = "loading", shinyWidgets::spinner(), style = "display: none;"),
+
 
   tags$style(".small-input { width: 100px; }") ,
 
@@ -162,78 +163,86 @@ ui <- fluidPage(
     ),
     tabPanel(
       "2) TABLE",
-      actionButton("transpose_table", "Transpose table"),
       div(style = "width: 100%; overflow-x: auto;",
-          DT::DTOutput("contents")),
       column(
         width = 4,
+
+        tags$h4("Columns", style = "margin-top: 10px;"),
+        div(class = "scrollable-table",
+            div(id = "dynamic_columns")),
         actionButton("uncheck_all_columns", "Uncheck all"),
         actionButton("check_all_columns", "Check all"),
-        div(class = "scrollable-table",
-            div(id = "dynamic_columns"))
+        br(),br()
       ),
       column(
         width = 4,
+        tags$h4("Rows", style = "margin-top: 10px;"),
+        div(class = "scrollable-table",
+            div(id = "dynamic_rows")),
         actionButton("uncheck_all_rows", "Uncheck all"),
         actionButton("check_all_rows", "Check all"),
-        div(class = "scrollable-table",
-            div(id = "dynamic_rows"))
+        br(),br()
       ),
       column(
         width = 4,
-        div(class = "scrollable-table",
-        style="background-color: #FFFFD8;",
-        label = "Categories",
-        div(id = "dynamic_columns_categories"))
+        tags$h4("Categories", style = "margin-top: 10px;"),
+        div(
+          class = "scrollable-table",
+          style = "background-color: #f7f8fa; overflow-y: auto; max-height: 200px;", # Add scroll and max height
+          div(id = "dynamic_columns_categories")
+        ),
+        actionButton("transpose_table", "Transpose table", icon = icon("retweet")),downloadButton("downloadData", "Download"),
+        br(),br()
+      ),
+      DT::DTOutput("contents")
       )
     ),
 
     tabPanel("3) HEATMAP PLOT",
-     sidebarLayout(
-       sidebarPanel(
+     br(),
+     fluidRow(
+       column(
+         width = 3,
          class = "sidebar-panel-custom",
          selectInput(
            inputId = "plot_xy",
-           label = "Data to use:",
-           choices = c("LINES x COLUMNS", "COLUMNS x COLUMNS")
+           label = NULL,
+           choices = c("ROW x COL", "COL x COL")
          ),
          div(class = "rowplotlist",
              lapply(1:nrow(plotlist), function(i) {
                bname <- paste0("buttonplot", i)
                imgname <- paste0("img/", plotlist$img[i])
                fluidRow(
-                 tags$img(
-                   src = getImage(imgname),
-                   width = 130,
-                   height = 130
-                 ),
-                 actionButton(bname, plotlist$name[i])
+                 actionButton(bname, tags$img(src = getImage(imgname), height = "130px", width = "130px", class = "image-button"))
+
                )
              })),
+         br(),
          div(class = "rowpalettelist",
              lapply(1:nrow(palettelist), function(i) {
                bname <- paste0("buttonpalette", i)
                imgname <- paste0("img/", palettelist$img[i])
                if (imgname != "img/NA") {
                  fluidRow(
-                   tags$img(
-                     src = getImage(imgname),
-                     width = 130,
-                     height = 20
-                   ),
-                   actionButton(bname, palettelist$name[i])
+                   actionButton(bname, tags$img(src = getImage(imgname), height = "20px", width = "130px", class = "image-button"))
                  )
                }
              }))
        ),
-       mainPanel(
-         plotOutput("plot", height = "800px")
-         )
+       column(
+         width = 9,
+         class = "plotheatmap",
+         # uiOutput("plotLoadingIndicator"),
+         plotOutput("plot", height = "100%")
+       )
      )),
     tabPanel("4) 2D PLOT",
+     class = "sidebar-layout",
      sidebarLayout(
+
        sidebarPanel(
-         class = "sidebar-panel-custom",
+         class = "sidebar-panel-custom2d",
          div(
            class = "rowplotlist",
            sliderInput(
@@ -255,7 +264,6 @@ ui <- fluidPage(
            lapply(1:nrow(plotlist2d), function(i) {
              bname <- paste0("buttonplot2d", i)
              imgname <- paste0("img/", plotlist2d$img[i])
-             print(bname)
              fluidRow(
                tags$img(
                  src = getImage(imgname),
@@ -267,7 +275,10 @@ ui <- fluidPage(
            })
          ),
        ),
-       mainPanel(uiOutput("plots"))
+       mainPanel(br(),
+                 uiOutput("plotLoadingIndicator"),
+                 uiOutput("plots")
+                 )
      )),
     tabPanel(
       "5) MACHINE LEARNING",
@@ -328,12 +339,10 @@ ui <- fluidPage(
 
 
 server <- function(input, output, session) {
-  # myModuleServer("myModuleID")
-
-  hideTab(inputId = "tabs", target = "2) TABLE")
-  hideTab(inputId = "tabs", target = "3) HEATMAP PLOT")
-  hideTab(inputId = "tabs", target = "4) 2D PLOT")
-  hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
+  # hideTab(inputId = "tabs", target = "2) TABLE")
+  # hideTab(inputId = "tabs", target = "3) HEATMAP PLOT")
+  # hideTab(inputId = "tabs", target = "4) 2D PLOT")
+  # hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
   disable("merge_all_columns")
   disable("merge_all_rows")
 
@@ -344,17 +353,6 @@ server <- function(input, output, session) {
   ml_plot_importance <- reactiveVal()
   num_rows <- reactiveVal(0)
   num_cols <- reactiveVal(0)
-
-  # changed_table <<- ""
-  # numeric_table <<- ""
-  # changed_palette <<- 0
-  # annotation_row <<- ""
-  # defaultpalette <<- reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
-  # transpose_table2 <<- reactiveVal(0)
-  # refresh_counter <<- reactiveVal(0)
-  # tab_separator <<- reactiveVal(",")
-  # file_click_count <<- reactiveVal(0)
-  # last_file_click_count <<- 0
 
   changed_table <<- ""
   numeric_table <- ""
@@ -368,53 +366,64 @@ server <- function(input, output, session) {
   tab_separator <- reactiveVal(",")
   file_click_count <- reactiveVal(0)
   last_file_click_count <- 0
+  # plots_processing <- reactiveVal(FALSE)
 
-  # disable("merge_all_columns")
-  # disable("merge_all_rows")
-
-  # disable("tab2")
-  # shinyjs::disable(selector = '.tabs a[data-value="tab2"')
-  # shinyjs::disable(selector = '.tabs')
-  # showTab("inputId", target, select = FALSE, session = getDefaultReactiveDomain())
-  # hideTab("tabs", "tab2", session = getDefaultReactiveDomain())
-  # hideTab(inputId = "tabs", target = "tab2")
-  # runjs('$("#tab a[data-value=\'2) TABLE\']").addClass("disabled");')
-  # $('#tab a[data-value=\"2) TABLE\"]').addClass('disabled')
-  # myModuleServer("myModuleID", tab_separator)
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("data-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      # Extract the relevant data from 'changed_table' based on user selections
+      data_to_download <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
+      write.csv(data_to_download, file, row.names = TRUE)
+    }
+  )
 
 
   ####################### TAB 1) LOAD DATA
   observeEvent(input$file1, {
-    print("Loading 1")
     file_click_count(file_click_count() + 1)
     filepath <- req(input$file1$datapath)
     skipline = input$startfromline - 1
-    df_pre <<-
-      read.table(
-        filepath,
-        header = TRUE,
-        sep = tab_separator(),
-        row.names = 1,
-        dec = ".",
-        stringsAsFactors = FALSE,
-        strip.white = TRUE,
-        skip = skipline
-      )
-    updateTextAreaInput(session,
-                        "textarea_columns",
-                        value = paste(names(df_pre), collapse = "\n"))
-    updateTextAreaInput(session,
-                        "textarea_rows",
-                        value = paste(rownames(df_pre), collapse = "\n"))
-    # disable("merge_all_columns")
-    # disable("merge_all_rows")
+    tryCatch({
+      df_pre <<-
+        read.table(
+          filepath,
+          header = TRUE,
+          sep = tab_separator(),
+          row.names = 1,
+          dec = ".",
+          stringsAsFactors = FALSE,
+          strip.white = TRUE,
+          skip = skipline
+        )
+      updateTextAreaInput(session,
+                          "textarea_columns",
+                          value = paste(names(df_pre), collapse = "\n"))
+      updateTextAreaInput(session,
+                          "textarea_rows",
+                          value = paste(rownames(df_pre), collapse = "\n"))
+      # disable("merge_all_columns")
+      # disable("merge_all_rows")
+    }, error = function(e) {
+      showModal(modalDialog(
+        title = "Error",
+        paste(e$message),
+        easyClose = TRUE,
+        footer = modalButton("OK")
+      ))
+    })
   })
 
   output$contents <- DT::renderDT({
     if (last_file_click_count == 0 |
         (last_file_click_count != file_click_count())) {
-      print("This part to deal when a second file got read")
+        # This part to deal when a second file got read
     }
+    if(length(input$column_checkbox_group) < 2){
+      return(NULL)
+    }
+
     current_target_selection <- input$ml_target
     updateSelectInput(session,
                       "ml_target",
@@ -499,9 +508,9 @@ server <- function(input, output, session) {
         numeric_table <- data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
         numeric_table <- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
         numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
-        if (input$plot_xy == "LINES x COLUMNS") {
+        if (input$plot_xy == "ROW x COL") {
 
-        } else if (input$plot_xy == "COLUMNS x COLUMNS") {
+        } else if (input$plot_xy == "COL x COL") {
           numeric_table <- cor(numeric_table)
         }
 
@@ -615,10 +624,83 @@ server <- function(input, output, session) {
             }
           }
         }
-        do.call(tagList, plots_list)
+
+        texthtml <- paste(length(plots_list), " correlation found within those parameters")
+        output$plotLoadingIndicator <- renderUI({
+          h4(texthtml, style = "text-align: center;", br(),br())
+        })
+
+        # Add spacers between plots
+        plots_with_spacers <- list()
+        for (index in 1:length(plots_list)) {
+          plots_with_spacers[[length(plots_with_spacers) + 1]] <- plots_list[[index]]
+          if (index != length(plots_list)) {
+            spacer <- div(style = "margin-top: 40px;")
+            plots_with_spacers[[length(plots_with_spacers) + 1]] <- spacer
+          }
+        }
+        # print("..... aqui 2")
+        do.call(tagList, plots_with_spacers)
+        # output$plotLoadingIndicator <- renderUI({})
+        # output$plotLoadingIndicator <- renderUI({})
+        # hide_spinner()
+        # on.exit(
+        #  HTML("saindo")
+        # )
+        # on.exit(shinyjs::hide("loading"))  # Hide loading spinner when done
       })
     })
   })
+  #
+  # lapply(1:nrow(plotlist2d), function(i) {
+  #   bname <- paste0("buttonplot2d", i)
+  #   observeEvent(input[[bname]], {
+  #     output$plots <- renderUI({
+  #       comandtorun <- plotlist2d$code[i]
+  #       cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
+  #       numeric_table <- data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
+  #       numeric_table <- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
+  #       numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
+  #       X <- numeric_table
+  #       cor_matrix <- cor(X)
+  #       num_cols <- ncol(X)
+  #       plots_list <- list()
+  #       for (i in 1:num_cols) {
+  #         for (j in i:num_cols) {
+  #           if (j != i &&
+  #               (
+  #                 cor_matrix[i, j] >= input$correlation_threshhold ||
+  #                 cor_matrix[i, j] <= input$correlation_threshhold_negative
+  #               )) {
+  #             comandtorun <-
+  #               gsub("\\{\\{X\\}\\}",
+  #                    "X[, colnames(X)[i]]",
+  #                    comandtorun)
+  #             comandtorun <-
+  #               gsub("\\{\\{Y\\}\\}",
+  #                    "X[, colnames(X)[j]]",
+  #                    comandtorun)
+  #             comandtorun <-
+  #               gsub("\\{\\{X_NAME\\}\\}",
+  #                    "colnames(X)[i]",
+  #                    comandtorun)
+  #             comandtorun <-
+  #               gsub("\\{\\{Y_NAME\\}\\}",
+  #                    "colnames(X)[j]",
+  #                    comandtorun)
+  #             comandtorun <-
+  #               gsub("\\{\\{CORRELATION\\}\\}",
+  #                    "cor_matrix[i, j]",
+  #                    comandtorun)
+  #             p <- eval(parse(text = comandtorun))
+  #             plots_list[[length(plots_list) + 1]] <- p
+  #           }
+  #         }
+  #       }
+  #       do.call(tagList, plots_list)
+  #     })
+  #   })
+  # })
 
   ####### 4) Machine learning
   all_models_reactive <- reactiveVal(list())
@@ -869,6 +951,13 @@ server <- function(input, output, session) {
     all_models_reactive(temp_models_list)
   })
 
+  # output$loadingIndicator <- renderUI({
+  #   if (plots_processing()) {
+  #     # Return a loading spinner or message
+  #     shinyWidgets::spinner()
+  #   }
+  # })
+
   output$ml_row_details <- renderPrint({
     selected_row <- input$ml_table_results_rows_selected
     if (length(selected_row) == 0) {
@@ -897,7 +986,6 @@ server <- function(input, output, session) {
     X <-
       changed_table[input$row_checkbox_group, setdiff(input$column_checkbox_group, target_name)]  # all columns except 'age'
     y <- dff[[target_name]]
-
 
     # Example data
     # Assuming you have your data stored in 'X' (input features) and 'y' (target variable)
@@ -965,7 +1053,6 @@ server <- function(input, output, session) {
       data.frame(Title = "R^2", Result = best_r_squared)
     ))
   })
-
   load_ml_list()
 }
 
@@ -1014,9 +1101,6 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
   enable("merge_all_columns")
   enable("merge_all_rows")
-  #
-  # runjs('$("#merge_all_rows").css("pointer-events", "");')
-  # runjs('$("#merge_all_rows").css("opacity", "");')
   showTab(inputId = "tabs", target = "2) TABLE")
   showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
   showTab(inputId = "tabs", target = "4) 2D PLOT")
@@ -1049,7 +1133,7 @@ load_checkbox_group <- function() {
     where = "afterEnd",
     ui = checkboxGroupInput(
       inputId = "column_checkbox_group",
-      label = "Columns:",
+      label = NULL,
       choices = names(dff),
       selected = names(dff)
     )
@@ -1060,7 +1144,7 @@ load_checkbox_group <- function() {
     where = "afterEnd",
     ui = checkboxGroupInput(
       inputId = "row_checkbox_group",
-      label = "Rows:",
+      label = NULL,
       choices = rownames(dff),
       selected = rownames(dff)
     )
@@ -1071,7 +1155,7 @@ load_checkbox_group <- function() {
     where = "afterEnd",
     ui = checkboxGroupInput(
       inputId = "checkbox_group_categories",
-      label = "Categories:",
+      label = NULL,
       choices = names(dff)
     )
   )
@@ -1090,9 +1174,6 @@ load_checkbox_group <- function() {
 
 
 ugPlot <- function(dataset = data.frame(), ml = FALSE) {
-  print("testando dataset 1")
-  print(dataset)
-  print("testando dataset 2")
   if(ml == FALSE){
     shinyApp(ui = ui, server = server)
   }
