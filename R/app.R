@@ -134,6 +134,7 @@ ui <- fluidPage(
       ),
       conditionalPanel(
         condition = "input.textarea_columns != '' || input.textarea_rows != ''",
+        # tags$h4("Columns", style = "margin-top: 10px;"),
         tags$div(
           style = "display: inline-block; text-align: center; vertical-align: top;",
           textAreaInput(
@@ -146,7 +147,7 @@ ui <- fluidPage(
           actionButton("remove_all_columns", "Remove all"),
           actionButton("merge_all_columns", "Join columns")
         ),
-
+        # tags$h4("Rows", style = "margin-top: 10px;"),
         tags$div(
           style = "display: inline-block; text-align: center; vertical-align: top;",
           textAreaInput(
@@ -239,10 +240,13 @@ ui <- fluidPage(
      )),
     tabPanel("4) 2D PLOT",
      class = "sidebar-layout",
+     # br(),
      sidebarLayout(
 
        sidebarPanel(
+
          class = "sidebar-panel-custom2d",
+
          div(
            class = "rowplotlist",
            sliderInput(
@@ -292,38 +296,42 @@ ui <- fluidPage(
         conditionalPanel(
           condition = "input.ml_target != ''",
           tags$div(
-            actionButton(
-              "play_random_forest_regression",
-              "PLAY - RANDOM FOREST REGRESSION"
-            ),
-            actionButton("play_deep_learning",
-                         "PLAY - DEEP LEARNING"),
+            # actionButton(
+            #   "play_random_forest_regression",
+            #   "PLAY - RANDOM FOREST REGRESSION"
+            # ),
+            # br(),br(),
+            # actionButton("play_deep_learning",
+            #              "PLAY - DEEP LEARNING"),
             verbatimTextOutput("console_output"),
 
             column(
               width = 6,
+              tags$h4("Models installed", style = "margin-top: 10px;"),
+              div(class = "scrollable-table",
+                  div(id = "dynamic_machine_learning")),
               actionButton("uncheck_all_ml", "Uncheck all"),
               actionButton("check_all_ml", "Check all"),
               actionButton("play_search_best_model_caret",
                            "RUN"),
-              div(class = "scrollable-table",
-                  div(id = "dynamic_machine_learning")),
               tags$br(),
               tags$p(slow_models_text, style = "color: gray; font-size: 11px;")
             ),
             column(
               width = 6,
+              tags$h4("Models missing", style = "margin-top: 10px;"),
+              div(class = "scrollable-table",
+                  div(id = "dynamic_machine_learning_missing")),
               actionButton("uncheck_all_ml_missing", "Uncheck all"),
               actionButton("check_all_ml_missing", "Check all"),
               actionButton("install_missing_modules",
-                           "Install libraries"),
-              div(class = "scrollable-table",
-                  div(id = "dynamic_machine_learning_missing"))
+                           "Install libraries")
             ),
             # div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table_results")),
             div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table_results_output")),
             verbatimTextOutput("ml_row_details"),
-            div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table"))
+            div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table")),
+            # htmlOutput("ml_row_details_html")
           )
         )
       )
@@ -339,10 +347,10 @@ ui <- fluidPage(
 
 
 server <- function(input, output, session) {
-  # hideTab(inputId = "tabs", target = "2) TABLE")
-  # hideTab(inputId = "tabs", target = "3) HEATMAP PLOT")
-  # hideTab(inputId = "tabs", target = "4) 2D PLOT")
-  # hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
+  hideTab(inputId = "tabs", target = "2) TABLE")
+  hideTab(inputId = "tabs", target = "3) HEATMAP PLOT")
+  hideTab(inputId = "tabs", target = "4) 2D PLOT")
+  hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
   disable("merge_all_columns")
   disable("merge_all_rows")
 
@@ -353,6 +361,8 @@ server <- function(input, output, session) {
   ml_plot_importance <- reactiveVal()
   num_rows <- reactiveVal(0)
   num_cols <- reactiveVal(0)
+
+  text_result_ml <- reactiveVal(0)
 
   changed_table <<- ""
   numeric_table <- ""
@@ -625,7 +635,7 @@ server <- function(input, output, session) {
           }
         }
 
-        texthtml <- paste(length(plots_list), " correlation found within those parameters")
+        texthtml <- paste(length(plots_list), " correlations found within those parameters")
         output$plotLoadingIndicator <- renderUI({
           h4(texthtml, style = "text-align: center;", br(),br())
         })
@@ -799,6 +809,103 @@ server <- function(input, output, session) {
     ml_data_table(importance_ordered)
   })
 
+  # observeEvent(input$ml_table_results_output_rows_selected, {
+  #   selected_row <- input$ml_table_results_output_rows_selected
+  #   print("Select 1 ")
+  #   if (length(selected_row) == 1) {
+  #     print("Select 2")
+  #     selected_data <- ml_table_results()[selected_row, ]
+  #     selected_model_name <- ml_table_results()[selected_row, ]$Model
+  #
+  #     # Do something with the selected model name
+  #     # print(paste("Selected Model: ", selected_model_name))
+  #     # htmltext <- paste("Selected Model: ", selected_model_name)
+  #     specific_model <- all_models_reactive()[[selected_model_name]]
+  #     # htmltext <- paste(htmltext,"<br>", specific_model)
+  #     # print(specific_model)
+  #     # Variable importance (for models that support it)
+  #     tryCatch({
+  #       importance <- varImp(specific_model)
+  #       # print("=== Variable Importance ===")
+  #       # htmltext <- paste(htmltext,"<br>=== Variable Importance ===")
+  #       # print(importance)
+  #       # text_result_ml <- importance
+  #       # htmltext <- paste(htmltext,"<br>", importance)
+  #       text_result_ml(htmltext)
+  #     }, error = function(e) {
+  #       print("Variable importance not supported for this model.")
+  #     })
+  #     # Call your function here
+  #     # For example, myFunction(ml_table_results()[selected_row, ])
+  #     # Replace myFunction with the actual function you want to call
+  #   }
+  # })
+
+  output$ml_row_details <- renderPrint({
+    # print("Chego aqui")
+    selected_row <- input$ml_table_results_output_rows_selected
+    if (length(selected_row) == 1) {
+      row_data <- ml_table_results()[selected_row, ]
+      # Format the row data as text
+      # print("Selected Row Data:", toString(row_data))
+
+      # print("Select 2")
+      selected_data <- ml_table_results()[selected_row, ]
+      selected_model_name <- ml_table_results()[selected_row, ]$Model
+
+      # Do something with the selected model name
+      # print(paste("Selected Model: ", selected_model_name))
+      specific_model <- all_models_reactive()[[selected_model_name]]
+      print(specific_model)
+      # Variable importance (for models that support it)
+      tryCatch({
+        importance <- varImp(specific_model)
+        # print("=========================================")
+        print(importance)
+        # print("=========================================")
+        # text_result_ml <- importance
+        # print(importance)
+        # text_result_ml(importance)
+        # htmltext <- paste("<pre>",importance,"</pre>")
+        # text_result_ml(htmltext)
+        print(text_result_ml())
+      }, error = function(e) {
+        print("Variable importance not supported for this model.")
+      })
+    }
+    # else {
+      # "No row selected"
+    # }
+  })
+
+  output$ml_row_details_html <- renderUI({
+    HTML(text_result_ml())
+  })
+
+  # output$ml_row_details <- renderPrint({
+    # print(text_result_ml())
+  #   print("Chegou aqui selecionando row da tabela")
+  #   selected_row <- input$ml_table_results_rows_selected
+  #   if (length(selected_row) == 0) {
+  #     return("")
+  #   }
+  #   selected_data <- ml_table_results()[selected_row, ]
+  #   selected_model_name <- ml_table_results()[selected_row, ]$Model
+  #
+  #   # Do something with the selected model name
+  #   print(paste("Selected Model: ", selected_model_name))
+  #   specific_model <- all_models_reactive()[[selected_model_name]]
+  #
+  #   # Variable importance (for models that support it)
+  #   tryCatch({
+  #     importance <- varImp(specific_model)
+  #     print("=== Variable Importance ===")
+  #     print(importance)
+  #   }, error = function(e) {
+  #     print("Variable importance not supported for this model.")
+  #   })
+  # })
+
   observeEvent(input$install_missing_modules, {
     all_models <- getModelInfo()
     models_to_install <- input$ml_missing_checkbox_group
@@ -919,10 +1026,9 @@ server <- function(input, output, session) {
               data.frame(Model = model_name,
                          "Accuracy" = accuracy)
             ml_table_results(rbind(ml_table_results(), model_results))
-            temp_models_list[[model_name]] <- mode
+            temp_models_list[[model_name]] <- model
           } else {
             # Evaluate the model
-            print("Parte4")
             result_pred <- postResample(pred, testSet[[target_name]])
 
             if(result_pred["Rsquared"] > best_result){
@@ -935,7 +1041,7 @@ server <- function(input, output, session) {
                          "R2" = result_pred["Rsquared"],
                          "MAE" = result_pred["MAE"])
             ml_table_results(rbind(ml_table_results(), model_results))
-            temp_models_list[[model_name]] <- mode
+            temp_models_list[[model_name]] <- model
           }
         }, error = function(e) {
           # Code to handle the error here (e.g., print an error message)
@@ -958,27 +1064,28 @@ server <- function(input, output, session) {
   #   }
   # })
 
-  output$ml_row_details <- renderPrint({
-    selected_row <- input$ml_table_results_rows_selected
-    if (length(selected_row) == 0) {
-      return("")
-    }
-    selected_data <- ml_table_results()[selected_row, ]
-    selected_model_name <- ml_table_results()[selected_row, ]$Model
-
-    # Do something with the selected model name
-    print(paste("Selected Model: ", selected_model_name))
-    specific_model <- all_models_reactive()[[selected_model_name]]
-
-    # Variable importance (for models that support it)
-    tryCatch({
-      importance <- varImp(specific_model)
-      print("=== Variable Importance ===")
-      print(importance)
-    }, error = function(e) {
-      print("Variable importance not supported for this model.")
-    })
-  })
+  # output$ml_row_details <- renderPrint({
+  #   print("Chegou aqui selecionando row da tabela")
+  #   selected_row <- input$ml_table_results_rows_selected
+  #   if (length(selected_row) == 0) {
+  #     return("")
+  #   }
+  #   selected_data <- ml_table_results()[selected_row, ]
+  #   selected_model_name <- ml_table_results()[selected_row, ]$Model
+  #
+  #   # Do something with the selected model name
+  #   print(paste("Selected Model: ", selected_model_name))
+  #   specific_model <- all_models_reactive()[[selected_model_name]]
+  #
+  #   # Variable importance (for models that support it)
+  #   tryCatch({
+  #     importance <- varImp(specific_model)
+  #     print("=== Variable Importance ===")
+  #     print(importance)
+  #   }, error = function(e) {
+  #     print("Variable importance not supported for this model.")
+  #   })
+  # })
 
   observeEvent(input$play_deep_learning, {
     print("playing deep learning")
@@ -1075,7 +1182,7 @@ load_ml_list <- function() {
     where = "afterEnd",
     ui = checkboxGroupInput(
       inputId = "ml_checkbox_group",
-      label = "ML available:",
+      label = NULL,
       choices = ml_available,
       selected = ml_available
     )
@@ -1086,7 +1193,7 @@ load_ml_list <- function() {
     where = "afterEnd",
     ui = checkboxGroupInput(
       inputId = "ml_missing_checkbox_group",
-      label = "ML missing:",
+      label = NULL,
       choices = ml_not_available
     )
   )

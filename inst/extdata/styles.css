@@ -1,6 +1,11 @@
 .scrollable-table {
       height: 200px;
       overflow-y: auto;
+      background-color: #f7f8fa;
+      border: 1px;
+      border-color: black solid;
+      padding: 10px;
+      border-radius: 15px;
 }
 
 .rowplotlist {
@@ -8,7 +13,6 @@
   flex-grow: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  background-color: red;
 }
 
 .rowpalettelist {
@@ -23,9 +27,9 @@
   overflow-y: auto;
 }*/
 
-.sidebar-layout {
+/*.sidebar-layout {
   background-color: blue;
-}
+}*/
 
 .sidebar-panel-custom {
   display: flex;
@@ -44,7 +48,6 @@
   width: 300px;
  /* height: calc(100vh - 145px);*/
   overflow-y: auto;
-  background-color: orange !important;
 }
 
 .image-button {
@@ -75,4 +78,10 @@
 
 .plotheatmap {
   height: calc(100vh - 145px);
+}
+
+.well {
+  background-color:white;
+  border: none;
+  width: 300px;
 }
