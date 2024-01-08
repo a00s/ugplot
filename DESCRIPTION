@@ -1,10 +1,10 @@
 Package: ugplot
 Type: Package
-Title: Find the best ML model for your data and generate plots for papers
+Title: Find the best Caret model for your data and generate plots for papers
 Version: 0.1.0
 Author:  Ulrich Pfeffer, Francesco Reggiani, Thiago Benazzi Maia
 Maintainer: Thiago Benazzi Maia <a00s@a00s.com>
-Description: With ugPlot you can load genetic data, generate plots for papers, test hundreds of machine learning models to find which one fits to your data.
+Description: With ugPlot you can load genetic data, generate plots for papers, test hundreds of machine learning models from Caret to find which one fits to your data.
 License: MIT
 Encoding: UTF-8
 LazyData: true

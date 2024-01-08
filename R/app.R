@@ -1011,15 +1011,17 @@ load_checkbox_group <- function() {
   )
 }
 
-#' Open a window with the application
+#' Opens a window with the application
 #'
 #' @param dataset A data.frame to be automatically loaded. Leave empty to add later
-#' @param ml = TRUE for only machine learning without interface. Leave empty for full interface
 #'
 #' @return NULL when no error
 #' @export
 #'
-#' @examples ugPlot(dataset = mtcars)
+#' @examples
+#' \donttest{
+#'     ugPlot(dataset = mtcars)
+#' }
 #'
 
 ugPlot <- function(dataset = data.frame()) {

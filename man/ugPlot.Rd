@@ -4,12 +4,10 @@
 \alias{ugPlot}
 \title{Open a window with the application}
 \usage{
-ugPlot(dataset = data.frame(), ml = FALSE)
+ugPlot(dataset = data.frame())
 }
 \arguments{
 \item{dataset}{A data.frame to be automatically loaded. Leave empty to add later}
-
-\item{ml}{= TRUE for only machine learning without interface. Leave empty for full interface}
 }
 \value{
 NULL when no error
@@ -18,6 +16,8 @@ NULL when no error
 Open a window with the application
 }
 \examples{
-ugPlot(dataset = mtcars, ml = TRUE)
+\donttest{
+    ugPlot(dataset = mtcars)
+}
 
 }
