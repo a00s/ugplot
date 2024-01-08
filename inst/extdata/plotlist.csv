@@ -1,4 +1,5 @@
 name;img;palette;code
+Pheatmap;8.png;topo.colors(64);pheatmap({{dataset}}, scale='row', color={{palette}}, border_color=NA, main='pheatmap')
 Categories;9.png;colorRampPalette(c('blue', 'white', 'red'))(50);pheatmap({{dataset}}, annotation_row={{annotation_row}}, color={{palette}}, annotation_color={{annotation_color}})
 #Heatmap 3;6.png;colorRampPalette(c('blue', 'white', 'red'))(50);heatmap3({{dataset}}, col={{palette}})
 Density;11.png;;ggplot(gather(as.data.frame({{dataset}}), key = 'Column', value = 'Methylation'), aes(x = Methylation, fill = Column)) + geom_density(alpha = 0.6) + labs(x = 'Methylation', y = 'Density', title = 'Methylation Density Plot')
@@ -9,4 +10,3 @@ HeatMap;4.png;;heatmap({{dataset}}, col = {{palette}})
 #HeatMap 2.1;4.png;;heatmap({{dataset}})
 #Heat scale;5.png;topo.colors(200, alpha=0.5);heatmap(scale({{dataset}}), col = {{palette}}, Colv=F, scale='none')
 #H4;7.png;topo.colors(64);heatmap({{dataset}}, scale='row', col={{palette}}, margins=c(5, 5), main='Base R Heatmap')
-Pheatmap;8.png;topo.colors(64);pheatmap({{dataset}}, scale='row', color={{palette}}, border_color=NA, main='pheatmap')

@@ -1160,6 +1160,14 @@ server <- function(input, output, session) {
       data.frame(Title = "R^2", Result = best_r_squared)
     ))
   })
+
+  session$onSessionEnded(function() {
+    rm(dff, changed_table, envir = globalenv())
+    if(exists("df_pre")){
+      rm(df_pre, envir = globalenv())
+    }
+  })
+  load_dataset_into_table(session)
   load_ml_list()
 }
 
@@ -1214,6 +1222,27 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
 }
 
+load_dataset_into_table <- function(localsession) {
+  print("dataset loaded from local environment")
+
+  # dff <<- dataset_input
+  if (exists("dff") && is.data.frame(dff) && nrow(dff) > 0) {
+    print("Dataset com conteudo")
+    # column_names <- strsplit(textarea_columns, "\n")[[1]]
+    column_names <- colnames(dff)
+    rown_names <- rownames(dff)
+    changed_table <<- dff
+    load_checkbox_group()
+    updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
+    enable("merge_all_columns")
+    enable("merge_all_rows")
+    showTab(inputId = "tabs", target = "2) TABLE")
+    showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
+    showTab(inputId = "tabs", target = "4) 2D PLOT")
+    showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
+  }
+
+}
 generate_annotation_colors <- function(annotation_df) {
   color_list <- list()
 
@@ -1235,6 +1264,7 @@ load_checkbox_group <- function() {
   removeUI(selector = paste0("#", "column_checkbox_group"))
   removeUI(selector = paste0("#", "row_checkbox_group"))
   removeUI(selector = paste0("#", "checkbox_group_categories"))
+  print(dff)
   insertUI(
     selector = "#dynamic_columns",
     where = "afterEnd",
@@ -1276,14 +1306,22 @@ load_checkbox_group <- function() {
 #' @return NULL when no error
 #' @export
 #'
-#' @examples ugPlot(dataset = mtcars, ml = TRUE)
+#' @examples ugPlot(dataset = Boston)
 #'
 
+ugPlot <- function(dataset = data.frame()) {
 
-ugPlot <- function(dataset = data.frame(), ml = FALSE) {
-  if(ml == FALSE){
-    shinyApp(ui = ui, server = server)
+  # shinyApp(ui = ui, server = server)
+  # print("Continuando")
+  if(nrow(dataset) > 0){
+    print("Dataset com conteudo")
+    # load_dataset_into_table(dataset)
+    dff <<- dataset
   }
+  shinyApp(ui = ui, server = server)
+  # if(ml == FALSE){
+  #   shinyApp(ui = ui, server = server)
+  # }
 }
 
 shinyApp(ui, server)
