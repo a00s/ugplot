@@ -237,7 +237,18 @@ ui <- fluidPage(
         column(
           width = 9,
           class = "plotheatmap",
-          plotOutput("plot", height = "100%")
+          tags$div(
+            style = "display: flex; width: 100%; align-items: flex-start;",
+            tags$div(
+              actionButton("run_code_plot", label = tags$i(class = "fa fa-play")),
+              style = "flex: none; width: 40px; margin-right: 10px;"
+            ),
+            tags$div(
+              textAreaInput("textarea_code_plot", label = NULL, row = 1, width = '100%'),
+              style = "flex-grow: 1;"
+            )
+          ),
+          plotOutput("plot", height = "90%")
         )
       )),
     tabPanel("4) 2D PLOT",
@@ -481,6 +492,7 @@ server <- function(input, output, session) {
       output$plot <- renderPlot({
         numeric_table <- ""
         comandtorun <- plotlist$code[i]
+        updateTextAreaInput(session,"textarea_code_plot", value = comandtorun)
         cols_to_convert <-
           intersect(input$checkbox_group_categories,
             input$column_checkbox_group)
@@ -509,8 +521,6 @@ server <- function(input, output, session) {
         } else if (input$plot_xy == "COL x COL") {
           numeric_table <- cor(numeric_table)
         }
-
-
         comandtorun <-
           gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
         if (plotlist$palette[i] != "" && changed_palette == 0) {
@@ -544,6 +554,64 @@ server <- function(input, output, session) {
       comandpalette <-
         paste("defaultpalette(", palettelist$code[i], ")")
       eval(parse(text = comandpalette))
+    })
+  })
+
+  observeEvent(input$run_code_plot, {
+    # plot_dynamic_chart(input, output, input$textarea_code_plot)
+    output$plot <- renderPlot({
+      numeric_table <- ""
+      comandtorun <- input$textarea_code_plot
+      cols_to_convert <-
+        intersect(input$checkbox_group_categories,
+          input$column_checkbox_group)
+      countdataframe <- 0
+      if (length(cols_to_convert) > 0) {
+        for (this_target in cols_to_convert) {
+          changed_table[[this_target]] <-
+            as.factor(changed_table[[this_target]])
+          if (countdataframe == 0) {
+            annotation_row <-
+              setNames(data.frame(changed_table[[this_target]]), this_target)
+            rownames(annotation_row) <- rownames(changed_table)
+          } else {
+            annotation_row[[this_target]] <- changed_table[[this_target]]
+          }
+          countdataframe <- 1
+        }
+      }
+      numeric_table <-
+        data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
+      numeric_table <-
+        numeric_table[,!(names(numeric_table) %in% cols_to_convert)]
+      numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
+      if (input$plot_xy == "ROW x COL") {
+
+      } else if (input$plot_xy == "COL x COL") {
+        numeric_table <- cor(numeric_table)
+      }
+      comandtorun <-
+        gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
+      # if (plotlist$palette[i] != "" && changed_palette == 0) {
+      #   comandpalette <- paste("defaultpalette(", plotlist$palette[i], ")")
+      #   eval(parse(text = comandpalette))
+      # }
+      comandtorun <-
+        gsub("\\{\\{palette\\}\\}",
+          "defaultpalette()",
+          comandtorun)
+      comandtorun <-
+        gsub("\\{\\{annotation\\}\\}",
+          "annotation_row",
+          comandtorun)
+
+      annotation_colors_auto <-
+        generate_annotation_colors(annotation_row)
+      comandtorun <-
+        gsub("\\{\\{annotation_color\\}\\}",
+          "annotation_colors_auto",
+          comandtorun)
+      eval(parse(text = comandtorun))
     })
   })
 
@@ -891,6 +959,63 @@ server <- function(input, output, session) {
   load_dataset_into_table(session)
   load_ml_list()
 }
+
+# plot_dynamic_chart <- function(input, output, plotcode){
+#   output$plot <- renderPlot({
+#     numeric_table <- ""
+#     comandtorun <- plotcode
+#     cols_to_convert <-
+#       intersect(input$checkbox_group_categories,
+#         input$column_checkbox_group)
+#     countdataframe <- 0
+#     if (length(cols_to_convert) > 0) {
+#       for (this_target in cols_to_convert) {
+#         changed_table[[this_target]] <-
+#           as.factor(changed_table[[this_target]])
+#         if (countdataframe == 0) {
+#           annotation_row <-
+#             setNames(data.frame(changed_table[[this_target]]), this_target)
+#           rownames(annotation_row) <- rownames(changed_table)
+#         } else {
+#           annotation_row[[this_target]] <- changed_table[[this_target]]
+#         }
+#         countdataframe <- 1
+#       }
+#     }
+#     numeric_table <-
+#       data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
+#     numeric_table <-
+#       numeric_table[,!(names(numeric_table) %in% cols_to_convert)]
+#     numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
+#     if (input$plot_xy == "ROW x COL") {
+#
+#     } else if (input$plot_xy == "COL x COL") {
+#       numeric_table <- cor(numeric_table)
+#     }
+#     comandtorun <-
+#       gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
+#     if (plotlist$palette[i] != "" && changed_palette == 0) {
+#       comandpalette <- paste("defaultpalette(", plotlist$palette[i], ")")
+#       eval(parse(text = comandpalette))
+#     }
+#     comandtorun <-
+#       gsub("\\{\\{palette\\}\\}",
+#         "defaultpalette()",
+#         comandtorun)
+#     comandtorun <-
+#       gsub("\\{\\{annotation\\}\\}",
+#         "annotation_row",
+#         comandtorun)
+#
+#     annotation_colors_auto <-
+#       generate_annotation_colors(annotation_row)
+#     comandtorun <-
+#       gsub("\\{\\{annotation_color\\}\\}",
+#         "annotation_colors_auto",
+#         comandtorun)
+#     eval(parse(text = comandtorun))
+#   })
+# }
 
 load_ml_list <- function() {
   all_models <- getModelInfo()
