@@ -248,7 +248,7 @@ ui <- fluidPage(
               style = "flex-grow: 1;"
             )
           ),
-          plotOutput("plot", height = "100%")
+          plotOutput("plot", height = "90%")
         )
       )),
     tabPanel("4) 2D PLOT",
