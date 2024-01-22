@@ -2,7 +2,7 @@
 % Please edit documentation in R/app.R
 \name{ugPlot}
 \alias{ugPlot}
-\title{Open a window with the application}
+\title{Opens a window with the application}
 \usage{
 ugPlot(dataset = data.frame())
 }
@@ -13,7 +13,7 @@ ugPlot(dataset = data.frame())
 NULL when no error
 }
 \description{
-Open a window with the application
+Opens a window with the application
 }
 \examples{
 \donttest{
