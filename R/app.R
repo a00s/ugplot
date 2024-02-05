@@ -81,7 +81,8 @@ ui <- fluidPage(
   add_busy_spinner(spin = "fading-circle"),
   useShinyjs(),
   titlePanel(tags$img(
-    src = getImage("ugplot.png"), height = "50px"
+    src = getImage("ugplot.png"), height = "50px",
+    tags$span("version 20240205", style = "color: gray; font-size: 11px;")
   )),
   tags$style(".small-input { width: 100px; }") ,
   tabsetPanel(
