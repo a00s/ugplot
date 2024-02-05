@@ -44,6 +44,13 @@ path_to_css <-
   function()
     system.file("extdata", "styles.css", package = "ugplot")
 
+path_to_sample_data <- function()
+  system.file("extdata", "sample.csv", package = "ugplot")
+lines <- readLines(path_to_sample_data())
+sample_data <- read.csv(text = lines, sep = ",", header = TRUE)
+row.names(sample_data) <- sample_data[,1]
+sample_data <- sample_data[,-1]
+
 slow_models <-
   c(
     'bam',
@@ -146,7 +153,11 @@ ui <- fluidPage(
           actionButton("remove_all_rows", "Remove all"),
           actionButton("merge_all_rows", "Join columns")
         )
-      )
+      ),
+      tags$div(style = "display: inline-block; vertical-align: top;",
+        tags$div(
+          actionButton("load_sample", "Click here to load an example")
+        )),
     ),
     tabPanel(
       "2) TABLE",
@@ -478,6 +489,12 @@ server <- function(input, output, session) {
 
   observeEvent(input$process_table_content, {
     load_file_into_table(input$textarea_columns, input$textarea_rows, session)
+  })
+
+  observeEvent(input$load_sample, {
+    dff <<- sample_data
+    head(dff)
+    load_dataset_into_table(session)
   })
 
   observeEvent(input$separator, {
@@ -931,7 +948,7 @@ server <- function(input, output, session) {
               }
               model_results <-
                 data.frame(Model = model_name,
-                  "R*R" = result_pred["Rsquared"],
+                  "RxR" = result_pred["Rsquared"],
                   "MAE" = result_pred["MAE"])
               ml_table_results(rbind(ml_table_results(), model_results))
               temp_models_list[[model_name]] <- model
