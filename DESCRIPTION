@@ -1,11 +1,14 @@
 Package: ugplot
 Type: Package
 Title: Find the best Caret model for your data and generate plots for papers
-Version: 0.1.0
+Version: 1.0
 Author:  Ulrich Pfeffer, Francesco Reggiani, Thiago Benazzi Maia
 Maintainer: Thiago Benazzi Maia <a00s@a00s.com>
-Description: With ugPlot you can load genetic data, generate plots for papers, test hundreds of machine learning models from Caret to find which one fits to your data.
-License: MIT
+Description: Is an R library that uses shiny to assists in finding relationships between columns of a data matrix in three ways:
+              1. With heatmap and distribution graphics.
+              2. With Pearson correlation graphics.
+              3. By conducting prediction tests using models from the Caret library.
+License: GPLv3
 Encoding: UTF-8
 LazyData: true
 Imports:
