@@ -157,10 +157,9 @@ ui <- fluidPage(
           actionButton("merge_all_rows", "Join columns")
         )
       ),
-      tags$div(style = "display: inline-block; vertical-align: top;",
-        tags$div(
-          actionButton("load_sample", "Click here to load an example")
-        )),
+      tags$div(
+        actionButton("load_sample", "Click here to load an example")
+      )
     ),
     tabPanel(
       "2) TABLE",
