@@ -8,7 +8,7 @@ Description: Is an R library that uses shiny to assists in finding relationships
               1. With heatmap and distribution graphics.
               2. With Pearson correlation graphics.
               3. By conducting prediction tests using models from the Caret library.
-License: GPLv3
+License: GPL-3
 Encoding: UTF-8
 LazyData: true
 Imports:

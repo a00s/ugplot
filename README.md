@@ -1,2 +1,2 @@
 # ugplot
-ugPlot is a R library to speed the process of chosen the best plot for your research
+ugPlot is a R library to be used as pipeline for testing caret models
