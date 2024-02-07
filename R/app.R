@@ -70,6 +70,8 @@ slow_models_text <-
 
 df_pre <<- ""
 dff <<- ""
+ml_available <<- list()
+ml_not_available <<- list()
 
 getImage <- function(fileName) {
   dataURI(file = system.file("extdata", fileName, package = "ugplot"),
@@ -356,9 +358,6 @@ server <- function(input, output, session) {
   hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
   disable("merge_all_columns")
   disable("merge_all_rows")
-
-  ml_available <- ""
-  ml_not_available <- NULL
   ml_data_table <- reactiveVal()
   ml_table_results <- reactiveVal()
   ml_plot_importance <- reactiveVal()
@@ -576,7 +575,6 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$run_code_plot, {
-    # plot_dynamic_chart(input, output, input$textarea_code_plot)
     output$plot <- renderPlot({
       numeric_table <- ""
       comandtorun <- input$textarea_code_plot
@@ -759,10 +757,12 @@ server <- function(input, output, session) {
       inputId = "ml_checkbox_group",
       selected = character(0))
   })
+
   observeEvent(input$check_all_ml, {
     updateCheckboxGroupInput(session,
       inputId = "ml_checkbox_group",
-      selected = ml_available)
+      selected = ml_available
+      )
   })
 
   observeEvent(input$uncheck_all_ml_missing, {
@@ -969,82 +969,26 @@ server <- function(input, output, session) {
   })
 
   session$onSessionEnded(function() {
-    rm(dff, changed_table, envir = globalenv())
+    rm(dff, changed_table, ml_available, ml_not_available, envir = globalenv())
     if (exists("df_pre")) {
       rm(df_pre, envir = globalenv())
     }
   })
+
   load_dataset_into_table(session)
   load_ml_list()
 }
 
-# plot_dynamic_chart <- function(input, output, plotcode){
-#   output$plot <- renderPlot({
-#     numeric_table <- ""
-#     comandtorun <- plotcode
-#     cols_to_convert <-
-#       intersect(input$checkbox_group_categories,
-#         input$column_checkbox_group)
-#     countdataframe <- 0
-#     if (length(cols_to_convert) > 0) {
-#       for (this_target in cols_to_convert) {
-#         changed_table[[this_target]] <-
-#           as.factor(changed_table[[this_target]])
-#         if (countdataframe == 0) {
-#           annotation_row <-
-#             setNames(data.frame(changed_table[[this_target]]), this_target)
-#           rownames(annotation_row) <- rownames(changed_table)
-#         } else {
-#           annotation_row[[this_target]] <- changed_table[[this_target]]
-#         }
-#         countdataframe <- 1
-#       }
-#     }
-#     numeric_table <-
-#       data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
-#     numeric_table <-
-#       numeric_table[,!(names(numeric_table) %in% cols_to_convert)]
-#     numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
-#     if (input$plot_xy == "ROW x COL") {
-#
-#     } else if (input$plot_xy == "COL x COL") {
-#       numeric_table <- cor(numeric_table)
-#     }
-#     comandtorun <-
-#       gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
-#     if (plotlist$palette[i] != "" && changed_palette == 0) {
-#       comandpalette <- paste("defaultpalette(", plotlist$palette[i], ")")
-#       eval(parse(text = comandpalette))
-#     }
-#     comandtorun <-
-#       gsub("\\{\\{palette\\}\\}",
-#         "defaultpalette()",
-#         comandtorun)
-#     comandtorun <-
-#       gsub("\\{\\{annotation\\}\\}",
-#         "annotation_row",
-#         comandtorun)
-#
-#     annotation_colors_auto <-
-#       generate_annotation_colors(annotation_row)
-#     comandtorun <-
-#       gsub("\\{\\{annotation_color\\}\\}",
-#         "annotation_colors_auto",
-#         comandtorun)
-#     eval(parse(text = comandtorun))
-#   })
-# }
-
 load_ml_list <- function() {
   all_models <- getModelInfo()
-  ml_available <- list()
-  ml_not_available <- NULL
+  ml_available <<- list()
+  ml_not_available <<- list()
   for (model_name in names(all_models)) {
     if (any(!all_models[[model_name]]$library %in% installed.packages())) {
-      ml_not_available <- c(ml_not_available, model_name)
+      ml_not_available <<- c(ml_not_available, model_name)
     } else {
       if (!(model_name %in% slow_models)) {
-        ml_available <- c(ml_available, model_name)
+        ml_available <<- c(ml_available, model_name)
       }
     }
   }
