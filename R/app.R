@@ -993,7 +993,6 @@ load_ml_list <- function() {
       }
     }
   }
-  print(ml_available)
   removeUI(selector = paste0("#", "ml_checkbox_group"))
   insertUI(
     selector = "#dynamic_machine_learning",
