@@ -56,6 +56,7 @@ slow_models <-
     'bam',
     'ANFIS',
     'DENFIS',
+    'FH.GBML',
     'FIR.DM',
     'FS.HGD',
     'gam',
