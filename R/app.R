@@ -158,6 +158,7 @@ ui <- fluidPage(
         )
       ),
       tags$div(
+        br(),
         actionButton("load_sample", "Click here to load an example")
       )
     ),
@@ -991,6 +992,7 @@ load_ml_list <- function() {
       }
     }
   }
+  print(ml_available)
   removeUI(selector = paste0("#", "ml_checkbox_group"))
   insertUI(
     selector = "#dynamic_machine_learning",
