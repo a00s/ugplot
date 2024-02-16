@@ -448,7 +448,6 @@ server <- function(input, output, session) {
 
     if(ncol(subset_table) > max_table_columns) {
       table_message_text(paste("Data has more than ",max_table_columns," columns. For performance reasons, only the first ",max_table_columns," will be showed on the screen."))
-      print(table_message_text)
       subset_table <- subset_table[, 1:max_table_columns]
     } else {
       table_message_text("")
