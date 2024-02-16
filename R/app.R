@@ -194,7 +194,6 @@ ui <- fluidPage(
           div(
             class = "scrollable-table",
             style = "background-color: #f7f8fa; overflow-y: auto; max-height: 200px;",
-            # Add scroll and max height
             div(id = "dynamic_columns_categories")
           ),
           actionButton("transpose_table", "Transpose table", icon = icon("retweet")),
@@ -202,6 +201,7 @@ ui <- fluidPage(
           br(),
           br()
         ),
+        uiOutput("table_message"),br(),
         DT::DTOutput("contents")
       )
     ),
@@ -372,6 +372,9 @@ server <- function(input, output, session) {
   changed_palette <- 0
   annotation_row <- ""
 
+  max_table_columns <- 50
+  table_message_text <- reactiveVal("")
+
   defaultpalette <-
     reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
   transpose_table2 <- reactiveVal(0)
@@ -432,6 +435,7 @@ server <- function(input, output, session) {
       # This part to deal when a second file got read
     }
     if (length(input$column_checkbox_group) < 2) {
+      table_message_text("")
       return(NULL)
     }
 
@@ -440,7 +444,24 @@ server <- function(input, output, session) {
       "ml_target",
       choices = names(dff),
       selected = current_target_selection)
-    return(changed_table[input$row_checkbox_group, input$column_checkbox_group])
+    subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
+
+    if(ncol(subset_table) > max_table_columns) {
+      table_message_text(paste("Data has more than ",max_table_columns," columns. For performance reasons, only the first ",max_table_columns," will be showed on the screen."))
+      print(table_message_text)
+      subset_table <- subset_table[, 1:max_table_columns]
+    } else {
+      table_message_text("")
+    }
+    return(subset_table)
+    #return(changed_table[input$row_checkbox_group, input$column_checkbox_group])
+  })
+
+  output$table_message <- renderUI({
+    tags$h5(
+      style = "color: red;",
+      table_message_text()
+    )
   })
 
   observeEvent(input$add_all_columns, {
@@ -1036,8 +1057,14 @@ load_file_into_table <-
 
 load_dataset_into_table <- function(localsession) {
   if (exists("dff") && is.data.frame(dff) && nrow(dff) > 0) {
+
+    #if(ncol(dff) > 10) {
+    #  dff <- dff[, 1:10]
+    #}
+
     column_names <- colnames(dff)
     rown_names <- rownames(dff)
+
     changed_table <<- dff
     load_checkbox_group()
     updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
