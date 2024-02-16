@@ -1057,14 +1057,8 @@ load_file_into_table <-
 
 load_dataset_into_table <- function(localsession) {
   if (exists("dff") && is.data.frame(dff) && nrow(dff) > 0) {
-
-    #if(ncol(dff) > 10) {
-    #  dff <- dff[, 1:10]
-    #}
-
     column_names <- colnames(dff)
     rown_names <- rownames(dff)
-
     changed_table <<- dff
     load_checkbox_group()
     updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
