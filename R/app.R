@@ -17,8 +17,8 @@ library(caret)
 library(base64enc)
 library(shinyjs)
 library(ggExtra)
-library(ggpubr) # deletar
-library(dplyr)
+# library(ggpubr) # deletar
+# library(dplyr)
 library(gridExtra)
 
 options(shiny.maxRequestSize = 800 * 1024 * 1024)
