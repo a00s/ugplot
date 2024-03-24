@@ -17,9 +17,8 @@ library(caret)
 library(base64enc)
 library(shinyjs)
 library(ggExtra)
-# library(ggpubr) # deletar
-# library(dplyr)
 library(gridExtra)
+library(randomForest) # need for windows
 
 options(shiny.maxRequestSize = 800 * 1024 * 1024)
 
@@ -316,16 +315,7 @@ ui <- fluidPage(
       "5) MACHINE LEARNING",
       tags$div(
         style = "display: inline-block; vertical-align: top;",
-        #selectInput(
-        #  inputId = "ml_target",
-        #  label = "Target column (healthy, cancer, ...)",
-        #  choices = ""
-        #),
-        #selectizeInput("ml_target", "Choose an option:", choices = NULL, server = TRUE),
-        #selectizeInput("ml_target", "Target column (healthy, cancer, ...)", choices = "", selected = NULL, multiple = FALSE, options = NULL),
-
         selectizeInput("ml_target", "Target column (healthy, cancer, ...)", choices = ""),
-
         conditionalPanel(
           condition = "input.ml_target != ''",
           tags$div(
@@ -337,13 +327,6 @@ ui <- fluidPage(
                 div(id = "dynamic_machine_learning")),
               actionButton("uncheck_all_ml", "Uncheck all"),
               actionButton("check_all_ml", "Check all"),
-              # numericInput(
-              #   "ml_batch",
-              #   "Batch",
-              #   value = 0,
-              #   min = 0,
-              #   step = 50
-              # ),
               actionButton("play_search_best_model_caret",
                 "RUN"),
               tags$br(),
@@ -360,9 +343,7 @@ ui <- fluidPage(
                 "Install libraries")
             ),
             div(style = "width: 100%; overflow-x: auto;", uiOutput("ml_error_message")),
-            # div(style = "overflow-x: auto;width: 100%;", uiOutput("dynamicPlot")),
             div(style = "overflow-x: auto; width: 100%;", uiOutput("dynamic_ml_plot")),
-            # div(style = "overflow-x: auto;width: 100%;", plotOutput("ml_plot", height = "300px", width = "100%")),
             div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table_results_output")),
             verbatimTextOutput("ml_row_details"),
             div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table")),
@@ -383,12 +364,9 @@ server <- function(input, output, session) {
   ml_data_table <- reactiveVal()
   ml_table_results <- reactiveVal()
   ml_plot_importance <- reactiveVal()
-  # ml_prediction <- reactiveVal()
   num_rows <- reactiveVal(0)
   num_cols <- reactiveVal(0)
-
   text_result_ml <- reactiveVal(0)
-
   changed_table <<- ""
   numeric_table <- ""
   changed_palette <- 0
@@ -461,30 +439,15 @@ server <- function(input, output, session) {
       table_message_text("")
       return(NULL)
     }
-
-    #####current_target_selection <- input$ml_target_l ##### parte que gera problema
-    # current_target_selection <- input$ml_target
     updateSelectizeInput(session, "ml_target", choices = c("",names(dff)), server = TRUE)
-    # updateSelectizeInput(session, "ml_target", choices = names(dff), server = TRUE)
-
-    # print("Target do ML")
-    # print(input$ml_target)
-
-    #updateSelectInput(session,
-    #  "ml_target",
-    #  choices = names(dff),
-    #  selected = current_target_selection)
     subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
-
     if(ncol(subset_table) > max_table_columns) {
       table_message_text(paste("Data has more than ",max_table_columns," columns. For performance reasons, only the first ",max_table_columns," will be shown on the screen."))
       subset_table <- subset_table[, 1:max_table_columns]
     } else {
       table_message_text("")
     }
-
     return(subset_table)
-    #return(changed_table[input$row_checkbox_group, input$column_checkbox_group])
   })
 
   output$table_message <- renderUI({
@@ -495,13 +458,8 @@ server <- function(input, output, session) {
   })
 
   output$ml_error_message <- renderUI({
-    # tags$h(
-    #   style = "color: red;",
-    #   ml_error_message_text()
-    # )
     tags$span(ml_error_message_text(), style = "color: black; font-size: 12px;")
   })
-
 
   observeEvent(input$add_all_columns, {
     updateTextAreaInput(session,
@@ -563,7 +521,6 @@ server <- function(input, output, session) {
   })
 
   ####################### TAB 3) PLOT
-
   lapply(1:nrow(plotlist), function(i) {
     bname <- paste0("buttonplot", i)
     observeEvent(input[[bname]], {
@@ -669,10 +626,6 @@ server <- function(input, output, session) {
       }
       comandtorun <-
         gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
-      # if (plotlist$palette[i] != "" && changed_palette == 0) {
-      #   comandpalette <- paste("defaultpalette(", plotlist$palette[i], ")")
-      #   eval(parse(text = comandpalette))
-      # }
       comandtorun <-
         gsub("\\{\\{palette\\}\\}",
           "defaultpalette()",
@@ -847,21 +800,8 @@ server <- function(input, output, session) {
       selected_model_name <-
         ml_table_results()[selected_row,]$Model
       specific_model <- all_models_reactive()[[selected_model_name]]
-      # print(specific_model)
-      # print("----------------")
-      # print(selected_model_name)
-    # print(ml_prediction()[[selected_model_name]])
-      # ml_plot_importance <- ml_prediction[[selected_model_name]] ### funciona
       ml_plot_importance(ml_prediction[[selected_model_name]])
       print(ml_plot_importance())
-      # ml_plot_importance(ml_prediction()[[selected_model_name]])
-      # print(capture.output(ml_prediction[[specific_model]]))
-      # data_string <- capture.output(print(selected_data))
-      # data_string_combined <- paste(data_string, collapse = "\n")
-      # cat(data_string_combined)
-      # print(capture.output(print(selected_data)))
-
-      # print("----------------")
       tryCatch({
         importance <- varImp(specific_model)
         print(importance)
@@ -869,34 +809,6 @@ server <- function(input, output, session) {
       }, error = function(e) {
         print("Variable importance not supported for this model.")
       })
-      #-------------------------------------
-      # df <- data.frame(Model = c("glmnet", "glmnet", "glmnet", "glmnet", "glmnet", "glmnet"),
-      #   Prediction.Actual = c(74, 33, 34, 65, 29, 69),
-      #   Prediction.Predicted = c(51.78289, 47.03299, 58.79572, 46.85681, 27.94078, 77.94549))
-      #
-      # # Calculate residuals
-      # df$Residuals <- df$Prediction.Actual - df$Prediction.Predicted
-      #
-      # # Create the base plot
-      # p <- ggplot(df, aes(x = Prediction.Predicted, y = Residuals)) +
-      #   geom_hline(yintercept = 0, color = "black") + # Add a horizontal line at y=0
-      #   geom_point() + # Add points
-      #   theme_minimal() + # Use a minimal theme
-      #   labs(x = "Predicted Value", y = "Residuals", title = "Residuals vs Predicted")
-      #
-      # # Add the marginal histogram
-      # p <- ggExtra::ggMarginal(p, type = "histogram", fill = "green")
-      #
-      # # Display the plot
-      # print(p)
-
-      # data <- ml_plot_importance()
-      #
-      # # Gera o gráfico com os dados atuais
-      # ggplot(data, aes(x = Prediction.Actual, y = Prediction.Predicted)) +
-      #   geom_point() +
-      #   theme_minimal()
-      #-------------------------------------
     }
   })
 
@@ -905,23 +817,17 @@ server <- function(input, output, session) {
   })
 
   output$dynamic_ml_plot <- renderUI({
-    # Check if the data is available
     if (!is.null(ml_plot_importance())) {
-      # If data is available, render the plotOutput with the desired height
       plotOutput("ml_plot", height = "300px", width = "100%")
     } else {
-      # If data is not available, you could choose to not render anything,
-      # or render a minimal element, like an empty div.
-      tags$div() # This creates an empty div, which takes up no space
+      tags$div()
     }
   })
 
   output$ml_plot <- renderPlot({
     if(!is.null(ml_plot_importance())){
       data <- ml_plot_importance()
-      # Calculate residuals (errors)
       data$Residual <- data$Prediction.Predicted - data$Prediction.Actual
-
       # Residual Plot
       residual_plot <- ggplot(data, aes(x = Prediction.Actual, y = Residual)) +
         geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
@@ -962,7 +868,6 @@ server <- function(input, output, session) {
     ml_prediction <<- list()
     ml_prediction_plot <- ("")
     ml_error_message_text("")
-    # print(paste("Batch: ",input$ml_batch))
     withProgress(
       message = 'Searching the best model...',
       min = 1,
@@ -971,7 +876,6 @@ server <- function(input, output, session) {
       {
         best_result <- 0.00
         best_model <- ""
-        # target_name <- input$ml_target
         target_name <- input$ml_target
         X <-
           changed_table[input$row_checkbox_group, input$column_checkbox_group]
@@ -1072,20 +976,10 @@ server <- function(input, output, session) {
             pred <- predict(model, newdata = testSet)
 
             ml_pred_real <- data.frame(Actual = testSet[[target_name]], Predicted = pred)
-            #print(ml_pred_real)
             model_prediction <-
               data.frame(Model = model_name,
                 "Prediction" = ml_pred_real)
             ml_prediction[[model_name]] <<- model_prediction
-            # print(ml_prediction)
-            # print(ml_prediction[[model_name]])
-            # ml_prediction(c(ml_prediction(), model_name = model_prediction))
-            # print(ml_prediction()[[model_name]])
-            # ml_prediction(data.frame(rbind(ml_prediction(), model_prediction)))
-            # ml_prediction(rbind(ml_prediction(), model_prediction))
-
-            # print(ml_prediction())
-
             if (is.factor(testSet[[target_name]])) {
               accuracy <- sum(pred == testSet[[target_name]]) / length(pred)
               if (accuracy > best_result) {
@@ -1122,12 +1016,6 @@ server <- function(input, output, session) {
             )
             ml_error_message_text(paste(ml_error_message_text()," ",errormessage))
             print(errormessage)
-            # print(paste(
-            #   "Error in model",
-            #   model_name,
-            #   ": ",
-            #   conditionMessage(e)
-            # ))
           })
         }
       }
@@ -1136,7 +1024,7 @@ server <- function(input, output, session) {
   })
 
   session$onSessionEnded(function() {
-    rm(dff, changed_table, ml_available, ml_not_available, envir = globalenv())
+    rm(dff, changed_table, ml_available, ml_not_available, ml_prediction, envir = globalenv())
     if (exists("df_pre")) {
       rm(df_pre, envir = globalenv())
     }
