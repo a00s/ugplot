@@ -434,7 +434,6 @@ server <- function(input, output, session) {
     }, error = function(e) {
       error_info <- ""
       if(e$message == "duplicate 'row.names' are not allowed"){
-        print("Duplicated !!!")
         data <- read.table(
           filepath,
           header = TRUE,
@@ -445,7 +444,7 @@ server <- function(input, output, session) {
           strip.white = TRUE,
           skip = skipline
         )
-        error_info <- toString(data[duplicated(data[,1]) | duplicated(data[,1], fromLast = TRUE), 1])
+        error_info <- toString(unique(data[duplicated(data[,1]) | duplicated(data[,1], fromLast = TRUE), 1]))
       }
       showModal(modalDialog(
         title = "Error",
