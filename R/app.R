@@ -19,6 +19,7 @@ library(shinyjs)
 library(ggExtra)
 library(gridExtra)
 library(randomForest) # need for windows
+library(doParallel)
 
 options(shiny.maxRequestSize = 800 * 1024 * 1024)
 
@@ -66,7 +67,9 @@ slow_models <-
     'GFS.LT.RS',
     'GFS.FR.MOGUL',
     'GFS.THRIFT',
-    'HYFIS'
+    'HYFIS',
+    'gaussprRadial',
+    'gaussprLinear'
   )
 slow_models_text <-
   paste("Slow models automaticaly removed:",
@@ -84,6 +87,13 @@ getImage <- function(fileName) {
 }
 
 ui <- fluidPage(
+  tags$script("
+    $(document).on('shiny:sessioninitialized', function(event) {
+      setInterval(function() {
+        Shiny.setInputValue('keepAlive', Math.random());
+      }, 60000); // Send a random number to Shiny every 60 seconds
+    });
+  "),
   includeCSS(path_to_css()),
   add_busy_spinner(spin = "fading-circle"),
   useShinyjs(),
@@ -361,6 +371,7 @@ server <- function(input, output, session) {
   hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
   disable("merge_all_columns")
   disable("merge_all_rows")
+  session$allowReconnect(TRUE)
   ml_data_table <- reactiveVal()
   ml_table_results <- reactiveVal()
   ml_plot_importance <- reactiveVal()
@@ -421,9 +432,24 @@ server <- function(input, output, session) {
         "textarea_rows",
         value = paste(rownames(df_pre), collapse = "\n"))
     }, error = function(e) {
+      error_info <- ""
+      if(e$message == "duplicate 'row.names' are not allowed"){
+        print("Duplicated !!!")
+        data <- read.table(
+          filepath,
+          header = TRUE,
+          sep = tab_separator(),
+          row.names = NULL,
+          dec = ".",
+          stringsAsFactors = FALSE,
+          strip.white = TRUE,
+          skip = skipline
+        )
+        error_info <- toString(data[duplicated(data[,1]) | duplicated(data[,1], fromLast = TRUE), 1])
+      }
       showModal(modalDialog(
         title = "Error",
-        paste(e$message),
+        paste(paste(e$message, error_info)),
         easyClose = TRUE,
         footer = modalButton("OK")
       ))
@@ -441,6 +467,7 @@ server <- function(input, output, session) {
     }
     updateSelectizeInput(session, "ml_target", choices = c("",names(dff)), server = TRUE)
     subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
+    print(paste(nrow(subset_table)," x ",ncol(subset_table)))
     if(ncol(subset_table) > max_table_columns) {
       table_message_text(paste("Data has more than ",max_table_columns," columns. For performance reasons, only the first ",max_table_columns," will be shown on the screen."))
       subset_table <- subset_table[, 1:max_table_columns]
@@ -863,164 +890,184 @@ server <- function(input, output, session) {
     }
   })
 
+  observe({
+    input$keepAlive
+  })
+
   observeEvent(input$play_search_best_model_caret, {
+    cl <- makeCluster(detectCores()) # Create a cluster using all available cores
+    registerDoParallel(cl) # Register this cluster for parallel processing
+
+    # Your machine learning code using caret goes here, for example:
+    # train(y ~ ., data = your_data, method = "rf", allowParallel = TRUE)
+
+     # Stop the cluster after training is complete
+
+
     temp_models_list <- list()
     ml_prediction <<- list()
     ml_prediction_plot <- ("")
     ml_error_message_text("")
-    withProgress(
-      message = 'Searching the best model...',
-      min = 1,
-      max = length(input$ml_checkbox_group),
-      value = 0,
-      {
-        best_result <- 0.00
-        best_model <- ""
-        target_name <- input$ml_target
-        X <-
-          changed_table[input$row_checkbox_group, input$column_checkbox_group]
-        Y <- dff[[target_name]]
-        cols_to_convert <- input$checkbox_group_categories
-        if (length(cols_to_convert) > 0) {
-          for (this_target in cols_to_convert) {
-            if (!is.null(X[[this_target]])) {
-              X[[this_target]] <- as.factor(X[[this_target]])
-              if (length(levels(X[[this_target]])) == 1) {
-                X[[this_target]] <- as.numeric(rep(1, nrow(X)))
-              }
-              if (this_target == target_name) {
-                Y <- as.factor(dff[[target_name]])
-                freq_table <- table(Y)
-                single_item_levels <-
-                  names(freq_table[freq_table <= 2])
-                toKeep <- !(Y %in% single_item_levels)
-                Y <- Y[toKeep]
-                X <- X[toKeep,]
-                Y <- droplevels(Y)
-                X[[this_target]] <- droplevels(X[[this_target]])
+    tryCatch({
+      withProgress(
+        message = 'Searching the best model...',
+        min = 1,
+        max = length(input$ml_checkbox_group),
+        value = 0,
+        {
+          best_result <- 0.00
+          best_model <- ""
+          target_name <- input$ml_target
+          X <-
+            changed_table[input$row_checkbox_group, input$column_checkbox_group]
+          Y <- dff[[target_name]]
+          cols_to_convert <- input$checkbox_group_categories
+          if (length(cols_to_convert) > 0) {
+            for (this_target in cols_to_convert) {
+              if (!is.null(X[[this_target]])) {
+                X[[this_target]] <- as.factor(X[[this_target]])
+                if (length(levels(X[[this_target]])) == 1) {
+                  X[[this_target]] <- as.numeric(rep(1, nrow(X)))
+                }
+                if (this_target == target_name) {
+                  Y <- as.factor(dff[[target_name]])
+                  freq_table <- table(Y)
+                  single_item_levels <-
+                    names(freq_table[freq_table <= 2])
+                  toKeep <- !(Y %in% single_item_levels)
+                  Y <- Y[toKeep]
+                  X <- X[toKeep,]
+                  Y <- droplevels(Y)
+                  X[[this_target]] <- droplevels(X[[this_target]])
+                }
               }
             }
           }
-        }
-        ml_table_results("")
-        trainIndex <- createDataPartition(Y,
-          p = .8,
-          list = FALSE,
-          times = 1)
-        trainSet <- X[trainIndex, ]
-        testSet  <- X[-trainIndex, ]
-        if (!is.data.frame(trainSet)) {
-          trainSet <- as.data.frame(trainSet)
-        }
-        if (!is.data.frame(testSet)) {
-          testSet <- as.data.frame(testSet)
-        }
-
-        # Get the list of all available models
-        all_models <- input$ml_checkbox_group
-        count_model <- 0
-
-        for (model_name in all_models) {
-          count_model <- count_model + 1
-          result <- tryCatch({
-            model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
-            model_libraries <- model_info$library
-            for (lib in model_libraries) {
-              library(lib, character.only = TRUE)
-            }
-          }, error = function(e) {
-            print(paste("Failed to load", model_name))
-          })
-
-          ctrl <- trainControl(method = "cv", number = 10)
-
-          # Train the model
-          tryCatch({
-            lmessage <-
-              paste(
-                'Fitting model',
+          ml_table_results("")
+          trainIndex <- createDataPartition(Y,
+            p = .8,
+            list = FALSE,
+            times = 1)
+          trainSet <- X[trainIndex, ]
+          testSet  <- X[-trainIndex, ]
+          if (!is.data.frame(trainSet)) {
+            trainSet <- as.data.frame(trainSet)
+          }
+          if (!is.data.frame(testSet)) {
+            testSet <- as.data.frame(testSet)
+          }
+  
+          # Get the list of all available models
+          all_models <- input$ml_checkbox_group
+          count_model <- 0
+  
+          for (model_name in all_models) {
+            count_model <- count_model + 1
+            result <- tryCatch({
+              model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
+              model_libraries <- model_info$library
+              for (lib in model_libraries) {
+                library(lib, character.only = TRUE)
+              }
+            }, error = function(e) {
+              print(paste("Failed to load", model_name))
+            })
+  
+            ctrl <- trainControl(method = "cv", number = 10)
+  
+            # Train the model
+            tryCatch({
+              lmessage <-
+                paste(
+                  'Fitting model',
+                  model_name,
+                  ". ",
+                  count_model,
+                  " of ",
+                  length(input$ml_checkbox_group),
+                  " (Best model: ",
+                  best_model,
+                  " Result: ",
+                  best_result,
+                  ")"
+                )
+  
+              # Check for missing values in the trainSet and print them
+              if (any(is.na(trainSet))) {
+                print("Missing values in trainSet:")
+                print(trainSet[!complete.cases(trainSet),])
+              }
+  
+              # Check for missing values in the testSet and print them
+              if (any(is.na(testSet))) {
+                print("Missing values in testSet:")
+                print(testSet[!complete.cases(testSet),])
+              }
+  
+              setProgress(message = lmessage , value = count_model)
+              formula <- as.formula(paste(target_name, "~ ."))
+              model <-
+                train(
+                  formula,
+                  data = trainSet,
+                  method = model_name,
+                  trControl = ctrl,
+                  allowParallel = TRUE
+                )
+              # Make predictions
+              pred <- predict(model, newdata = testSet)
+  
+              ml_pred_real <- data.frame(Actual = testSet[[target_name]], Predicted = pred)
+              model_prediction <-
+                data.frame(Model = model_name,
+                  "Prediction" = ml_pred_real)
+              ml_prediction[[model_name]] <<- model_prediction
+              if (is.factor(testSet[[target_name]])) {
+                accuracy <- sum(pred == testSet[[target_name]]) / length(pred)
+                if (accuracy > best_result) {
+                  best_result <- accuracy
+                  best_model <- model_name
+                }
+                model_results <-
+                  data.frame(Model = model_name,
+                    "Accuracy" = accuracy)
+                ml_table_results(rbind(ml_table_results(), model_results))
+                temp_models_list[[model_name]] <- model
+              } else {
+                # Evaluate the model
+                result_pred <-
+                  postResample(pred, testSet[[target_name]])
+  
+                if (result_pred["Rsquared"] > best_result) {
+                  best_result <- result_pred["Rsquared"]
+                  best_model <- model_name
+                }
+                model_results <-
+                  data.frame(Model = model_name,
+                    "R2" = result_pred["Rsquared"],
+                    "MAE" = result_pred["MAE"])
+                ml_table_results(rbind(ml_table_results(), model_results))
+                temp_models_list[[model_name]] <- model
+              }
+            }, error = function(e) {
+              errormessage <- paste(
+                "Could't run model ",
                 model_name,
-                ". ",
-                count_model,
-                " of ",
-                length(input$ml_checkbox_group),
-                " (Best model: ",
-                best_model,
-                " Result: ",
-                best_result,
-                ")"
+                ": ",
+                conditionMessage(e)
               )
-
-            # Check for missing values in the trainSet and print them
-            if (any(is.na(trainSet))) {
-              print("Missing values in trainSet:")
-              print(trainSet[!complete.cases(trainSet),])
-            }
-
-            # Check for missing values in the testSet and print them
-            if (any(is.na(testSet))) {
-              print("Missing values in testSet:")
-              print(testSet[!complete.cases(testSet),])
-            }
-
-            setProgress(message = lmessage , value = count_model)
-            formula <- as.formula(paste(target_name, "~ ."))
-            model <-
-              train(
-                formula,
-                data = trainSet,
-                method = model_name,
-                trControl = ctrl
-              )
-            # Make predictions
-            pred <- predict(model, newdata = testSet)
-
-            ml_pred_real <- data.frame(Actual = testSet[[target_name]], Predicted = pred)
-            model_prediction <-
-              data.frame(Model = model_name,
-                "Prediction" = ml_pred_real)
-            ml_prediction[[model_name]] <<- model_prediction
-            if (is.factor(testSet[[target_name]])) {
-              accuracy <- sum(pred == testSet[[target_name]]) / length(pred)
-              if (accuracy > best_result) {
-                best_result <- accuracy
-                best_model <- model_name
-              }
-              model_results <-
-                data.frame(Model = model_name,
-                  "Accuracy" = accuracy)
-              ml_table_results(rbind(ml_table_results(), model_results))
-              temp_models_list[[model_name]] <- model
-            } else {
-              # Evaluate the model
-              result_pred <-
-                postResample(pred, testSet[[target_name]])
-
-              if (result_pred["Rsquared"] > best_result) {
-                best_result <- result_pred["Rsquared"]
-                best_model <- model_name
-              }
-              model_results <-
-                data.frame(Model = model_name,
-                  "R2" = result_pred["Rsquared"],
-                  "MAE" = result_pred["MAE"])
-              ml_table_results(rbind(ml_table_results(), model_results))
-              temp_models_list[[model_name]] <- model
-            }
-          }, error = function(e) {
-            errormessage <- paste(
-              "Could't run model ",
-              model_name,
-              ": ",
-              conditionMessage(e)
-            )
-            ml_error_message_text(paste(ml_error_message_text()," ",errormessage))
-            print(errormessage)
-          })
+              ml_error_message_text(paste(ml_error_message_text()," ",errormessage))
+              print(errormessage)
+            })
+          }
         }
-      }
-    )
+      )
+    }, error = function(e) {
+      print(e)
+    })
     all_models_reactive(temp_models_list)
+    print(ml_table_results())
+    stopCluster(cl)
   })
 
   session$onSessionEnded(function() {
