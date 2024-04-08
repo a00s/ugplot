@@ -917,9 +917,16 @@ server <- function(input, output, session) {
           best_result <- 0.00
           best_model <- ""
           target_name <- input$ml_target
-          X <-
-            changed_table[input$row_checkbox_group, input$column_checkbox_group]
-          Y <- dff[[target_name]]
+          X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
+          # Y <- dff[[target_name]]
+          Y <- X[[target_name]]
+          print("------------------ T -------------------")
+          print(ncol(X))
+          print(nrow(X))
+          print(length(Y))
+          # print(paste("Y2",length(Y2)))
+          # print(Y2)
+          print("------------------ TF -------------------")
           cols_to_convert <- input$checkbox_group_categories
           if (length(cols_to_convert) > 0) {
             for (this_target in cols_to_convert) {
