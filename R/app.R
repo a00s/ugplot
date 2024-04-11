@@ -215,6 +215,7 @@ ui <- fluidPage(
           br(),
           br()
         ),
+        uiOutput("table_cleaning_message"),br(),
         uiOutput("table_message"),br(),
         DT::DTOutput("contents")
       )
@@ -385,6 +386,7 @@ server <- function(input, output, session) {
 
   max_table_columns <- 50
   table_message_text <- reactiveVal("")
+  table_cleaning_message_text <- reactiveVal("")
   ml_error_message_text <- reactiveVal("")
 
   defaultpalette <-
@@ -473,6 +475,45 @@ server <- function(input, output, session) {
     } else {
       table_message_text("")
     }
+    # empty_columns <- sapply(subset_table, function(column) all(is.na(column)))
+    # Print names of columns that are full of NAs
+    # names(subset_table)[empty_columns]
+    
+    # Your original code for identifying completely empty columns
+    empty <- sapply(subset_table, function(column) all(is.na(column)))
+    
+    # Count the number of completely empty columns
+    num_empty_columns <- sum(empty)
+    print(paste("Number of completely empty columns:", num_empty_columns))
+    
+    # For columns that are not completely empty, count the number of empty rows
+    na_count_per_column <- sapply(subset_table, function(column) sum(is.na(column)))
+    
+    # Exclude completely empty columns from the count
+    na_count_per_non_empty_column <- na_count_per_column[!empty]
+    
+    # Print the number of empty rows for columns that are not completely empty
+    print("Number of empty rows in each non-completely empty column:")
+    print(na_count_per_non_empty_column)
+    
+    
+    if(any(empty)) {
+      cat("There are columns completely empty\n")
+      print(names(subset_table)[empty])
+      # Extract names of completely empty columns
+      # empty_column_names <- names(subset_table)[empty]
+      
+      # Convert the names into a single string, separated by commas
+      empty_column_names_str <- paste(names(subset_table)[empty], collapse = ", ")
+      table_cleaning_message_text(paste("Those columns are completely empty. Very few machine learning models are able to deal with empty columns:",empty_column_names_str))
+    #   # Further actions if there are such columns
+    } else {
+      print("Cleaning message about empty columns")
+      table_cleaning_message_text("")
+    #   cat("There are no columns full of NA values\n")
+    #   # Actions if there are no such columns
+    }
+    
     return(subset_table)
   })
 
@@ -482,11 +523,40 @@ server <- function(input, output, session) {
       table_message_text()
     )
   })
+  output$table_cleaning_message <- renderUI({
+    if(table_cleaning_message_text() != ""){
+      tags$h5(
+        style = "color: orange;",
+        table_cleaning_message_text(),
+        actionButton("remove_empty_columns", "Remove it")
+      )
+    }
+  })
 
   output$ml_error_message <- renderUI({
     tags$span(ml_error_message_text(), style = "color: black; font-size: 12px;")
   })
 
+  observeEvent(input$remove_empty_columns, {
+    subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
+    # Determine which columns are completely empty
+    empty <- sapply(subset_table, function(column) all(is.na(column)))
+    
+    # Get the names of all columns
+    all_column_names <- names(subset_table)
+    
+    # Get the names of the columns that are not empty
+    non_empty_column_names <- all_column_names[!empty]
+    
+    # Update the checkbox group to select only the non-empty columns
+    updateCheckboxGroupInput(session,
+      inputId = "column_checkbox_group",
+      selected = non_empty_column_names
+    )
+    
+    print("Unchecking empty columns")
+  })
+  
   observeEvent(input$add_all_columns, {
     updateTextAreaInput(session,
       "textarea_columns",
