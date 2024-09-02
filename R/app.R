@@ -386,7 +386,7 @@ server <- function(input, output, session) {
 
   max_table_columns <- 50
   table_message_text <- reactiveVal("")
-  table_cleaning_message_text <- reactiveVal("")
+  table_cleaning_message_text <<- reactiveVal("")
   ml_error_message_text <- reactiveVal("")
 
   defaultpalette <-
@@ -471,7 +471,7 @@ server <- function(input, output, session) {
     print(paste(nrow(subset_table)," x ",ncol(subset_table)))
     if(ncol(subset_table) > max_table_columns) {
       table_message_text(paste("Data has more than ",max_table_columns," columns. For performance reasons, only the first ",max_table_columns," will be shown on the screen."))
-      subset_table <- subset_table[, 1:max_table_columns]
+      # subset_table <- subset_table[, 1:max_table_columns]
     } else {
       table_message_text("")
     }
@@ -497,22 +497,22 @@ server <- function(input, output, session) {
     print(na_count_per_non_empty_column)
     
     
-    if(any(empty)) {
-      cat("There are columns completely empty\n")
-      print(names(subset_table)[empty])
-      # Extract names of completely empty columns
-      # empty_column_names <- names(subset_table)[empty]
-      
-      # Convert the names into a single string, separated by commas
-      empty_column_names_str <- paste(names(subset_table)[empty], collapse = ", ")
-      table_cleaning_message_text(paste("Those columns are completely empty. Very few machine learning models are able to deal with empty columns:",empty_column_names_str))
-    #   # Further actions if there are such columns
-    } else {
-      print("Cleaning message about empty columns")
-      table_cleaning_message_text("")
-    #   cat("There are no columns full of NA values\n")
-    #   # Actions if there are no such columns
-    }
+    # if(any(empty)) {
+    #   cat("There are columns completely empty\n")
+    #   print(names(subset_table)[empty])
+    #   # Extract names of completely empty columns
+    #   # empty_column_names <- names(subset_table)[empty]
+    #   
+    #   # Convert the names into a single string, separated by commas
+    #   empty_column_names_str <- paste(names(subset_table)[empty], collapse = ", ")
+    #   table_cleaning_message_text(paste("Those columns have been cleanes because are empty:",empty_column_names_str))
+    # #   # Further actions if there are such columns
+    # } else {
+    #   print("Cleaning message about empty columns")
+    #   # table_cleaning_message_text("")
+    # #   cat("There are no columns full of NA values\n")
+    # #   # Actions if there are no such columns
+    # }
     
     return(subset_table)
   })
@@ -528,10 +528,18 @@ server <- function(input, output, session) {
       tags$h5(
         style = "color: orange;",
         table_cleaning_message_text(),
-        actionButton("remove_empty_columns", "Remove it")
+        # actionButton("remove_empty_columns", "Remove it")
       )
     }
   })
+  # output$table_cleaning_message <- renderUI({
+  #   if (table_cleaning_message_text() != "") {
+  #     tags$h5(
+  #       style = "color: orange;",
+  #       table_cleaning_message_text()
+  #     )
+  #   }
+  # })
 
   output$ml_error_message <- renderUI({
     tags$span(ml_error_message_text(), style = "color: black; font-size: 12px;")
@@ -1090,6 +1098,22 @@ server <- function(input, output, session) {
                   trControl = ctrl,
                   allowParallel = TRUE
                 )
+              # model <- train(
+              #   x = trainSet[, -which(names(trainSet) == target_name)],
+              #   y = trainSet[[target_name]],
+              #   method = model_name,
+              #   trControl = ctrl,
+              #   allowParallel = TRUE
+              # )
+              
+              # model <- train(
+              #   x = trainSet[, -which(names(trainSet) == target_name)],  # predictors (all columns except the target)
+              #   y = trainSet[[target_name]],  # response (target column)
+              #   method = model_name,  # the model you want to run, e.g., "rf"
+              #   trControl = ctrl,  # control parameters for cross-validation
+              #   allowParallel = TRUE  # allow parallel processing
+              # )
+              
               # Make predictions
               pred <- predict(model, newdata = testSet)
   
@@ -1200,6 +1224,26 @@ load_file_into_table <-
     column_names <- strsplit(textarea_columns, "\n")[[1]]
     rown_names <- strsplit(textarea_rows, "\n")[[1]]
     dff <<- df_pre[rown_names, column_names, drop = FALSE]
+    
+    # # Remover colunas vazias automaticamente
+    # empty_columns <- sapply(dff, function(column) all(is.na(column)))
+    # if (any(empty_columns)) {
+    #   dff <<- dff[, !empty_columns, drop = FALSE]
+    #   showNotification("Colunas vazias removidas automaticamente.", type = "message")
+    # }
+    
+    # Verifica e remove colunas vazias
+    empty_columns <- sapply(dff, function(column) all(is.na(column)))
+    removed_columns <- names(dff)[empty_columns]
+    if (any(empty_columns)) {
+      dff <<- dff[, !empty_columns, drop = FALSE]
+      # removed_columns_message <- paste("As seguintes colunas foram removidas por estarem completamente vazias:", paste(removed_columns, collapse = ", "))
+      table_cleaning_message_text(paste("Those columns have been removed because are empty: ",paste(removed_columns, collapse = ", ")))
+      # table_cleaning_message_text(removed_columns_message)
+    } else {
+      table_cleaning_message_text("")
+    }
+    
     changed_table <<- dff
     load_checkbox_group()
     updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
