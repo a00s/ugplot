@@ -478,31 +478,31 @@ server <- function(input, output, session) {
     # empty_columns <- sapply(subset_table, function(column) all(is.na(column)))
     # Print names of columns that are full of NAs
     # names(subset_table)[empty_columns]
-    
+
     # Your original code for identifying completely empty columns
     empty <- sapply(subset_table, function(column) all(is.na(column)))
-    
+
     # Count the number of completely empty columns
     num_empty_columns <- sum(empty)
     print(paste("Number of completely empty columns:", num_empty_columns))
-    
+
     # For columns that are not completely empty, count the number of empty rows
     na_count_per_column <- sapply(subset_table, function(column) sum(is.na(column)))
-    
+
     # Exclude completely empty columns from the count
     na_count_per_non_empty_column <- na_count_per_column[!empty]
-    
+
     # Print the number of empty rows for columns that are not completely empty
     print("Number of empty rows in each non-completely empty column:")
     print(na_count_per_non_empty_column)
-    
-    
+
+
     # if(any(empty)) {
     #   cat("There are columns completely empty\n")
     #   print(names(subset_table)[empty])
     #   # Extract names of completely empty columns
     #   # empty_column_names <- names(subset_table)[empty]
-    #   
+    #
     #   # Convert the names into a single string, separated by commas
     #   empty_column_names_str <- paste(names(subset_table)[empty], collapse = ", ")
     #   table_cleaning_message_text(paste("Those columns have been cleanes because are empty:",empty_column_names_str))
@@ -513,7 +513,7 @@ server <- function(input, output, session) {
     # #   cat("There are no columns full of NA values\n")
     # #   # Actions if there are no such columns
     # }
-    
+
     return(subset_table)
   })
 
@@ -549,22 +549,22 @@ server <- function(input, output, session) {
     subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
     # Determine which columns are completely empty
     empty <- sapply(subset_table, function(column) all(is.na(column)))
-    
+
     # Get the names of all columns
     all_column_names <- names(subset_table)
-    
+
     # Get the names of the columns that are not empty
     non_empty_column_names <- all_column_names[!empty]
-    
+
     # Update the checkbox group to select only the non-empty columns
     updateCheckboxGroupInput(session,
       inputId = "column_checkbox_group",
       selected = non_empty_column_names
     )
-    
+
     print("Unchecking empty columns")
   })
-  
+
   observeEvent(input$add_all_columns, {
     updateTextAreaInput(session,
       "textarea_columns",
@@ -1040,11 +1040,11 @@ server <- function(input, output, session) {
           if (!is.data.frame(testSet)) {
             testSet <- as.data.frame(testSet)
           }
-  
+
           # Get the list of all available models
           all_models <- input$ml_checkbox_group
           count_model <- 0
-  
+
           for (model_name in all_models) {
             count_model <- count_model + 1
             result <- tryCatch({
@@ -1056,9 +1056,9 @@ server <- function(input, output, session) {
             }, error = function(e) {
               print(paste("Failed to load", model_name))
             })
-  
+
             ctrl <- trainControl(method = "cv", number = 10)
-  
+
             # Train the model
             tryCatch({
               lmessage <-
@@ -1075,19 +1075,19 @@ server <- function(input, output, session) {
                   best_result,
                   ")"
                 )
-  
+
               # Check for missing values in the trainSet and print them
               if (any(is.na(trainSet))) {
                 print("Missing values in trainSet:")
                 print(trainSet[!complete.cases(trainSet),])
               }
-  
+
               # Check for missing values in the testSet and print them
               if (any(is.na(testSet))) {
                 print("Missing values in testSet:")
                 print(testSet[!complete.cases(testSet),])
               }
-  
+
               setProgress(message = lmessage , value = count_model)
               formula <- as.formula(paste(target_name, "~ ."))
               model <-
@@ -1105,7 +1105,7 @@ server <- function(input, output, session) {
               #   trControl = ctrl,
               #   allowParallel = TRUE
               # )
-              
+
               # model <- train(
               #   x = trainSet[, -which(names(trainSet) == target_name)],  # predictors (all columns except the target)
               #   y = trainSet[[target_name]],  # response (target column)
@@ -1113,10 +1113,10 @@ server <- function(input, output, session) {
               #   trControl = ctrl,  # control parameters for cross-validation
               #   allowParallel = TRUE  # allow parallel processing
               # )
-              
+
               # Make predictions
               pred <- predict(model, newdata = testSet)
-  
+
               ml_pred_real <- data.frame(Actual = testSet[[target_name]], Predicted = pred)
               model_prediction <-
                 data.frame(Model = model_name,
@@ -1137,7 +1137,7 @@ server <- function(input, output, session) {
                 # Evaluate the model
                 result_pred <-
                   postResample(pred, testSet[[target_name]])
-  
+
                 if (result_pred["Rsquared"] > best_result) {
                   best_result <- result_pred["Rsquared"]
                   best_model <- model_name
@@ -1224,14 +1224,14 @@ load_file_into_table <-
     column_names <- strsplit(textarea_columns, "\n")[[1]]
     rown_names <- strsplit(textarea_rows, "\n")[[1]]
     dff <<- df_pre[rown_names, column_names, drop = FALSE]
-    
+
     # # Remover colunas vazias automaticamente
     # empty_columns <- sapply(dff, function(column) all(is.na(column)))
     # if (any(empty_columns)) {
     #   dff <<- dff[, !empty_columns, drop = FALSE]
     #   showNotification("Colunas vazias removidas automaticamente.", type = "message")
     # }
-    
+
     # Verifica e remove colunas vazias
     empty_columns <- sapply(dff, function(column) all(is.na(column)))
     removed_columns <- names(dff)[empty_columns]
@@ -1243,7 +1243,7 @@ load_file_into_table <-
     } else {
       table_cleaning_message_text("")
     }
-    
+
     changed_table <<- dff
     load_checkbox_group()
     updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
