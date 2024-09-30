@@ -998,13 +998,13 @@ server <- function(input, output, session) {
           X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
           # Y <- dff[[target_name]]
           Y <- X[[target_name]]
-          print("------------------ T -------------------")
-          print(ncol(X))
-          print(nrow(X))
-          print(length(Y))
+          # print("------------------ T -------------------")
+          # print(ncol(X))
+          # print(nrow(X))
+          # print(length(Y))
           # print(paste("Y2",length(Y2)))
           # print(Y2)
-          print("------------------ TF -------------------")
+          # print("------------------ TF -------------------")
           cols_to_convert <- input$checkbox_group_categories
           if (length(cols_to_convert) > 0) {
             for (this_target in cols_to_convert) {
@@ -1035,12 +1035,33 @@ server <- function(input, output, session) {
           trainSet <- X[trainIndex, ]
           testSet  <- X[-trainIndex, ]
           if (!is.data.frame(trainSet)) {
+            print(" trainset nao era data.frame")
             trainSet <- as.data.frame(trainSet)
           }
           if (!is.data.frame(testSet)) {
             testSet <- as.data.frame(testSet)
+            print(" testset nao era data.frame")
           }
 
+
+          # Before training the model, check for missing values
+
+          # if (anyNA(trainSet) || anyNA(testSet)) {
+          #   print(paste("Missing values detected in data for model", model_name))
+          #   next  # Skip to the next model
+          # } else {
+          #   print("nao encontrei nada faltando !!!!")
+          # }
+
+
+          # vendo para converter pra matriz
+          #postdtrainset <<- trainSet
+          #postdtestset <<- testSet
+          #trainSet <- as.matrix(trainSet)
+          #testSet <- as.matrix(testSet)
+          #posttrainset <<- trainSet
+          #posttestset <<- testSet
+          #print(testSet)
           # Get the list of all available models
           all_models <- input$ml_checkbox_group
           count_model <- 0
@@ -1058,6 +1079,10 @@ server <- function(input, output, session) {
             })
 
             ctrl <- trainControl(method = "cv", number = 10)
+
+            # Print the types supported by the model
+            model_types <- model_info$type
+            print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
 
             # Train the model
             tryCatch({
@@ -1091,28 +1116,13 @@ server <- function(input, output, session) {
               setProgress(message = lmessage , value = count_model)
               formula <- as.formula(paste(target_name, "~ ."))
               model <-
-                train(
-                  formula,
-                  data = trainSet,
-                  method = model_name,
-                  trControl = ctrl,
-                  allowParallel = TRUE
-                )
-              # model <- train(
-              #   x = trainSet[, -which(names(trainSet) == target_name)],
-              #   y = trainSet[[target_name]],
-              #   method = model_name,
-              #   trControl = ctrl,
-              #   allowParallel = TRUE
-              # )
-
-              # model <- train(
-              #   x = trainSet[, -which(names(trainSet) == target_name)],  # predictors (all columns except the target)
-              #   y = trainSet[[target_name]],  # response (target column)
-              #   method = model_name,  # the model you want to run, e.g., "rf"
-              #   trControl = ctrl,  # control parameters for cross-validation
-              #   allowParallel = TRUE  # allow parallel processing
-              # )
+               train(
+                 formula,
+                 data = trainSet,
+                 method = model_name,
+                 trControl = ctrl #,
+                 # allowParallel = TRUE
+               )
 
               # Make predictions
               pred <- predict(model, newdata = testSet)
