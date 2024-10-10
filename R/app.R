@@ -329,6 +329,17 @@ ui <- fluidPage(
         selectizeInput("ml_target", "Target column (healthy, cancer, ...)", choices = ""),
         conditionalPanel(
           condition = "input.ml_target != ''",
+
+          tags$div(
+            style = "display: inline-block; vertical-align: top;",
+            class = "small-input",
+            numericInput(
+              "ml_seed",
+              "Seed (optional):",
+              step = 1,
+              value = NULL
+            )
+          ),
           tags$div(
             verbatimTextOutput("console_output"),
             column(
@@ -908,7 +919,8 @@ server <- function(input, output, session) {
       print(ml_plot_importance())
       tryCatch({
         importance <- varImp(specific_model)
-        print(importance)
+        importance_df <- importance$importance
+        print(importance_df)
         print(text_result_ml())
       }, error = function(e) {
         print("Variable importance not supported for this model.")
@@ -1028,6 +1040,13 @@ server <- function(input, output, session) {
             }
           }
           ml_table_results("")
+          if (!is.null(input$ml_seed) && input$ml_seed != "" && !is.na(as.numeric(input$ml_seed))) {
+            # Print the seed value
+            print(paste("ML seed:", input$ml_seed))
+
+            # Set the seed
+            set.seed(as.numeric(input$ml_seed))
+          }
           trainIndex <- createDataPartition(Y,
             p = .8,
             list = FALSE,
