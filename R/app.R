@@ -335,7 +335,7 @@ ui <- fluidPage(
             class = "small-input",
             numericInput(
               "ml_seed",
-              "Seed (optional):",
+              "Seed(optional):",
               step = 1,
               value = NULL
             )
