@@ -923,7 +923,7 @@ server <- function(input, output, session) {
         print(importance_df)
         print(text_result_ml())
       }, error = function(e) {
-        print("Variable importance not supported for this model.")
+        print("Variable importance not supported or R^2 smaller than 0.6 for this model.")
       })
     }
   })
@@ -1087,11 +1087,15 @@ server <- function(input, output, session) {
 
           for (model_name in all_models) {
             count_model <- count_model + 1
+            current_lib <- "";
             result <- tryCatch({
               model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
               model_libraries <- model_info$library
               for (lib in model_libraries) {
                 library(lib, character.only = TRUE)
+                print("Carregando biblioteca")
+                print(lib)
+                current_lib <- lib
               }
             }, error = function(e) {
               print(paste("Failed to load", model_name))
@@ -1160,8 +1164,11 @@ server <- function(input, output, session) {
                 model_results <-
                   data.frame(Model = model_name,
                     "Accuracy" = accuracy)
+                print("---------------- ACCURACY -------------")
+                print(model_name)
                 ml_table_results(rbind(ml_table_results(), model_results))
                 temp_models_list[[model_name]] <- model
+                rm(model)
               } else {
                 # Evaluate the model
                 result_pred <-
@@ -1176,7 +1183,10 @@ server <- function(input, output, session) {
                     "R2" = result_pred["Rsquared"],
                     "MAE" = result_pred["MAE"])
                 ml_table_results(rbind(ml_table_results(), model_results))
-                temp_models_list[[model_name]] <- model
+                if(result_pred["Rsquared"] >= 0.6) {
+                  temp_models_list[[model_name]] <- model
+                }
+                rm(model)
               }
             }, error = function(e) {
               errormessage <- paste(
@@ -1188,6 +1198,8 @@ server <- function(input, output, session) {
               ml_error_message_text(paste(ml_error_message_text()," ",errormessage))
               print(errormessage)
             })
+            # cleanning the garbage
+            gc()
           }
         }
       )
