@@ -1166,6 +1166,7 @@ server <- function(input, output, session) {
                     "Accuracy" = accuracy)
                 print("---------------- ACCURACY -------------")
                 print(model_name)
+                print(paste("=========>",model_name,result_pred["Rsquared"]))
                 ml_table_results(rbind(ml_table_results(), model_results))
                 temp_models_list[[model_name]] <- model
                 rm(model)
@@ -1183,6 +1184,7 @@ server <- function(input, output, session) {
                     "R2" = result_pred["Rsquared"],
                     "MAE" = result_pred["MAE"])
                 ml_table_results(rbind(ml_table_results(), model_results))
+                print(paste("=========>",model_name,result_pred["Rsquared"]))
                 if(result_pred["Rsquared"] >= 0.6) {
                   temp_models_list[[model_name]] <- model
                 }
