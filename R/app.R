@@ -891,7 +891,7 @@ server <- function(input, output, session) {
     updateCheckboxGroupInput(session,
       inputId = "ml_checkbox_group",
       selected = ml_available
-      )
+    )
   })
 
   observeEvent(input$uncheck_all_ml_missing, {
@@ -990,7 +990,7 @@ server <- function(input, output, session) {
     # Your machine learning code using caret goes here, for example:
     # train(y ~ ., data = your_data, method = "rf", allowParallel = TRUE)
 
-     # Stop the cluster after training is complete
+    # Stop the cluster after training is complete
 
 
     temp_models_list <- list()
@@ -1139,13 +1139,13 @@ server <- function(input, output, session) {
               setProgress(message = lmessage , value = count_model)
               formula <- as.formula(paste(target_name, "~ ."))
               model <-
-               train(
-                 formula,
-                 data = trainSet,
-                 method = model_name,
-                 trControl = ctrl #,
-                 # allowParallel = TRUE
-               )
+                train(
+                  formula,
+                  data = trainSet,
+                  method = model_name,
+                  trControl = ctrl #,
+                  # allowParallel = TRUE
+                )
 
               # Make predictions
               pred <- predict(model, newdata = testSet)
@@ -1164,11 +1164,18 @@ server <- function(input, output, session) {
                 model_results <-
                   data.frame(Model = model_name,
                     "Accuracy" = accuracy)
-                print("---------------- ACCURACY -------------")
-                print(model_name)
-                print(paste("=========>",model_name,result_pred["Rsquared"]))
                 ml_table_results(rbind(ml_table_results(), model_results))
                 temp_models_list[[model_name]] <- model
+                # Acessar o modelo final
+                #modelo_final <- model$finalModel
+
+                # Capturar as regras
+                #regras_texto <- capture.output(summary(modelo_final))
+
+                # Imprimir as regras no console
+                #cat("Regras do modelo C5.0Rules:\n")
+                #cat(regras_texto, sep = "\n")
+
                 rm(model)
               } else {
                 # Evaluate the model
@@ -1184,12 +1191,12 @@ server <- function(input, output, session) {
                     "R2" = result_pred["Rsquared"],
                     "MAE" = result_pred["MAE"])
                 ml_table_results(rbind(ml_table_results(), model_results))
-                print(paste("=========>",model_name,result_pred["Rsquared"]))
                 if(result_pred["Rsquared"] >= 0.6) {
                   temp_models_list[[model_name]] <- model
                 }
                 rm(model)
               }
+              print(ml_table_results())
             }, error = function(e) {
               errormessage <- paste(
                 "Could't run model ",
