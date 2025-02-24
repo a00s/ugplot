@@ -288,9 +288,14 @@ ui <- fluidPage(
           class = "sidebar-panel-custom2d",
           div(
             class = "rowplotlist",
+            selectInput(
+              inputId = "correlation",
+              label = NULL,
+              choices = c("pearson", "spearman", "kendall")
+            ),
             sliderInput(
               inputId = "correlation_threshhold",
-              label = "Correlation >= x",
+              label = "Spearman Correlation >= x",
               min = 0,
               max = 1,
               value = 0.7,
@@ -806,7 +811,7 @@ server <- function(input, output, session) {
           numeric_table[,!(names(numeric_table) %in% cols_to_convert)]
         numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
         X <- numeric_table
-        cor_matrix <- cor(X)
+        cor_matrix <- cor(X, method=input$correlation)
         num_cols <- ncol(X)
         plots_list <- list()
         for (i in 1:num_cols) {
@@ -816,6 +821,13 @@ server <- function(input, output, session) {
                   cor_matrix[i, j] >= input$correlation_threshhold ||
                     cor_matrix[i, j] <= input$correlation_threshhold_negative
                 )) {
+              print(
+                paste(
+                  rownames(cor_matrix)[i],
+                  colnames(cor_matrix)[j],
+                  cor_matrix[i, j]
+                )
+              )
               comandtorun <-
                 gsub("\\{\\{X\\}\\}",
                   "X[, colnames(X)[i]]",
