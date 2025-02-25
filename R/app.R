@@ -1219,6 +1219,7 @@ server <- function(input, output, session) {
               ml_error_message_text(paste(ml_error_message_text()," ",errormessage))
               print(errormessage)
             })
+            print(paste("Memory used:", pryr::mem_used()/1024/1024))
             # cleanning the garbage
             gc()
           }
