@@ -1165,7 +1165,6 @@ server <- function(input, output, session) {
             do_dataset_seed <- 1
           }
           for (loop_dataset_seed in loop_dataset_seedi:loop_dataset_seedf) {
-            print(paste("=========================== DATASET SEED ========================",loop_dataset_seed))
             if(do_dataset_seed == 1){
               set.seed(loop_dataset_seed)
             }
@@ -1224,8 +1223,7 @@ server <- function(input, output, session) {
                 model_libraries <- model_info$library
                 for (lib in model_libraries) {
                   library(lib, character.only = TRUE)
-                  print("Carregando biblioteca")
-                  print(lib)
+                  print(paste("Loading library: ",lib))
                   current_lib <- lib
                   #detach("package:caret", unload = TRUE)
                   #library(caret)
@@ -1241,7 +1239,6 @@ server <- function(input, output, session) {
               print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
 
               for (loop_seed in loop_seedi:loop_seedf) {
-                print(paste("=========================== ENTRANDO NO LOOP ========================",loop_seed))
                 if(do_seed == 1){
                   set.seed(loop_seed)
                 }
@@ -1377,7 +1374,8 @@ server <- function(input, output, session) {
                     }
                     rm(model)
                   }
-                  print(ml_table_results())
+                  sorted_results <- ml_table_results()[order(-as.numeric(as.character(ml_table_results()$Accuracy))), ]
+                  print(head(sorted_results, 10))
                 }, error = function(e) {
                   errormessage <- paste(
                     "Could't run model ",
