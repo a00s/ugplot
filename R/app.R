@@ -21,7 +21,7 @@ library(gridExtra)
 library(randomForest) # need for windows
 library(doParallel)
 library(R.utils)
-
+sink("ugplot.log", split = TRUE)
 #Sys.setenv(OMP_NUM_THREADS = 2)  # Define o máximo de threads para 2
 #Sys.setenv(MKL_NUM_THREADS = 2)  # Se estiver usando Intel MKL
 #Sys.setenv(OPENBLAS_NUM_THREADS = 2)  # Se estiver usando OpenBLAS
@@ -80,7 +80,7 @@ slow_models <-
   )
 slow_models_text <-
   paste("Slow or problematic models automaticaly removed:",
-        paste(slow_models, collapse = ", "))
+    paste(slow_models, collapse = ", "))
 
 df_pre <<- ""
 dff <<- ""
@@ -90,7 +90,7 @@ ml_prediction <<- list()
 
 getImage <- function(fileName) {
   dataURI(file = system.file("extdata", fileName, package = "ugplot"),
-          mime = "image/png")
+    mime = "image/png")
 }
 
 ui <- fluidPage(
@@ -141,17 +141,17 @@ ui <- fluidPage(
           "Choose a CSV file",
           multiple = FALSE,
           accept = c("text/csv",
-                     "text/comma-separated-values,text/plain",
-                     ".csv")
+            "text/comma-separated-values,text/plain",
+            ".csv")
         )
       ),
       tags$div(style = "display: inline-block; vertical-align: top;",
-               tags$div(
-                 tags$span(style = "font-size: 17px; color: white;", ".")
-               ),
-               tags$div(
-                 actionButton("process_table_content", "GO TO STEP 2 (TABLE)")
-               )),
+        tags$div(
+          tags$span(style = "font-size: 17px; color: white;", ".")
+        ),
+        tags$div(
+          actionButton("process_table_content", "GO TO STEP 2 (TABLE)")
+        )),
       conditionalPanel(
         condition = "input.textarea_columns != '' || input.textarea_rows != ''",
         tags$div(
@@ -193,7 +193,7 @@ ui <- fluidPage(
 
           tags$h4("Columns", style = "margin-top: 10px;"),
           div(class = "scrollable-table",
-              div(id = "dynamic_columns")),
+            div(id = "dynamic_columns")),
           actionButton("uncheck_all_columns", "Uncheck all"),
           actionButton("check_all_columns", "Check all"),
           br(),
@@ -215,7 +215,7 @@ ui <- fluidPage(
           width = 4,
           tags$h4("Rows", style = "margin-top: 10px;"),
           div(class = "scrollable-table",
-              div(id = "dynamic_rows")),
+            div(id = "dynamic_rows")),
           actionButton("uncheck_all_rows", "Uncheck all"),
           actionButton("check_all_rows", "Check all"),
           br(),
@@ -241,111 +241,111 @@ ui <- fluidPage(
     ),
 
     tabPanel("3) HEATMAP PLOT",
-             br(),
-             fluidRow(
-               column(
-                 width = 3,
-                 class = "sidebar-panel-custom",
-                 selectInput(
-                   inputId = "plot_xy",
-                   label = NULL,
-                   choices = c("ROW x COL", "COL x COL")
-                 ),
-                 div(class = "rowplotlist",
-                     lapply(1:nrow(plotlist), function(i) {
-                       bname <- paste0("buttonplot", i)
-                       imgname <- paste0("img/", plotlist$img[i])
-                       fluidRow(actionButton(
-                         bname,
-                         tags$img(
-                           src = getImage(imgname),
-                           height = "130px",
-                           width = "130px",
-                           class = "image-button"
-                         )
-                       ))
-                     })),
-                 br(),
-                 div(class = "rowpalettelist",
-                     lapply(1:nrow(palettelist), function(i) {
-                       bname <- paste0("buttonpalette", i)
-                       imgname <- paste0("img/", palettelist$img[i])
-                       if (imgname != "img/NA") {
-                         fluidRow(actionButton(
-                           bname,
-                           tags$img(
-                             src = getImage(imgname),
-                             height = "20px",
-                             width = "130px",
-                             class = "image-button"
-                           )
-                         ))
-                       }
-                     }))
-               ),
-               column(
-                 width = 9,
-                 class = "plotheatmap",
-                 tags$div(
-                   style = "display: flex; width: 100%; align-items: flex-start;",
-                   tags$div(
-                     actionButton("run_code_plot", label = tags$i(class = "fa fa-play")),
-                     style = "flex: none; width: 40px; margin-right: 10px;"
-                   ),
-                   tags$div(
-                     textAreaInput("textarea_code_plot", label = NULL, row = 1, width = '100%'),
-                     style = "flex-grow: 1;"
-                   )
-                 ),
-                 plotOutput("plot", height = "90%")
-               )
-             )),
+      br(),
+      fluidRow(
+        column(
+          width = 3,
+          class = "sidebar-panel-custom",
+          selectInput(
+            inputId = "plot_xy",
+            label = NULL,
+            choices = c("ROW x COL", "COL x COL")
+          ),
+          div(class = "rowplotlist",
+            lapply(1:nrow(plotlist), function(i) {
+              bname <- paste0("buttonplot", i)
+              imgname <- paste0("img/", plotlist$img[i])
+              fluidRow(actionButton(
+                bname,
+                tags$img(
+                  src = getImage(imgname),
+                  height = "130px",
+                  width = "130px",
+                  class = "image-button"
+                )
+              ))
+            })),
+          br(),
+          div(class = "rowpalettelist",
+            lapply(1:nrow(palettelist), function(i) {
+              bname <- paste0("buttonpalette", i)
+              imgname <- paste0("img/", palettelist$img[i])
+              if (imgname != "img/NA") {
+                fluidRow(actionButton(
+                  bname,
+                  tags$img(
+                    src = getImage(imgname),
+                    height = "20px",
+                    width = "130px",
+                    class = "image-button"
+                  )
+                ))
+              }
+            }))
+        ),
+        column(
+          width = 9,
+          class = "plotheatmap",
+          tags$div(
+            style = "display: flex; width: 100%; align-items: flex-start;",
+            tags$div(
+              actionButton("run_code_plot", label = tags$i(class = "fa fa-play")),
+              style = "flex: none; width: 40px; margin-right: 10px;"
+            ),
+            tags$div(
+              textAreaInput("textarea_code_plot", label = NULL, row = 1, width = '100%'),
+              style = "flex-grow: 1;"
+            )
+          ),
+          plotOutput("plot", height = "90%")
+        )
+      )),
     tabPanel("4) 2D PLOT",
-             class = "sidebar-layout",
-             sidebarLayout(
-               sidebarPanel(
-                 class = "sidebar-panel-custom2d",
-                 div(
-                   class = "rowplotlist",
-                   selectInput(
-                     inputId = "correlation",
-                     label = NULL,
-                     choices = c("pearson", "spearman", "kendall")
-                   ),
-                   sliderInput(
-                     inputId = "correlation_threshhold",
-                     label = "Spearman Correlation >= x",
-                     min = 0,
-                     max = 1,
-                     value = 0.7,
-                     step = 0.01
-                   ),
-                   sliderInput(
-                     inputId = "correlation_threshhold_negative",
-                     label = "Negative correlation <= x",
-                     min = -1,
-                     max = 0,
-                     value = -0.7,
-                     step = 0.01
-                   ),
-                   lapply(1:nrow(plotlist2d), function(i) {
-                     bname <- paste0("buttonplot2d", i)
-                     imgname <- paste0("img/", plotlist2d$img[i])
-                     fluidRow(
-                       tags$img(
-                         src = getImage(imgname),
-                         width = 130,
-                         height = 130
-                       ),
-                       actionButton(bname, plotlist2d$name[i])
-                     )
-                   })
-                 ),
-               ),
-               mainPanel(br(),
-                         uiOutput("plotLoadingIndicator"),
-                         uiOutput("plots"))
-             )),
+      class = "sidebar-layout",
+      sidebarLayout(
+        sidebarPanel(
+          class = "sidebar-panel-custom2d",
+          div(
+            class = "rowplotlist",
+            selectInput(
+              inputId = "correlation",
+              label = NULL,
+              choices = c("pearson", "spearman", "kendall")
+            ),
+            sliderInput(
+              inputId = "correlation_threshhold",
+              label = "Spearman Correlation >= x",
+              min = 0,
+              max = 1,
+              value = 0.7,
+              step = 0.01
+            ),
+            sliderInput(
+              inputId = "correlation_threshhold_negative",
+              label = "Negative correlation <= x",
+              min = -1,
+              max = 0,
+              value = -0.7,
+              step = 0.01
+            ),
+            lapply(1:nrow(plotlist2d), function(i) {
+              bname <- paste0("buttonplot2d", i)
+              imgname <- paste0("img/", plotlist2d$img[i])
+              fluidRow(
+                tags$img(
+                  src = getImage(imgname),
+                  width = 130,
+                  height = 130
+                ),
+                actionButton(bname, plotlist2d$name[i])
+              )
+            })
+          ),
+        ),
+        mainPanel(br(),
+          uiOutput("plotLoadingIndicator"),
+          uiOutput("plots"))
+      )),
     tabPanel(
       "5) MACHINE LEARNING",
       tags$div(
@@ -395,11 +395,11 @@ ui <- fluidPage(
               width = 6,
               tags$h4("Models installed", style = "margin-top: 10px;"),
               div(class = "scrollable-table",
-                  div(id = "dynamic_machine_learning")),
+                div(id = "dynamic_machine_learning")),
               actionButton("uncheck_all_ml", "Uncheck all"),
               actionButton("check_all_ml", "Check all"),
               actionButton("play_search_best_model_caret",
-                           "RUN"),
+                "RUN"),
               tags$br(),
               tags$p(slow_models_text, style = "color: gray; font-size: 11px;")
             ),
@@ -407,11 +407,11 @@ ui <- fluidPage(
               width = 6,
               tags$h4("Models missing", style = "margin-top: 10px;"),
               div(class = "scrollable-table",
-                  div(id = "dynamic_machine_learning_missing")),
+                div(id = "dynamic_machine_learning_missing")),
               actionButton("uncheck_all_ml_missing", "Uncheck all"),
               actionButton("check_all_ml_missing", "Check all"),
               actionButton("install_missing_modules",
-                           "Install libraries")
+                "Install libraries")
             ),
             div(style = "width: 100%; overflow-x: auto;", uiOutput("ml_error_message")),
             div(style = "overflow-x: auto; width: 100%;", uiOutput("dynamic_ml_plot")),
@@ -488,11 +488,11 @@ server <- function(input, output, session) {
           skip = skipline
         )
       updateTextAreaInput(session,
-                          "textarea_columns",
-                          value = paste(names(df_pre), collapse = "\n"))
+        "textarea_columns",
+        value = paste(names(df_pre), collapse = "\n"))
       updateTextAreaInput(session,
-                          "textarea_rows",
-                          value = paste(rownames(df_pre), collapse = "\n"))
+        "textarea_rows",
+        value = paste(rownames(df_pre), collapse = "\n"))
     }, error = function(e) {
       error_info <- ""
       if(e$message == "duplicate 'row.names' are not allowed"){
@@ -608,10 +608,10 @@ server <- function(input, output, session) {
   observeEvent(input$column_checkbox_group, {
     #print(paste("Colunas selecionadas:", toString(input$column_checkbox_group)))
     updateSelectizeInput(session,
-                         "ml_target",
-                         choices = c("", input$column_checkbox_group),
-                         selected = if (length(input$column_checkbox_group) > 0) input$column_checkbox_group[1] else "",
-                         server = TRUE)
+      "ml_target",
+      choices = c("", input$column_checkbox_group),
+      selected = if (length(input$column_checkbox_group) > 0) input$column_checkbox_group[1] else "",
+      server = TRUE)
   })
 
 
@@ -628,8 +628,8 @@ server <- function(input, output, session) {
 
     # Update the checkbox group to select only the non-empty columns
     updateCheckboxGroupInput(session,
-                             inputId = "column_checkbox_group",
-                             selected = non_empty_column_names
+      inputId = "column_checkbox_group",
+      selected = non_empty_column_names
     )
 
     print("Unchecking empty columns")
@@ -637,8 +637,8 @@ server <- function(input, output, session) {
 
   observeEvent(input$add_all_columns, {
     updateTextAreaInput(session,
-                        "textarea_columns",
-                        value = paste(names(df_pre), collapse = "\n"))
+      "textarea_columns",
+      value = paste(names(df_pre), collapse = "\n"))
   })
 
   observeEvent(input$remove_all_columns, {
@@ -647,8 +647,8 @@ server <- function(input, output, session) {
 
   observeEvent(input$add_all_rows, {
     updateTextAreaInput(session,
-                        "textarea_rows",
-                        value = paste(rownames(df_pre), collapse = "\n"))
+      "textarea_rows",
+      value = paste(rownames(df_pre), collapse = "\n"))
   })
 
   observeEvent(input$remove_all_rows, {
@@ -703,8 +703,8 @@ server <- function(input, output, session) {
 
     # Atualiza o checkbox com as colunas que permaneceram selecionadas
     updateCheckboxGroupInput(session,
-                             inputId = "column_checkbox_group",
-                             selected = new_selection)
+      inputId = "column_checkbox_group",
+      selected = new_selection)
   })
 
 
@@ -745,7 +745,7 @@ server <- function(input, output, session) {
         updateTextAreaInput(session,"textarea_code_plot", value = comandtorun)
         cols_to_convert <-
           intersect(input$checkbox_group_categories,
-                    input$column_checkbox_group)
+            input$column_checkbox_group)
         countdataframe <- 0
         if (length(cols_to_convert) > 0) {
           for (this_target in cols_to_convert) {
@@ -779,19 +779,19 @@ server <- function(input, output, session) {
         }
         comandtorun <-
           gsub("\\{\\{palette\\}\\}",
-               "defaultpalette()",
-               comandtorun)
+            "defaultpalette()",
+            comandtorun)
         comandtorun <-
           gsub("\\{\\{annotation\\}\\}",
-               "annotation_row",
-               comandtorun)
+            "annotation_row",
+            comandtorun)
 
         annotation_colors_auto <-
           generate_annotation_colors(annotation_row)
         comandtorun <-
           gsub("\\{\\{annotation_color\\}\\}",
-               "annotation_colors_auto",
-               comandtorun)
+            "annotation_colors_auto",
+            comandtorun)
         eval(parse(text = comandtorun))
       })
     })
@@ -813,7 +813,7 @@ server <- function(input, output, session) {
       comandtorun <- input$textarea_code_plot
       cols_to_convert <-
         intersect(input$checkbox_group_categories,
-                  input$column_checkbox_group)
+          input$column_checkbox_group)
       countdataframe <- 0
       if (length(cols_to_convert) > 0) {
         for (this_target in cols_to_convert) {
@@ -843,42 +843,42 @@ server <- function(input, output, session) {
         gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
       comandtorun <-
         gsub("\\{\\{palette\\}\\}",
-             "defaultpalette()",
-             comandtorun)
+          "defaultpalette()",
+          comandtorun)
       comandtorun <-
         gsub("\\{\\{annotation\\}\\}",
-             "annotation_row",
-             comandtorun)
+          "annotation_row",
+          comandtorun)
 
       annotation_colors_auto <-
         generate_annotation_colors(annotation_row)
       comandtorun <-
         gsub("\\{\\{annotation_color\\}\\}",
-             "annotation_colors_auto",
-             comandtorun)
+          "annotation_colors_auto",
+          comandtorun)
       eval(parse(text = comandtorun))
     })
   })
 
   observeEvent(input$uncheck_all_columns, {
     updateCheckboxGroupInput(session,
-                             inputId = "column_checkbox_group",
-                             selected = character(0))
+      inputId = "column_checkbox_group",
+      selected = character(0))
   })
   observeEvent(input$check_all_columns, {
     updateCheckboxGroupInput(session,
-                             inputId = "column_checkbox_group",
-                             selected = names(dff))
+      inputId = "column_checkbox_group",
+      selected = names(dff))
   })
   observeEvent(input$uncheck_all_rows, {
     updateCheckboxGroupInput(session,
-                             inputId = "row_checkbox_group",
-                             selected = character(0))
+      inputId = "row_checkbox_group",
+      selected = character(0))
   })
   observeEvent(input$check_all_rows, {
     updateCheckboxGroupInput(session,
-                             inputId = "row_checkbox_group",
-                             selected = rownames(dff))
+      inputId = "row_checkbox_group",
+      selected = rownames(dff))
   })
   observeEvent(input$transpose_table, {
     if (transpose_table2() == 0) {
@@ -899,7 +899,7 @@ server <- function(input, output, session) {
         comandtorun <- plotlist2d$code[i]
         cols_to_convert <-
           intersect(input$checkbox_group_categories,
-                    input$column_checkbox_group)
+            input$column_checkbox_group)
         numeric_table <-
           data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
         numeric_table <-
@@ -914,7 +914,7 @@ server <- function(input, output, session) {
             if (j != i &&
                 (
                   cor_matrix[i, j] >= input$correlation_threshhold ||
-                  cor_matrix[i, j] <= input$correlation_threshhold_negative
+                    cor_matrix[i, j] <= input$correlation_threshhold_negative
                 )) {
               print(
                 paste(
@@ -925,24 +925,24 @@ server <- function(input, output, session) {
               )
               comandtorun <-
                 gsub("\\{\\{X\\}\\}",
-                     "X[, colnames(X)[i]]",
-                     comandtorun)
+                  "X[, colnames(X)[i]]",
+                  comandtorun)
               comandtorun <-
                 gsub("\\{\\{Y\\}\\}",
-                     "X[, colnames(X)[j]]",
-                     comandtorun)
+                  "X[, colnames(X)[j]]",
+                  comandtorun)
               comandtorun <-
                 gsub("\\{\\{X_NAME\\}\\}",
-                     "colnames(X)[i]",
-                     comandtorun)
+                  "colnames(X)[i]",
+                  comandtorun)
               comandtorun <-
                 gsub("\\{\\{Y_NAME\\}\\}",
-                     "colnames(X)[j]",
-                     comandtorun)
+                  "colnames(X)[j]",
+                  comandtorun)
               comandtorun <-
                 gsub("\\{\\{CORRELATION\\}\\}",
-                     "cor_matrix[i, j]",
-                     comandtorun)
+                  "cor_matrix[i, j]",
+                  comandtorun)
               p <- eval(parse(text = comandtorun))
               plots_list[[length(plots_list) + 1]] <- p
             }
@@ -951,7 +951,7 @@ server <- function(input, output, session) {
 
         texthtml <-
           paste(length(plots_list),
-                " correlations found within those parameters")
+            " correlations found within those parameters")
         output$plotLoadingIndicator <- renderUI({
           h4(texthtml, style = "text-align: center;", br(), br())
         })
@@ -990,26 +990,26 @@ server <- function(input, output, session) {
 
   observeEvent(input$uncheck_all_ml, {
     updateCheckboxGroupInput(session,
-                             inputId = "ml_checkbox_group",
-                             selected = character(0))
+      inputId = "ml_checkbox_group",
+      selected = character(0))
   })
 
   observeEvent(input$check_all_ml, {
     updateCheckboxGroupInput(session,
-                             inputId = "ml_checkbox_group",
-                             selected = ml_available
+      inputId = "ml_checkbox_group",
+      selected = ml_available
     )
   })
 
   observeEvent(input$uncheck_all_ml_missing, {
     updateCheckboxGroupInput(session,
-                             inputId = "ml_missing_checkbox_group",
-                             selected = character(0))
+      inputId = "ml_missing_checkbox_group",
+      selected = character(0))
   })
   observeEvent(input$check_all_ml_missing, {
     updateCheckboxGroupInput(session,
-                             inputId = "ml_missing_checkbox_group",
-                             selected = ml_not_available)
+      inputId = "ml_missing_checkbox_group",
+      selected = ml_not_available)
   })
 
   output$ml_table = DT::renderDT(ml_data_table(), options = list(lengthChange = FALSE))
@@ -1029,6 +1029,7 @@ server <- function(input, output, session) {
         importance_df <- importance$importance
         print(importance_df)
         print(text_result_ml())
+        print(summary(specific_model$finalModel))
       }, error = function(e) {
         print("Variable importance not supported or R^2 smaller than 0.6 for this model.")
       })
@@ -1167,12 +1168,13 @@ server <- function(input, output, session) {
           for (loop_dataset_seed in loop_dataset_seedi:loop_dataset_seedf) {
             if(do_dataset_seed == 1){
               set.seed(loop_dataset_seed)
+              print(paste("SEED: ",loop_dataset_seed))
             }
 
             trainIndex <- createDataPartition(Y,
-                                              p = .8,
-                                              list = FALSE,
-                                              times = 1)
+              p = .8,
+              list = FALSE,
+              times = 1)
             trainSet <- X[trainIndex, ]
             testSet  <- X[-trainIndex, ]
             if (!is.data.frame(trainSet)) {
@@ -1321,7 +1323,7 @@ server <- function(input, output, session) {
                   ml_pred_real <- data.frame(Actual = testSet[[target_name]], Predicted = pred)
                   model_prediction <-
                     data.frame(Model = model_name,
-                               "Prediction" = ml_pred_real)
+                      "Prediction" = ml_pred_real)
                   ml_prediction[[model_name]] <<- model_prediction
                   if (is.factor(testSet[[target_name]])) {
                     accuracy <- sum(pred == testSet[[target_name]]) / length(pred)
@@ -1329,9 +1331,10 @@ server <- function(input, output, session) {
                       best_result <- accuracy
                       best_model <-  paste(model_name,"(",loop_dataset_seed,":",loop_seed,")")
                     }
-                    model_results <-
-                      data.frame(Model = model_name,
-                                 "Accuracy" = accuracy)
+                    model_results <- data.frame(Model = model_name,
+                      "Accuracy" = accuracy,
+                      "Dataset seed" = loop_dataset_seed,
+                      "Training seed" = loop_seed)
                     ml_table_results(rbind(ml_table_results(), model_results))
                     temp_models_list[[model_name]] <- model
                     # Acessar o modelo final
@@ -1358,15 +1361,15 @@ server <- function(input, output, session) {
                     if(input$ml_seedi > 0){
                       model_results <-
                         data.frame(Model = model_name,
-                                   "R2" = result_pred["Rsquared"],
-                                   "MAE" = result_pred["MAE"],
-                                   "Dataset seed" = loop_dataset_seed,
-                                   "Training seed" = loop_seed)
+                          "R2" = result_pred["Rsquared"],
+                          "MAE" = result_pred["MAE"],
+                          "Dataset seed" = loop_dataset_seed,
+                          "Training seed" = loop_seed)
                     } else {
                       model_results <-
                         data.frame(Model = model_name,
-                                   "R2" = result_pred["Rsquared"],
-                                   "MAE" = result_pred["MAE"])
+                          "R2" = result_pred["Rsquared"],
+                          "MAE" = result_pred["MAE"])
                     }
                     ml_table_results(rbind(ml_table_results(), model_results))
                     if(result_pred["Rsquared"] >= 0.6) {
@@ -1392,6 +1395,7 @@ server <- function(input, output, session) {
               gc()
             }
           }
+          print(ml_table_results)
         }
       )
     }, error = function(e) {
@@ -1451,8 +1455,8 @@ load_ml_list <- function() {
 
 load_file_into_table <-
   function(textarea_columns,
-           textarea_rows,
-           localsession) {
+    textarea_rows,
+    localsession) {
     column_names <- strsplit(textarea_columns, "\n")[[1]]
     rown_names <- strsplit(textarea_rows, "\n")[[1]]
     dff <<- df_pre[rown_names, column_names, drop = FALSE]
