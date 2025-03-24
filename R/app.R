@@ -1187,6 +1187,7 @@ server <- function(input, output, session) {
             }
 
 
+
             # Before training the model, check for missing values
 
             # if (anyNA(trainSet) || anyNA(testSet)) {
@@ -1395,7 +1396,6 @@ server <- function(input, output, session) {
               gc()
             }
           }
-          print(ml_table_results)
         }
       )
     }, error = function(e) {
@@ -1403,6 +1403,7 @@ server <- function(input, output, session) {
     })
     all_models_reactive(temp_models_list)
     print(ml_table_results())
+    writeLines(rownames(testSet))
     stopCluster(cl)
   })
 
