@@ -1,3 +1,6 @@
+# app.R
+
+# Carrega as bibliotecas necessárias
 library(shiny)
 library(shinyWidgets)
 library(shinybusy)
@@ -18,70 +21,71 @@ library(base64enc)
 library(shinyjs)
 library(ggExtra)
 library(gridExtra)
-library(randomForest) # need for windows
+library(randomForest) # Necessário para Windows
 library(doParallel)
 library(R.utils)
 library(ConsensusClusterPlus)
-sink("ugplot.log", split = TRUE)
-#Sys.setenv(OMP_NUM_THREADS = 2)  # Define o máximo de threads para 2
-#Sys.setenv(MKL_NUM_THREADS = 2)  # Se estiver usando Intel MKL
-#Sys.setenv(OPENBLAS_NUM_THREADS = 2)  # Se estiver usando OpenBLAS
 
+sink("ugplot.log", split = TRUE)
+# Opcional: definir número máximo de threads
+# Sys.setenv(OMP_NUM_THREADS = 2)
+# Sys.setenv(MKL_NUM_THREADS = 2)
+# Sys.setenv(OPENBLAS_NUM_THREADS = 2)
 
 options(shiny.maxRequestSize = 800 * 1024 * 1024)
 
-path_to_2dplotlist <-
-  function()
-    system.file("extdata", "2dplotlist.csv", package = "ugplot")
+# Funções auxiliares para carregar arquivos de exemplo, palettes e css
+path_to_2dplotlist <- function() {
+  system.file("extdata", "2dplotlist.csv", package = "ugplot")
+}
 lines <- readLines(path_to_2dplotlist())
 lines <- lines[!startsWith(trimws(lines), "#")]
 plotlist2d <- read.csv(text = lines, sep = ";", header = TRUE)
 
-path_to_plotlist <-
-  function()
-    system.file("extdata", "plotlist.csv", package = "ugplot")
+path_to_plotlist <- function() {
+  system.file("extdata", "plotlist.csv", package = "ugplot")
+}
 lines <- readLines(path_to_plotlist())
 lines <- lines[!startsWith(trimws(lines), "#")]
 plotlist <- read.csv(text = lines, sep = ";", header = TRUE)
 
-path_to_palette <-
-  function()
-    system.file("extdata", "palette.csv", package = "ugplot")
+path_to_palette <- function() {
+  system.file("extdata", "palette.csv", package = "ugplot")
+}
 lines <- readLines(path_to_palette())
 lines <- lines[!startsWith(trimws(lines), "#")]
 palettelist <- read.csv(text = lines, sep = ";", header = TRUE)
 
-path_to_css <-
-  function()
-    system.file("extdata", "styles.css", package = "ugplot")
+path_to_css <- function() {
+  system.file("extdata", "styles.css", package = "ugplot")
+}
 
-path_to_sample_data <- function()
+path_to_sample_data <- function() {
   system.file("extdata", "sample.csv", package = "ugplot")
+}
 lines <- readLines(path_to_sample_data())
 sample_data <- read.csv(text = lines, sep = ",", header = TRUE)
 row.names(sample_data) <- sample_data[,1]
 sample_data <- sample_data[,-1]
 
-slow_models <-
-  c(
-    'bam',
-    'ANFIS',
-    'DENFIS',
-    'FH.GBML',
-    'FIR.DM',
-    'FS.HGD',
-    'gam',
-    'GFS.LT.RS',
-    'GFS.FR.MOGUL',
-    'GFS.THRIFT',
-    'HYFIS',
-    'gaussprRadial',
-    'gaussprLinear',
-    'rbf'
-  )
-slow_models_text <-
-  paste("Slow or problematic models automaticaly removed:",
-    paste(slow_models, collapse = ", "))
+slow_models <- c(
+  'bam',
+  'ANFIS',
+  'DENFIS',
+  'FH.GBML',
+  'FIR.DM',
+  'FS.HGD',
+  'gam',
+  'GFS.LT.RS',
+  'GFS.FR.MOGUL',
+  'GFS.THRIFT',
+  'HYFIS',
+  'gaussprRadial',
+  'gaussprLinear',
+  'rbf'
+)
+slow_models_text <- paste("Slow or problematic models automaticaly removed:",
+  paste(slow_models, collapse = ", "))
 
 df_pre <<- ""
 dff <<- ""
@@ -90,18 +94,18 @@ ml_not_available <<- list()
 ml_prediction <<- list()
 best_model_object <- reactiveVal(NULL)
 
-
 getImage <- function(fileName) {
   dataURI(file = system.file("extdata", fileName, package = "ugplot"),
     mime = "image/png")
 }
 
+# Define a interface do aplicativo
 ui <- fluidPage(
   tags$script("
     $(document).on('shiny:sessioninitialized', function(event) {
       setInterval(function() {
         Shiny.setInputValue('keepAlive', Math.random());
-      }, 60000); // Send a random number to Shiny every 60 seconds
+      }, 60000);
     });
   "),
   includeCSS(path_to_css()),
@@ -111,72 +115,49 @@ ui <- fluidPage(
     src = getImage("ugplot.png"), height = "50px",
     tags$span("version 1.0", style = "color: gray; font-size: 11px;")
   )),
-  tags$style(".small-input { width: 100px; }") ,
+  tags$style(".small-input { width: 100px; }"),
   tabsetPanel(
     id = "tabs",
-    tabPanel(
-      "1) LOAD DATA",
+    tabPanel("1) LOAD DATA",
       tags$div(
         style = "display: inline-block; vertical-align: top;",
         class = "small-input",
-        numericInput(
-          "startfromline",
-          "Start at line",
-          value = 1,
-          min = 1,
-          step = 1
-        )
+        numericInput("startfromline", "Start at line", value = 1, min = 1, step = 1)
       ),
       tags$div(
         style = "display: inline-block; vertical-align: top;",
         class = "small-input",
-        selectInput(
-          inputId = "separator",
+        selectInput(inputId = "separator",
           label = "Separator",
           choices = c("space" = " ", "tab" = "\t", ";", ",", "|"),
-          selected = ","
-        )
+          selected = ",")
       ),
       tags$div(
         style = "display: inline-block; vertical-align: top;",
-        fileInput(
-          "file1",
-          "Choose a CSV file",
-          multiple = FALSE,
-          accept = c("text/csv",
-            "text/comma-separated-values,text/plain",
-            ".csv")
-        )
+        fileInput("file1", "Choose a CSV file", multiple = FALSE,
+          accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
       ),
-      tags$div(style = "display: inline-block; vertical-align: top;",
+      tags$div(
+        style = "display: inline-block; vertical-align: top;",
         tags$div(
           tags$span(style = "font-size: 17px; color: white;", ".")
         ),
         tags$div(
           actionButton("process_table_content", "GO TO STEP 2 (TABLE)")
-        )),
+        )
+      ),
       conditionalPanel(
         condition = "input.textarea_columns != '' || input.textarea_rows != ''",
         tags$div(
           style = "display: inline-block; text-align: center; vertical-align: top;",
-          textAreaInput(
-            "textarea_columns",
-            label = "",
-            rows = 20,
-            cols = 50
-          ),
+          textAreaInput("textarea_columns", label = "", rows = 20, cols = 50),
           actionButton("add_all_columns", "Add all"),
           actionButton("remove_all_columns", "Remove all"),
           actionButton("merge_all_columns", "Join columns")
         ),
         tags$div(
           style = "display: inline-block; text-align: center; vertical-align: top;",
-          textAreaInput(
-            "textarea_rows",
-            label = "",
-            rows = 20,
-            cols = 50
-          ),
+          textAreaInput("textarea_rows", label = "", rows = 20, cols = 50),
           actionButton("add_all_rows", "Add all"),
           actionButton("remove_all_rows", "Remove all"),
           actionButton("merge_all_rows", "Join columns")
@@ -187,13 +168,11 @@ ui <- fluidPage(
         actionButton("load_sample", "Click here to load an example")
       )
     ),
-    tabPanel(
-      "2) TABLE",
+    tabPanel("2) TABLE",
       div(
         style = "width: 100%; overflow-x: auto;",
         column(
           width = 4,
-
           tags$h4("Columns", style = "margin-top: 10px;"),
           div(class = "scrollable-table",
             div(id = "dynamic_columns")),
@@ -203,13 +182,7 @@ ui <- fluidPage(
           tags$div(
             style = "display: inline-block; vertical-align: top;",
             class = "small-input",
-            numericInput(
-              "minvariability",
-              NULL,
-              value = 10,
-              min = 0.1,
-              step = 0.1
-            )
+            numericInput("minvariability", NULL, value = 10, min = 0.1, step = 0.1)
           ),
           actionButton("remove_columns_variability", "Uncheck variability"),
           br()
@@ -227,46 +200,31 @@ ui <- fluidPage(
         column(
           width = 4,
           tags$h4("Categories", style = "margin-top: 10px;"),
-          div(
-            class = "scrollable-table",
+          div(class = "scrollable-table",
             style = "background-color: #f7f8fa; overflow-y: auto; max-height: 200px;",
-            div(id = "dynamic_columns_categories")
-          ),
+            div(id = "dynamic_columns_categories")),
           actionButton("transpose_table", "Transpose table", icon = icon("retweet")),
           downloadButton("downloadData", "Download"),
           br(),
           br()
         ),
-        uiOutput("table_cleaning_message"),br(),
-        uiOutput("table_message"),br(),
+        uiOutput("table_cleaning_message"), br(),
+        uiOutput("table_message"), br(),
         DT::DTOutput("contents")
       )
     ),
-
     tabPanel("3) HEATMAP PLOT",
       br(),
       fluidRow(
         column(
           width = 3,
           class = "sidebar-panel-custom",
-          selectInput(
-            inputId = "plot_xy",
-            label = NULL,
-            choices = c("ROW x COL", "COL x COL")
-          ),
+          selectInput(inputId = "plot_xy", label = NULL, choices = c("ROW x COL", "COL x COL")),
           div(class = "rowplotlist",
             lapply(1:nrow(plotlist), function(i) {
               bname <- paste0("buttonplot", i)
               imgname <- paste0("img/", plotlist$img[i])
-              fluidRow(actionButton(
-                bname,
-                tags$img(
-                  src = getImage(imgname),
-                  height = "130px",
-                  width = "130px",
-                  class = "image-button"
-                )
-              ))
+              fluidRow(actionButton(bname, tags$img(src = getImage(imgname), height = "130px", width = "130px", class = "image-button")))
             })),
           br(),
           div(class = "rowpalettelist",
@@ -274,15 +232,7 @@ ui <- fluidPage(
               bname <- paste0("buttonpalette", i)
               imgname <- paste0("img/", palettelist$img[i])
               if (imgname != "img/NA") {
-                fluidRow(actionButton(
-                  bname,
-                  tags$img(
-                    src = getImage(imgname),
-                    height = "20px",
-                    width = "130px",
-                    class = "image-button"
-                  )
-                ))
+                fluidRow(actionButton(bname, tags$img(src = getImage(imgname), height = "20px", width = "130px", class = "image-button")))
               }
             }))
         ),
@@ -302,7 +252,8 @@ ui <- fluidPage(
           ),
           plotOutput("plot", height = "90%")
         )
-      )),
+      )
+    ),
     tabPanel("4) 2D PLOT",
       class = "sidebar-layout",
       sidebarLayout(
@@ -310,99 +261,50 @@ ui <- fluidPage(
           class = "sidebar-panel-custom2d",
           div(
             class = "rowplotlist",
-            selectInput(
-              inputId = "correlation",
-              label = NULL,
-              choices = c("pearson", "spearman", "kendall")
-            ),
-            sliderInput(
-              inputId = "correlation_threshhold",
-              label = "Spearman Correlation >= x",
-              min = 0,
-              max = 1,
-              value = 0.7,
-              step = 0.01
-            ),
-            sliderInput(
-              inputId = "correlation_threshhold_negative",
-              label = "Negative correlation <= x",
-              min = -1,
-              max = 0,
-              value = -0.7,
-              step = 0.01
-            ),
+            selectInput(inputId = "correlation", label = NULL, choices = c("pearson", "spearman", "kendall")),
+            sliderInput(inputId = "correlation_threshhold", label = "Spearman Correlation >= x", min = 0, max = 1, value = 0.7, step = 0.01),
+            sliderInput(inputId = "correlation_threshhold_negative", label = "Negative correlation <= x", min = -1, max = 0, value = -0.7, step = 0.01),
             lapply(1:nrow(plotlist2d), function(i) {
               bname <- paste0("buttonplot2d", i)
               imgname <- paste0("img/", plotlist2d$img[i])
               fluidRow(
-                tags$img(
-                  src = getImage(imgname),
-                  width = 130,
-                  height = 130
-                ),
+                tags$img(src = getImage(imgname), width = 130, height = 130),
                 actionButton(bname, plotlist2d$name[i])
               )
             })
-          ),
+          )
         ),
-        mainPanel(br(),
+        mainPanel(
+          br(),
           uiOutput("plotLoadingIndicator"),
-          uiOutput("plots"))
-      )),
-    tabPanel(
-      "5) MACHINE LEARNING",
+          uiOutput("plots")
+        )
+      )
+    ),
+    tabPanel("5) MACHINE LEARNING",
       tags$div(
         style = "display: inline-block; vertical-align: top;",
         selectizeInput("ml_target", "Target column (healthy, cancer, ...)", choices = ""),
         conditionalPanel(
           condition = "input.ml_target != ''",
-
           tags$div(
             style = "display: inline-block; vertical-align: top;",
             class = "small-input",
-            numericInput(
-              "ml_dataset_seedi",
-              "Initial Dataset Seed:",
-              step = 1,
-              value = 1
-            ),
-            numericInput(
-              "ml_dataset_seedf",
-              "Final Dataset Seed:",
-              step = 1,
-              value = 1
-            ),
-            numericInput(
-              "ml_seedi",
-              "Initial Training Seed:",
-              step = 1,
-              value = 1
-            ),
-            numericInput(
-              "ml_seedf",
-              "Final Training Seed:",
-              step = 1,
-              value = 1
-            ),
-
-            numericInput(
-              "ml_timeout",
-              "Timeout (s):",
-              step = 1,
-              value = 1200
-            )
+            numericInput("ml_dataset_seedi", "Initial Dataset Seed:", step = 1, value = 1),
+            numericInput("ml_dataset_seedf", "Final Dataset Seed:", step = 1, value = 1),
+            numericInput("ml_seedi", "Initial Training Seed:", step = 1, value = 1),
+            numericInput("ml_seedf", "Final Training Seed:", step = 1, value = 1),
+            numericInput("ml_timeout", "Timeout (s):", step = 1, value = 1200)
           ),
           tags$div(
             verbatimTextOutput("console_output"),
             column(
               width = 6,
               tags$h4("Models installed", style = "margin-top: 10px;"),
-              div(class = "scrollable-table",
-                div(id = "dynamic_machine_learning")),
+              div(class = "scrollable-table", div(id = "dynamic_machine_learning")),
               actionButton("uncheck_all_ml", "Uncheck all"),
               actionButton("check_all_ml", "Check all"),
-              actionButton("play_search_best_model_caret",
-                "RUN"),
+              actionButton("play_search_best_model_caret", "RUN"),
               uiOutput("downloadModelUI"),
               tags$br(),
               tags$p(slow_models_text, style = "color: gray; font-size: 11px;")
@@ -410,39 +312,54 @@ ui <- fluidPage(
             column(
               width = 6,
               tags$h4("Models missing", style = "margin-top: 10px;"),
-              div(class = "scrollable-table",
-                div(id = "dynamic_machine_learning_missing")),
+              div(class = "scrollable-table", div(id = "dynamic_machine_learning_missing")),
               actionButton("uncheck_all_ml_missing", "Uncheck all"),
               actionButton("check_all_ml_missing", "Check all"),
-              actionButton("install_missing_modules",
-                "Install libraries")
+              actionButton("install_missing_modules", "Install libraries")
             ),
             div(style = "width: 100%; overflow-x: auto;", uiOutput("ml_error_message")),
             div(style = "overflow-x: auto; width: 100%;", uiOutput("dynamic_ml_plot")),
             div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table_results_output")),
             verbatimTextOutput("ml_row_details"),
-            div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table")),
+            div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table"))
           )
         )
       )
     ),
+    # Aba 6: MODEL ANALYSIS
     tabPanel("6) MODEL ANALYSIS",
-      class = "sidebar-layout",
-
-      tags$div()
+      sidebarLayout(
+        sidebarPanel(
+          fileInput("model_file", "Carregar modelo RDS", accept = c(".rds")),
+          actionButton("load_model_btn", "Carregar modelo"),
+          br(), br(),
+          actionButton("run_model_analysis", "Run"),
+          br(), br(),
+          verbatimTextOutput("model_details")
+        ),
+        mainPanel(
+          DT::DTOutput("model_analysis_table"),
+          br(),
+          verbatimTextOutput("model_analysis_accuracy")
+        )
+      )
     )
   )
 )
 
+# Define as funções reativas e observadores do servidor
 server <- function(input, output, session) {
+
   hideTab(inputId = "tabs", target = "2) TABLE")
   hideTab(inputId = "tabs", target = "3) HEATMAP PLOT")
   hideTab(inputId = "tabs", target = "4) 2D PLOT")
   hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
   hideTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
+
   disable("merge_all_columns")
   disable("merge_all_rows")
   session$allowReconnect(TRUE)
+
   ml_data_table <- reactiveVal()
   ml_table_results <- reactiveVal()
   ml_plot_importance <- reactiveVal()
@@ -459,8 +376,7 @@ server <- function(input, output, session) {
   table_cleaning_message_text <<- reactiveVal("")
   ml_error_message_text <- reactiveVal("")
 
-  defaultpalette <-
-    reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
+  defaultpalette <- reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
   transpose_table2 <- reactiveVal(0)
   refresh_counter <- reactiveVal(0)
 
@@ -473,21 +389,17 @@ server <- function(input, output, session) {
       paste("data-", Sys.Date(), ".csv", sep = "")
     },
     content = function(file) {
-      # Extract the relevant data from 'changed_table' based on user selections
-      data_to_download <-
-        changed_table[input$row_checkbox_group, input$column_checkbox_group]
+      data_to_download <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
       write.csv(data_to_download, file, row.names = TRUE)
     }
   )
 
   output$downloadBestModel <- downloadHandler(
-    # A function that returns the name of the file
     filename = function() {
       paste0("ugplot_best_model.rds")
     },
-    # A function that saves the best model into the file
     content = function(file) {
-      saveRDS(best_model_object, file = file)
+      saveRDS(best_model_object(), file = file)
     }
   )
 
@@ -501,38 +413,17 @@ server <- function(input, output, session) {
   observeEvent(input$file1, {
     file_click_count(file_click_count() + 1)
     filepath <- req(input$file1$datapath)
-    skipline = input$startfromline - 1
+    skipline <- input$startfromline - 1
     tryCatch({
-      df_pre <<-
-        read.table(
-          filepath,
-          header = TRUE,
-          sep = tab_separator(),
-          row.names = 1,
-          dec = ".",
-          stringsAsFactors = FALSE,
-          strip.white = TRUE,
-          skip = skipline
-        )
-      updateTextAreaInput(session,
-        "textarea_columns",
-        value = paste(names(df_pre), collapse = "\n"))
-      updateTextAreaInput(session,
-        "textarea_rows",
-        value = paste(rownames(df_pre), collapse = "\n"))
+      df_pre <<- read.table(filepath, header = TRUE, sep = tab_separator(), row.names = 1,
+        dec = ".", stringsAsFactors = FALSE, strip.white = TRUE, skip = skipline)
+      updateTextAreaInput(session, "textarea_columns", value = paste(names(df_pre), collapse = "\n"))
+      updateTextAreaInput(session, "textarea_rows", value = paste(rownames(df_pre), collapse = "\n"))
     }, error = function(e) {
       error_info <- ""
       if(e$message == "duplicate 'row.names' are not allowed"){
-        data <- read.table(
-          filepath,
-          header = TRUE,
-          sep = tab_separator(),
-          row.names = NULL,
-          dec = ".",
-          stringsAsFactors = FALSE,
-          strip.white = TRUE,
-          skip = skipline
-        )
+        data <- read.table(filepath, header = TRUE, sep = tab_separator(), row.names = NULL,
+          dec = ".", stringsAsFactors = FALSE, strip.white = TRUE, skip = skipline)
         error_info <- toString(unique(data[duplicated(data[,1]) | duplicated(data[,1], fromLast = TRUE), 1]))
       }
       showModal(modalDialog(
@@ -545,127 +436,63 @@ server <- function(input, output, session) {
   })
 
   output$contents <- DT::renderDT({
-    if (last_file_click_count == 0 |
-        (last_file_click_count != file_click_count())) {
-      # This part to deal when a second file got read
+    if (last_file_click_count == 0 || (last_file_click_count != file_click_count())) {
+      ## Pode adicionar código para lidar com múltiplos arquivos
     }
     if (length(input$column_checkbox_group) < 2) {
       table_message_text("")
       return(NULL)
     }
-    #updateSelectizeInput(session, "ml_target", choices = c("",names(dff)), server = TRUE)
     subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
     print(paste(nrow(subset_table)," x ",ncol(subset_table)))
     if(ncol(subset_table) > max_table_columns) {
-      table_message_text(paste("Data has more than ",max_table_columns," columns. For performance reasons, only the first ",max_table_columns," will be shown on the screen."))
-      # subset_table <- subset_table[, 1:max_table_columns]
+      table_message_text(paste("Data has more than ", max_table_columns,
+        " columns. For performance reasons, only the first ", max_table_columns,
+        " will be shown on the screen."))
     } else {
       table_message_text("")
     }
-    # empty_columns <- sapply(subset_table, function(column) all(is.na(column)))
-    # Print names of columns that are full of NAs
-    # names(subset_table)[empty_columns]
-
-    # Your original code for identifying completely empty columns
     empty <- sapply(subset_table, function(column) all(is.na(column)))
-
-    # Count the number of completely empty columns
     num_empty_columns <- sum(empty)
     print(paste("Number of completely empty columns:", num_empty_columns))
-
-    # For columns that are not completely empty, count the number of empty rows
     na_count_per_column <- sapply(subset_table, function(column) sum(is.na(column)))
-
-    # Exclude completely empty columns from the count
     na_count_per_non_empty_column <- na_count_per_column[!empty]
-
-    # Print the number of empty rows for columns that are not completely empty
     print("Number of empty rows in each non-completely empty column:")
     print(na_count_per_non_empty_column)
-
-
-    # if(any(empty)) {
-    #   cat("There are columns completely empty\n")
-    #   print(names(subset_table)[empty])
-    #   # Extract names of completely empty columns
-    #   # empty_column_names <- names(subset_table)[empty]
-    #
-    #   # Convert the names into a single string, separated by commas
-    #   empty_column_names_str <- paste(names(subset_table)[empty], collapse = ", ")
-    #   table_cleaning_message_text(paste("Those columns have been cleanes because are empty:",empty_column_names_str))
-    # #   # Further actions if there are such columns
-    # } else {
-    #   print("Cleaning message about empty columns")
-    #   # table_cleaning_message_text("")
-    # #   cat("There are no columns full of NA values\n")
-    # #   # Actions if there are no such columns
-    # }
-
     return(subset_table)
   })
 
   output$table_message <- renderUI({
-    tags$h5(
-      style = "color: red;",
-      table_message_text()
-    )
+    tags$h5(style = "color: red;", table_message_text())
   })
+
   output$table_cleaning_message <- renderUI({
     if(table_cleaning_message_text() != ""){
-      tags$h5(
-        style = "color: orange;",
-        table_cleaning_message_text(),
-        # actionButton("remove_empty_columns", "Remove it")
-      )
+      tags$h5(style = "color: orange;", table_cleaning_message_text())
     }
   })
-  # output$table_cleaning_message <- renderUI({
-  #   if (table_cleaning_message_text() != "") {
-  #     tags$h5(
-  #       style = "color: orange;",
-  #       table_cleaning_message_text()
-  #     )
-  #   }
-  # })
 
   output$ml_error_message <- renderUI({
     tags$span(ml_error_message_text(), style = "color: black; font-size: 12px;")
   })
 
   observeEvent(input$column_checkbox_group, {
-    #print(paste("Colunas selecionadas:", toString(input$column_checkbox_group)))
-    updateSelectizeInput(session,
-      "ml_target",
-      choices = c("", input$column_checkbox_group),
+    updateSelectizeInput(session, "ml_target", choices = c("", input$column_checkbox_group),
       selected = if (length(input$column_checkbox_group) > 0) input$column_checkbox_group[1] else "",
       server = TRUE)
   })
 
-
   observeEvent(input$remove_empty_columns, {
     subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
-    # Determine which columns are completely empty
     empty <- sapply(subset_table, function(column) all(is.na(column)))
-
-    # Get the names of all columns
     all_column_names <- names(subset_table)
-
-    # Get the names of the columns that are not empty
     non_empty_column_names <- all_column_names[!empty]
-
-    # Update the checkbox group to select only the non-empty columns
-    updateCheckboxGroupInput(session,
-      inputId = "column_checkbox_group",
-      selected = non_empty_column_names
-    )
-
+    updateCheckboxGroupInput(session, inputId = "column_checkbox_group", selected = non_empty_column_names)
     print("Unchecking empty columns")
   })
 
   observeEvent(input$add_all_columns, {
-    updateTextAreaInput(session,
-      "textarea_columns",
-      value = paste(names(df_pre), collapse = "\n"))
+    updateTextAreaInput(session, "textarea_columns", value = paste(names(df_pre), collapse = "\n"))
   })
 
   observeEvent(input$remove_all_columns, {
@@ -673,9 +500,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$add_all_rows, {
-    updateTextAreaInput(session,
-      "textarea_rows",
-      value = paste(rownames(df_pre), collapse = "\n"))
+    updateTextAreaInput(session, "textarea_rows", value = paste(rownames(df_pre), collapse = "\n"))
   })
 
   observeEvent(input$remove_all_rows, {
@@ -685,34 +510,22 @@ server <- function(input, output, session) {
   observeEvent(input$merge_all_columns, {
     column_names <- strsplit(input$textarea_columns, "\n")[[1]]
     rown_names <- strsplit(input$textarea_rows, "\n")[[1]]
-    new_df <-
-      as.data.frame(t(df_pre[rown_names, column_names, drop = FALSE]))
+    new_df <- as.data.frame(t(df_pre[rown_names, column_names, drop = FALSE]))
     common_rownames <- intersect(rownames(dff), rownames(new_df))
-    dff[common_rownames, names(new_df)] <<-
-      new_df[common_rownames,]
+    dff[common_rownames, names(new_df)] <<- new_df[common_rownames,]
     changed_table <<- as.matrix(dff)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
   })
 
   observeEvent(input$remove_columns_variability, {
-    # Pega as colunas atualmente selecionadas
     current_selected <- input$column_checkbox_group
     if (is.null(changed_table) || length(current_selected) == 0) return()
-
-    # Garante que changed_table seja um data.frame
     data <- as.data.frame(changed_table)
-
-    # Inicializa a nova seleção com as colunas atuais
     new_selection <- current_selected
-
-    # Para cada coluna selecionada que for numérica:
     for(col in current_selected) {
       if (col %in% names(data) && is.numeric(data[[col]])) {
-        # Exclui zeros e NAs para calcular o valor mínimo
         nonzero_values <- data[[col]][data[[col]] != 0 & !is.na(data[[col]])]
-
-        # Se não houver valores diferentes de zero, define a diferença como 0
         if (length(nonzero_values) == 0) {
           diff_val <- 0
         } else {
@@ -720,29 +533,20 @@ server <- function(input, output, session) {
           max_val <- max(data[[col]], na.rm = TRUE)
           diff_val <- max_val - min_val
         }
-
-        # Se a diferença for menor que 50, remove a coluna da seleção
         if (diff_val < input$minvariability) {
           new_selection <- setdiff(new_selection, col)
         }
       }
     }
-
-    # Atualiza o checkbox com as colunas que permaneceram selecionadas
-    updateCheckboxGroupInput(session,
-      inputId = "column_checkbox_group",
-      selected = new_selection)
+    updateCheckboxGroupInput(session, inputId = "column_checkbox_group", selected = new_selection)
   })
-
-
 
   observeEvent(input$merge_all_rows, {
     column_names <- strsplit(input$textarea_columns, "\n")[[1]]
     rown_names <- strsplit(input$textarea_rows, "\n")[[1]]
     new_df <- df_pre[rown_names, column_names, drop = FALSE]
     common_rownames <- intersect(rownames(dff), rownames(new_df))
-    dff[common_rownames, names(new_df)] <<-
-      new_df[common_rownames,]
+    dff[common_rownames, names(new_df)] <<- new_df[common_rownames,]
     changed_table <<- as.data.frame(dff)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
@@ -762,25 +566,21 @@ server <- function(input, output, session) {
     tab_separator(input$separator)
   })
 
-  ####################### TAB 3) PLOT
+  ####################### TAB 3) HEATMAP PLOT
   lapply(1:nrow(plotlist), function(i) {
     bname <- paste0("buttonplot", i)
     observeEvent(input[[bname]], {
       output$plot <- renderPlot({
         numeric_table <- ""
         comandtorun <- plotlist$code[i]
-        updateTextAreaInput(session,"textarea_code_plot", value = comandtorun)
-        cols_to_convert <-
-          intersect(input$checkbox_group_categories,
-            input$column_checkbox_group)
+        updateTextAreaInput(session, "textarea_code_plot", value = comandtorun)
+        cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
         countdataframe <- 0
         if (length(cols_to_convert) > 0) {
           for (this_target in cols_to_convert) {
-            changed_table[[this_target]] <-
-              as.factor(changed_table[[this_target]])
+            changed_table[[this_target]] <- as.factor(changed_table[[this_target]])
             if (countdataframe == 0) {
-              annotation_row <-
-                setNames(data.frame(changed_table[[this_target]]), this_target)
+              annotation_row <- setNames(data.frame(changed_table[[this_target]]), this_target)
               rownames(annotation_row) <- rownames(changed_table)
             } else {
               annotation_row[[this_target]] <- changed_table[[this_target]]
@@ -788,37 +588,23 @@ server <- function(input, output, session) {
             countdataframe <- 1
           }
         }
-        numeric_table <-
-          data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
-        numeric_table <-
-          numeric_table[,!(names(numeric_table) %in% cols_to_convert)]
+        numeric_table <- data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
+        numeric_table <- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
         numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
         if (input$plot_xy == "ROW x COL") {
-
+          # Pode inserir o código para plot "ROW x COL" se necessário
         } else if (input$plot_xy == "COL x COL") {
           numeric_table <- cor(numeric_table)
         }
-        comandtorun <-
-          gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
+        comandtorun <- gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
         if (plotlist$palette[i] != "" && changed_palette == 0) {
           comandpalette <- paste("defaultpalette(", plotlist$palette[i], ")")
           eval(parse(text = comandpalette))
         }
-        comandtorun <-
-          gsub("\\{\\{palette\\}\\}",
-            "defaultpalette()",
-            comandtorun)
-        comandtorun <-
-          gsub("\\{\\{annotation\\}\\}",
-            "annotation_row",
-            comandtorun)
-
-        annotation_colors_auto <-
-          generate_annotation_colors(annotation_row)
-        comandtorun <-
-          gsub("\\{\\{annotation_color\\}\\}",
-            "annotation_colors_auto",
-            comandtorun)
+        comandtorun <- gsub("\\{\\{palette\\}\\}", "defaultpalette()", comandtorun)
+        comandtorun <- gsub("\\{\\{annotation\\}\\}", "annotation_row", comandtorun)
+        annotation_colors_auto <- generate_annotation_colors(annotation_row)
+        comandtorun <- gsub("\\{\\{annotation_color\\}\\}", "annotation_colors_auto", comandtorun)
         eval(parse(text = comandtorun))
       })
     })
@@ -828,8 +614,7 @@ server <- function(input, output, session) {
     bname <- paste0("buttonpalette", i)
     observeEvent(input[[bname]], {
       changed_palette <<- 1
-      comandpalette <-
-        paste("defaultpalette(", palettelist$code[i], ")")
+      comandpalette <- paste("defaultpalette(", palettelist$code[i], ")")
       eval(parse(text = comandpalette))
     })
   })
@@ -838,17 +623,13 @@ server <- function(input, output, session) {
     output$plot <- renderPlot({
       numeric_table <- ""
       comandtorun <- input$textarea_code_plot
-      cols_to_convert <-
-        intersect(input$checkbox_group_categories,
-          input$column_checkbox_group)
+      cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
       countdataframe <- 0
       if (length(cols_to_convert) > 0) {
         for (this_target in cols_to_convert) {
-          changed_table[[this_target]] <-
-            as.factor(changed_table[[this_target]])
+          changed_table[[this_target]] <- as.factor(changed_table[[this_target]])
           if (countdataframe == 0) {
-            annotation_row <-
-              setNames(data.frame(changed_table[[this_target]]), this_target)
+            annotation_row <- setNames(data.frame(changed_table[[this_target]]), this_target)
             rownames(annotation_row) <- rownames(changed_table)
           } else {
             annotation_row[[this_target]] <- changed_table[[this_target]]
@@ -856,56 +637,34 @@ server <- function(input, output, session) {
           countdataframe <- 1
         }
       }
-      numeric_table <-
-        data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
-      numeric_table <-
-        numeric_table[,!(names(numeric_table) %in% cols_to_convert)]
+      numeric_table <- data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
+      numeric_table <- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
       numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
       if (input$plot_xy == "ROW x COL") {
-
+        # Código para ROW x COL se necessário
       } else if (input$plot_xy == "COL x COL") {
         numeric_table <- cor(numeric_table)
       }
-      comandtorun <-
-        gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
-      comandtorun <-
-        gsub("\\{\\{palette\\}\\}",
-          "defaultpalette()",
-          comandtorun)
-      comandtorun <-
-        gsub("\\{\\{annotation\\}\\}",
-          "annotation_row",
-          comandtorun)
-
-      annotation_colors_auto <-
-        generate_annotation_colors(annotation_row)
-      comandtorun <-
-        gsub("\\{\\{annotation_color\\}\\}",
-          "annotation_colors_auto",
-          comandtorun)
+      comandtorun <- gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
+      comandtorun <- gsub("\\{\\{palette\\}\\}", "defaultpalette()", comandtorun)
+      comandtorun <- gsub("\\{\\{annotation\\}\\}", "annotation_row", comandtorun)
+      annotation_colors_auto <- generate_annotation_colors(annotation_row)
+      comandtorun <- gsub("\\{\\{annotation_color\\}\\}", "annotation_colors_auto", comandtorun)
       eval(parse(text = comandtorun))
     })
   })
 
   observeEvent(input$uncheck_all_columns, {
-    updateCheckboxGroupInput(session,
-      inputId = "column_checkbox_group",
-      selected = character(0))
+    updateCheckboxGroupInput(session, inputId = "column_checkbox_group", selected = character(0))
   })
   observeEvent(input$check_all_columns, {
-    updateCheckboxGroupInput(session,
-      inputId = "column_checkbox_group",
-      selected = names(dff))
+    updateCheckboxGroupInput(session, inputId = "column_checkbox_group", selected = names(dff))
   })
   observeEvent(input$uncheck_all_rows, {
-    updateCheckboxGroupInput(session,
-      inputId = "row_checkbox_group",
-      selected = character(0))
+    updateCheckboxGroupInput(session, inputId = "row_checkbox_group", selected = character(0))
   })
   observeEvent(input$check_all_rows, {
-    updateCheckboxGroupInput(session,
-      inputId = "row_checkbox_group",
-      selected = rownames(dff))
+    updateCheckboxGroupInput(session, inputId = "row_checkbox_group", selected = rownames(dff))
   })
   observeEvent(input$transpose_table, {
     if (transpose_table2() == 0) {
@@ -918,80 +677,46 @@ server <- function(input, output, session) {
     load_checkbox_group()
   })
 
-  ####################### TAB 4) Plot 2D
+  ####################### TAB 4) 2D PLOT
   lapply(1:nrow(plotlist2d), function(i) {
     bname <- paste0("buttonplot2d", i)
     observeEvent(input[[bname]], {
       output$plots <- renderUI({
         comandtorun <- plotlist2d$code[i]
-        cols_to_convert <-
-          intersect(input$checkbox_group_categories,
-            input$column_checkbox_group)
-        numeric_table <-
-          data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
-        numeric_table <-
-          numeric_table[,!(names(numeric_table) %in% cols_to_convert)]
+        cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
+        numeric_table <- data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
+        numeric_table <- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
         numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
         X <- numeric_table
-        cor_matrix <- cor(X, method=input$correlation)
+        cor_matrix <- cor(X, method = input$correlation)
         num_cols <- ncol(X)
         plots_list <- list()
         for (i in 1:num_cols) {
           for (j in i:num_cols) {
             if (j != i &&
-                (
-                  cor_matrix[i, j] >= input$correlation_threshhold ||
-                    cor_matrix[i, j] <= input$correlation_threshhold_negative
-                )) {
-              print(
-                paste(
-                  rownames(cor_matrix)[i],
-                  colnames(cor_matrix)[j],
-                  cor_matrix[i, j]
-                )
-              )
-              comandtorun <-
-                gsub("\\{\\{X\\}\\}",
-                  "X[, colnames(X)[i]]",
-                  comandtorun)
-              comandtorun <-
-                gsub("\\{\\{Y\\}\\}",
-                  "X[, colnames(X)[j]]",
-                  comandtorun)
-              comandtorun <-
-                gsub("\\{\\{X_NAME\\}\\}",
-                  "colnames(X)[i]",
-                  comandtorun)
-              comandtorun <-
-                gsub("\\{\\{Y_NAME\\}\\}",
-                  "colnames(X)[j]",
-                  comandtorun)
-              comandtorun <-
-                gsub("\\{\\{CORRELATION\\}\\}",
-                  "cor_matrix[i, j]",
-                  comandtorun)
+                (cor_matrix[i, j] >= input$correlation_threshhold ||
+                    cor_matrix[i, j] <= input$correlation_threshhold_negative)) {
+              print(paste(rownames(cor_matrix)[i], colnames(cor_matrix)[j], cor_matrix[i, j]))
+              comandtorun <- gsub("\\{\\{X\\}\\}", "X[, colnames(X)[i]]", comandtorun)
+              comandtorun <- gsub("\\{\\{Y\\}\\}", "X[, colnames(X)[j]]", comandtorun)
+              comandtorun <- gsub("\\{\\{X_NAME\\}\\}", "colnames(X)[i]", comandtorun)
+              comandtorun <- gsub("\\{\\{Y_NAME\\}\\}", "colnames(X)[j]", comandtorun)
+              comandtorun <- gsub("\\{\\{CORRELATION\\}\\}", "cor_matrix[i, j]", comandtorun)
               p <- eval(parse(text = comandtorun))
               plots_list[[length(plots_list) + 1]] <- p
             }
           }
         }
-
-        texthtml <-
-          paste(length(plots_list),
-            " correlations found within those parameters")
+        texthtml <- paste(length(plots_list), " correlations found within those parameters")
         output$plotLoadingIndicator <- renderUI({
           h4(texthtml, style = "text-align: center;", br(), br())
         })
-
-        # Add spacers between plots
         plots_with_spacers <- list()
         for (index in 1:length(plots_list)) {
-          plots_with_spacers[[length(plots_with_spacers) + 1]] <-
-            plots_list[[index]]
+          plots_with_spacers[[length(plots_with_spacers) + 1]] <- plots_list[[index]]
           if (index != length(plots_list)) {
             spacer <- div(style = "margin-top: 40px;")
-            plots_with_spacers[[length(plots_with_spacers) + 1]] <-
-              spacer
+            plots_with_spacers[[length(plots_with_spacers) + 1]] <- spacer
           }
         }
         do.call(tagList, plots_with_spacers)
@@ -999,55 +724,36 @@ server <- function(input, output, session) {
     })
   })
 
-  ####### 4) Machine learning
+  ####### TAB 5) MACHINE LEARNING
   all_models_reactive <- reactiveVal(list())
-  output$ml_table_results_output = DT::renderDT({
-    datatable(
-      ml_table_results(),
-      selection = "single",
-      options = list(
-        lengthChange = FALSE,
-        paging = FALSE,
-        searching = FALSE,
-        info = FALSE
-      ),
-      rownames = FALSE
-    )
+  output$ml_table_results_output <- DT::renderDT({
+    datatable(ml_table_results(), selection = "single",
+      options = list(lengthChange = FALSE, paging = FALSE, searching = FALSE, info = FALSE),
+      rownames = FALSE)
   })
 
   observeEvent(input$uncheck_all_ml, {
-    updateCheckboxGroupInput(session,
-      inputId = "ml_checkbox_group",
-      selected = character(0))
+    updateCheckboxGroupInput(session, inputId = "ml_checkbox_group", selected = character(0))
   })
 
   observeEvent(input$check_all_ml, {
-    updateCheckboxGroupInput(session,
-      inputId = "ml_checkbox_group",
-      selected = ml_available
-    )
+    updateCheckboxGroupInput(session, inputId = "ml_checkbox_group", selected = ml_available)
   })
 
   observeEvent(input$uncheck_all_ml_missing, {
-    updateCheckboxGroupInput(session,
-      inputId = "ml_missing_checkbox_group",
-      selected = character(0))
+    updateCheckboxGroupInput(session, inputId = "ml_missing_checkbox_group", selected = character(0))
   })
   observeEvent(input$check_all_ml_missing, {
-    updateCheckboxGroupInput(session,
-      inputId = "ml_missing_checkbox_group",
-      selected = ml_not_available)
+    updateCheckboxGroupInput(session, inputId = "ml_missing_checkbox_group", selected = ml_not_available)
   })
 
-  output$ml_table = DT::renderDT(ml_data_table(), options = list(lengthChange = FALSE))
+  output$ml_table <- DT::renderDT(ml_data_table(), options = list(lengthChange = FALSE))
 
   output$ml_row_details <- renderPrint({
     selected_row <- input$ml_table_results_output_rows_selected
     if (length(selected_row) == 1) {
       row_data <- ml_table_results()[selected_row,]
-      selected_data <- ml_table_results()[selected_row,]
-      selected_model_name <-
-        ml_table_results()[selected_row,]$Model
+      selected_model_name <- ml_table_results()[selected_row,]$Model
       specific_model <- all_models_reactive()[[selected_model_name]]
       ml_plot_importance(ml_prediction[[selected_model_name]])
       print(ml_plot_importance())
@@ -1079,20 +785,15 @@ server <- function(input, output, session) {
     if(!is.null(ml_plot_importance())){
       data <- ml_plot_importance()
       data$Residual <- data$Prediction.Predicted - data$Prediction.Actual
-      # Residual Plot
       residual_plot <- ggplot(data, aes(x = Prediction.Actual, y = Residual)) +
         geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
         geom_point(alpha = 0.5) +
         labs(x = "Actual Value", y = "Prediction Error (Residual)", title = "Residual Plot") +
         theme_minimal()
-
-      # Histogram of Residuals (Count Plot)
       residual_count_plot <- ggplot(data, aes(x = Residual)) +
         geom_histogram(bins = 30, fill = "skyblue", color = "black") +
         labs(x = "Prediction Error (Residual)", y = "Count", title = "Distribution of Prediction Errors") +
         theme_minimal()
-
-      # Arrange both plots side by side
       grid.arrange(residual_plot, residual_count_plot, ncol = 2)
     }
   })
@@ -1101,8 +802,7 @@ server <- function(input, output, session) {
     all_models <- getModelInfo()
     models_to_install <- input$ml_missing_checkbox_group
     for (model_name in models_to_install) {
-      model_info <-
-        getModelInfo(model_name, regex = FALSE)[[model_name]]
+      model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
       model_libraries <- model_info$library
       for (librarytoinst in model_libraries) {
         if (!(librarytoinst %in% installed.packages())) {
@@ -1119,323 +819,156 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$play_search_best_model_caret, {
-    cl <- makeCluster(detectCores())  # Create a cluster using all available cores
-    #cl <- makeCluster(2)
-    registerDoParallel(cl) # Register this cluster for parallel processing
-
-    # Your machine learning code using caret goes here, for example:
-    # train(y ~ ., data = your_data, method = "rf", allowParallel = TRUE)
-
-    # Stop the cluster after training is complete
+    cl <- makeCluster(detectCores())
+    registerDoParallel(cl)
 
     temp_models_list <- list()
     ml_prediction <<- list()
-    ml_prediction_plot <- ("")
     ml_error_message_text("")
 
     tryCatch({
-      withProgress(
-        message = 'Searching the best model...',
-        #min = 1,
-        #max = length(input$ml_checkbox_group),
-        #value = 0,
-        {
-          best_result <- 0.00
-          best_model <- ""
-          target_name <- input$ml_target
-          X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
-          # Y <- dff[[target_name]]
-          Y <- X[[target_name]]
-          # print("------------------ T -------------------")
-          # print(ncol(X))
-          # print(nrow(X))
-          # print(length(Y))
-          # print(paste("Y2",length(Y2)))
-          # print(Y2)
-          # print("------------------ TF -------------------")
-          cols_to_convert <- input$checkbox_group_categories
-          if (length(cols_to_convert) > 0) {
-            for (this_target in cols_to_convert) {
-              if (!is.null(X[[this_target]])) {
-                X[[this_target]] <- as.factor(X[[this_target]])
-                if (length(levels(X[[this_target]])) == 1) {
-                  X[[this_target]] <- as.numeric(rep(1, nrow(X)))
-                }
-                if (this_target == target_name) {
-                  Y <- as.factor(dff[[target_name]])
-                  freq_table <- table(Y)
-                  single_item_levels <-
-                    names(freq_table[freq_table <= 2])
-                  toKeep <- !(Y %in% single_item_levels)
-                  Y <- Y[toKeep]
-                  X <- X[toKeep,]
-                  Y <- droplevels(Y)
-                  X[[this_target]] <- droplevels(X[[this_target]])
-                }
+      withProgress(message = 'Searching the best model...', {
+        best_result <- 0.00
+        best_model <- ""
+        target_name <- input$ml_target
+        X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
+        Y <- X[[target_name]]
+        cols_to_convert <- input$checkbox_group_categories
+        if (length(cols_to_convert) > 0) {
+          for (this_target in cols_to_convert) {
+            if (!is.null(X[[this_target]])) {
+              X[[this_target]] <- as.factor(X[[this_target]])
+              if (length(levels(X[[this_target]])) == 1) {
+                X[[this_target]] <- as.numeric(rep(1, nrow(X)))
               }
-            }
-          }
-          ml_table_results("")
-          #if (!is.null(input$ml_seed) && input$ml_seedi != "" && !is.na(as.numeric(input$ml_seedi))) {
-          # Print the seed value
-          #  print(paste("ML seed:", input$ml_seedi))
-
-          # Set the seed
-          #  set.seed(as.numeric(input$ml_seedi))
-          #}
-
-          do_dataset_seed <- 0
-          loop_dataset_seedi <- 1
-          loop_dataset_seedf <- 1
-          if (!is.na(as.numeric(input$ml_seedi)) && !is.na(as.numeric(input$ml_seedf))){
-            loop_dataset_seedi <- as.numeric(input$ml_dataset_seedi)
-            loop_dataset_seedf <- as.numeric(input$ml_dataset_seedf)
-            do_dataset_seed <- 1
-          }
-          for (loop_dataset_seed in loop_dataset_seedi:loop_dataset_seedf) {
-            if(do_dataset_seed == 1){
-              set.seed(loop_dataset_seed)
-              print(paste("SEED: ",loop_dataset_seed))
-            }
-
-            trainIndex <- createDataPartition(Y,
-              p = .8,
-              list = FALSE,
-              times = 1)
-            trainSet <- X[trainIndex, ]
-            testSet  <- X[-trainIndex, ]
-            if (!is.data.frame(trainSet)) {
-              print(" trainset nao era data.frame")
-              trainSet <- as.data.frame(trainSet)
-            }
-            if (!is.data.frame(testSet)) {
-              testSet <- as.data.frame(testSet)
-              print(" testset nao era data.frame")
-            }
-
-
-
-            # Before training the model, check for missing values
-
-            # if (anyNA(trainSet) || anyNA(testSet)) {
-            #   print(paste("Missing values detected in data for model", model_name))
-            #   next  # Skip to the next model
-            # } else {
-            #   print("nao encontrei nada faltando !!!!")
-            # }
-
-
-            # vendo para converter pra matriz
-            #postdtrainset <<- trainSet
-            #postdtestset <<- testSet
-            #trainSet <- as.matrix(trainSet)
-            #testSet <- as.matrix(testSet)
-            #posttrainset <<- trainSet
-            #posttestset <<- testSet
-            #print(testSet)
-            # Get the list of all available models
-            all_models <- input$ml_checkbox_group
-            count_model <- 0
-            do_seed <- 0
-            loop_seedi <- 1
-            loop_seedf <- 1
-            if (!is.na(as.numeric(input$ml_seedi)) && !is.na(as.numeric(input$ml_seedf))){
-              loop_seedi <- as.numeric(input$ml_seedi)
-              loop_seedf <- as.numeric(input$ml_seedf)
-              do_seed <- 1
-            }
-
-            for (model_name in all_models) {
-              count_model <- count_model + 1
-              current_lib <- "";
-              result <- tryCatch({
-                model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
-                model_libraries <- model_info$library
-                for (lib in model_libraries) {
-                  library(lib, character.only = TRUE)
-                  print(paste("Loading library: ",lib))
-                  current_lib <- lib
-                  #detach("package:caret", unload = TRUE)
-                  #library(caret)
-                }
-              }, error = function(e) {
-                print(paste("Failed to load", model_name))
-              })
-
-              ctrl <- trainControl(method = "cv", number = 10)
-
-              # Print the types supported by the model
-              model_types <- model_info$type
-              print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
-
-              for (loop_seed in loop_seedi:loop_seedf) {
-                if(do_seed == 1){
-                  set.seed(loop_seed)
-                }
-                # Train the model
-                tryCatch({
-                  lmessage <-
-                    paste(
-                      'Fitting model',
-                      paste(model_name,"(",loop_dataset_seed,":",loop_seed,")"),
-                      ". ",
-                      count_model,
-                      " of ",
-                      length(input$ml_checkbox_group),
-                      " (Best model: ",
-                      best_model,
-                      " Result: ",
-                      best_result,
-                      ")"
-                    )
-
-                  # Check for missing values in the trainSet and print them
-                  if (any(is.na(trainSet))) {
-                    print("Missing values in trainSet:")
-                    print(trainSet[!complete.cases(trainSet),])
-                  }
-
-                  # Check for missing values in the testSet and print them
-                  if (any(is.na(testSet))) {
-                    print("Missing values in testSet:")
-                    print(testSet[!complete.cases(testSet),])
-                  }
-
-                  #setProgress(message = lmessage , value = count_model)
-
-                  #withProgress(message = lmessage, value = count_model, {
-                  # You can update progress here
-                  #setProgress(message = lmessage , value = count_model)
-                  #setProgress(value = 0.5, detail = "Halfway done")
-                  # Or simply increment:
-                  #incProgress(0.5, detail = "Halfway done")
-                  #})
-                  #print(paste("-------------- COUNT MODEL ------------",count_model))
-                  incProgress((1*count_model/(length(input$ml_checkbox_group)+1)), detail = lmessage)
-                  # length(input$ml_checkbox_group)
-                  #incProgress(0.5, detail = lmessage)
-
-                  formula <- as.formula(paste(target_name, "~ ."))
-                  model <- NULL
-                  result <- tryCatch({
-                    withTimeout({
-                      model <- caret::train(
-                        formula,
-                        data = trainSet,
-                        method = model_name,
-                        trControl = ctrl
-                      )
-                      model  # Return the trained model if it completes
-                    }, timeout = input$ml_timeout, onTimeout = "error")
-                  }, TimeoutException = function(ex) {
-                    errormessage <- paste(
-                      "TIMEOUT: ",
-                      model_name,
-                      " / "
-                    )
-                    ml_error_message_text(paste(ml_error_message_text()," ",errormessage))
-                    print(errormessage)
-
-                    print(paste("Training timed out for model:", model_name))
-                    return(NULL)  # Handle timeout (e.g., skip to next model)
-                  }, error = function(e) {
-                    print(paste("Error training model", model_name, ":", conditionMessage(e)))
-                    return(NULL)
-                  })
-                  # Skip this model if result is NULL
-                  if(is.null(result)) next
-
-                  # Make predictions
-                  pred <- predict(model, newdata = testSet)
-
-                  ml_pred_real <- data.frame(Actual = testSet[[target_name]], Predicted = pred)
-                  model_prediction <-
-                    data.frame(Model = model_name,
-                      "Prediction" = ml_pred_real)
-                  ml_prediction[[model_name]] <<- model_prediction
-                  if (is.factor(testSet[[target_name]])) {
-                    accuracy <- sum(pred == testSet[[target_name]]) / length(pred)
-                    if (accuracy > best_result) {
-                      best_result <- accuracy
-                      best_model <-  paste(model_name,"(",loop_dataset_seed,":",loop_seed,")")
-                      best_model_object(model)
-                    }
-                    model_results <- data.frame(Model = model_name,
-                      "Accuracy" = accuracy,
-                      "Dataset seed" = loop_dataset_seed,
-                      "Training seed" = loop_seed)
-                    ml_table_results(rbind(ml_table_results(), model_results))
-                    temp_models_list[[model_name]] <- model
-                    # Acessar o modelo final
-                    #modelo_final <- model$finalModel
-
-                    # saving the model
-                    #saveRDS(model, file = paste0("modelo_", model_name, ".rds"))
-
-
-                    # Capturar as regras
-                    #regras_texto <- capture.output(summary(modelo_final))
-
-                    # Imprimir as regras no console
-                    #cat("Regras do modelo C5.0Rules:\n")
-                    #cat(regras_texto, sep = "\n")
-
-                    rm(model)
-                  } else {
-                    # Evaluate the model
-                    result_pred <-
-                      postResample(pred, testSet[[target_name]])
-
-                    if (result_pred["Rsquared"] > best_result) {
-                      best_result <- result_pred["Rsquared"]
-                      best_model <- paste(model_name,"(",loop_dataset_seed,":",loop_seed,")")
-                    }
-
-                    if(input$ml_seedi > 0){
-                      model_results <-
-                        data.frame(Model = model_name,
-                          "R2" = result_pred["Rsquared"],
-                          "MAE" = result_pred["MAE"],
-                          "Dataset seed" = loop_dataset_seed,
-                          "Training seed" = loop_seed)
-                    } else {
-                      model_results <-
-                        data.frame(Model = model_name,
-                          "R2" = result_pred["Rsquared"],
-                          "MAE" = result_pred["MAE"])
-                    }
-                    ml_table_results(rbind(ml_table_results(), model_results))
-                    if(result_pred["Rsquared"] >= 0.6) {
-                      temp_models_list[[model_name]] <- model
-                    }
-                    rm(model)
-                  }
-                  sorted_results <- ml_table_results()[order(-as.numeric(as.character(ml_table_results()$Accuracy))), ]
-                  print(head(sorted_results, 10))
-                }, error = function(e) {
-                  errormessage <- paste(
-                    "Could't run model ",
-                    model_name,
-                    ": ",
-                    conditionMessage(e)
-                  )
-                  ml_error_message_text(paste(ml_error_message_text()," ",errormessage))
-                  print(errormessage)
-                })
+              if (this_target == target_name) {
+                Y <- as.factor(dff[[target_name]])
+                freq_table <- table(Y)
+                single_item_levels <- names(freq_table[freq_table <= 2])
+                toKeep <- !(Y %in% single_item_levels)
+                Y <- Y[toKeep]
+                X <- X[toKeep, ]
+                Y <- droplevels(Y)
+                X[[this_target]] <- droplevels(X[[this_target]])
               }
-              print(paste("Memory used:", pryr::mem_used()/1024/1024))
-              # cleanning the garbage
-              gc()
             }
           }
         }
-      )
+        ml_table_results("")
+        do_dataset_seed <- 0
+        loop_dataset_seedi <- as.numeric(input$ml_dataset_seedi)
+        loop_dataset_seedf <- as.numeric(input$ml_dataset_seedf)
+        if (!is.na(loop_dataset_seedi) && !is.na(loop_dataset_seedf)){
+          do_dataset_seed <- 1
+        }
+        for (loop_dataset_seed in loop_dataset_seedi:loop_dataset_seedf) {
+          if(do_dataset_seed == 1){
+            set.seed(loop_dataset_seed)
+            print(paste("SEED: ", loop_dataset_seed))
+          }
+          trainIndex <- createDataPartition(Y, p = .8, list = FALSE, times = 1)
+          trainSet <- X[trainIndex, ]
+          testSet  <- X[-trainIndex, ]
+          if (!is.data.frame(trainSet)) {
+            trainSet <- as.data.frame(trainSet)
+          }
+          if (!is.data.frame(testSet)) {
+            testSet <- as.data.frame(testSet)
+          }
+          all_models <- input$ml_checkbox_group
+          count_model <- 0
+          do_seed <- 0
+          loop_seedi <- as.numeric(input$ml_seedi)
+          loop_seedf <- as.numeric(input$ml_seedf)
+          if (!is.na(loop_seedi) && !is.na(loop_seedf)) {
+            do_seed <- 1
+          }
+          for (model_name in all_models) {
+            count_model <- count_model + 1
+            tryCatch({
+              model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
+              model_libraries <- model_info$library
+              for (lib in model_libraries) {
+                library(lib, character.only = TRUE)
+                print(paste("Loading library: ", lib))
+              }
+            }, error = function(e) {
+              print(paste("Failed to load", model_name))
+            })
+            ctrl <- trainControl(method = "cv", number = 10)
+            model_types <- model_info$type
+            print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
+            for (loop_seed in loop_seedi:loop_seedf) {
+              if(do_seed == 1){
+                set.seed(loop_seed)
+              }
+              tryCatch({
+                incProgress((1*count_model/(length(input$ml_checkbox_group)+1)),
+                  detail = paste('Fitting model', model_name, "(", loop_dataset_seed, ":", loop_seed, ")"))
+                formula <- as.formula(paste(target_name, "~ ."))
+                model <- NULL
+                result <- tryCatch({
+                  withTimeout({
+                    model <- caret::train(formula, data = trainSet, method = model_name, trControl = ctrl)
+                    model
+                  }, timeout = input$ml_timeout, onTimeout = "error")
+                }, TimeoutException = function(ex) {
+                  ml_error_message_text(paste(ml_error_message_text()," ", "TIMEOUT:", model_name, "/"))
+                  print(paste("Training timed out for model:", model_name))
+                  return(NULL)
+                }, error = function(e) {
+                  print(paste("Error training model", model_name, ":", conditionMessage(e)))
+                  return(NULL)
+                })
+                if(is.null(result)) next
+                pred <- predict(model, newdata = testSet)
+                ml_pred_real <- data.frame(Actual = testSet[[target_name]], Predicted = pred)
+                model_prediction <- data.frame(Model = model_name, "Prediction" = ml_pred_real)
+                ml_prediction[[model_name]] <<- model_prediction
+                if (is.factor(testSet[[target_name]])) {
+                  accuracy <- sum(pred == testSet[[target_name]]) / length(pred)
+                  if (accuracy > best_result) {
+                    best_result <- accuracy
+                    best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
+                    best_model_object(model)
+                  }
+                  model_results <- data.frame(Model = model_name,
+                    "Accuracy" = accuracy,
+                    "Dataset seed" = loop_dataset_seed,
+                    "Training seed" = loop_seed)
+                  ml_table_results(rbind(ml_table_results(), model_results))
+                  temp_models_list[[model_name]] <- model
+                } else {
+                  result_pred <- postResample(pred, testSet[[target_name]])
+                  if (result_pred["Rsquared"] > best_result) {
+                    best_result <- result_pred["Rsquared"]
+                    best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
+                  }
+                  model_results <- data.frame(Model = model_name,
+                    "R2" = result_pred["Rsquared"],
+                    "MAE" = result_pred["MAE"],
+                    "Dataset seed" = loop_dataset_seed,
+                    "Training seed" = loop_seed)
+                  ml_table_results(rbind(ml_table_results(), model_results))
+                  if(result_pred["Rsquared"] >= 0.6) {
+                    temp_models_list[[model_name]] <- model
+                  }
+                }
+                print(head(ml_table_results()[order(-as.numeric(as.character(ml_table_results()$Accuracy))), ], 10))
+              }, error = function(e) {
+                ml_error_message_text(paste(ml_error_message_text()," ", "Could't run model", model_name, ":", conditionMessage(e)))
+                print(paste("Could't run model", model_name, ":", conditionMessage(e)))
+              })
+            }
+            print(paste("Memory used:", pryr::mem_used()/1024/1024))
+            gc()
+          }
+        }
+      })
     }, error = function(e) {
       print(e)
     })
     all_models_reactive(temp_models_list)
-    print(ml_table_results())
-    writeLines(rownames(testSet))
     stopCluster(cl)
   })
 
@@ -1448,8 +981,116 @@ server <- function(input, output, session) {
 
   load_dataset_into_table(session)
   load_ml_list()
+
+  ####################### TAB 6) MODEL ANALYSIS - Carregar modelo e rodar análise
+  # Variável reativa para armazenar o modelo carregado
+  loaded_model <- reactiveVal(NULL)
+
+  # Botão para carregar o modelo RDS
+  observeEvent(input$load_model_btn, {
+    req(input$model_file)
+    tryCatch({
+      model_obj <- readRDS(input$model_file$datapath)
+      loaded_model(model_obj)
+      output$model_details <- renderPrint({
+        # Exibe informações do modelo, como summary() ou dados relevantes
+        print(summary(model_obj))
+      })
+    }, error = function(e) {
+      showModal(modalDialog(
+        title = "Erro ao carregar modelo",
+        paste("Erro:", e$message),
+        easyClose = TRUE,
+        footer = modalButton("OK")
+      ))
+    })
+  })
+
+  # Botão para rodar a análise do modelo comparando com o dataset atual (changed_table)
+  observeEvent(input$run_model_analysis, {
+    req(loaded_model())
+    req(changed_table)
+
+    analysis_data <- as.data.frame(changed_table)
+    analysis_data[is.na(analysis_data)] <- 0.0
+    analysis_data[analysis_data == ""] <- 0.0
+    analysis_data <- analysis_data[, sapply(analysis_data, function(col) !all(col == 0.0))]
+
+    model_features <- loaded_model()$finalModel$xNames
+    for (feature in model_features) {
+      if (!(feature %in% colnames(analysis_data))) {
+        analysis_data[[feature]] <- 0
+      }
+    }
+
+    if ("response" %in% colnames(analysis_data)) {
+      analysis_data[["response"]] <- as.factor(analysis_data[["response"]])
+      ground_truth <- analysis_data[["response"]]
+      analysis_data <- analysis_data[, setdiff(colnames(analysis_data), "response")]
+    } else {
+      ground_truth <- NA
+    }
+
+    sample_names <- rownames(analysis_data)
+    predicted_classes <- predict(loaded_model(), newdata = analysis_data)
+    predicted_probs <- predict(loaded_model(), newdata = analysis_data, type = "prob")
+
+    predicted_numeric <- as.numeric(as.character(predicted_classes))
+    if (!is.na(ground_truth[1])) {
+      original_numeric <- as.numeric(as.character(ground_truth))
+      difference <- predicted_numeric - original_numeric
+    } else {
+      difference <- NA
+    }
+
+    confidence_margin <- abs(predicted_probs[, "1"] - predicted_probs[, "0"])
+    confidence_threshold <- 0.8
+    confidence_status <- ifelse(confidence_margin < confidence_threshold, "inconclusivo", "confiavel")
+
+    if (!is.na(ground_truth[1])) {
+      resultado <- ifelse(confidence_status == "inconclusivo", "inconclusivo",
+        ifelse(predicted_classes == ground_truth, "acerto", "erro"))
+    } else {
+      resultado <- NA
+    }
+
+    output_table <- data.frame(
+      Sample = sample_names,
+      Ground_Truth = ground_truth,
+      Predicted_Class = predicted_classes,
+      Probability_0 = predicted_probs[, "0"],
+      Probability_1 = predicted_probs[, "1"],
+      Difference = difference,
+      Confidence_Margin = confidence_margin,
+      Prediction_Status = confidence_status,
+      Resultado = resultado
+    )
+
+    output$model_analysis_table <- DT::renderDT({
+      DT::datatable(output_table, options = list(pageLength = 10, scrollX = TRUE))
+    })
+
+    if (!is.na(ground_truth[1])) {
+      confiaveis_idx <- which(confidence_status == "confiavel")
+      if (length(confiaveis_idx) > 0) {
+        acertos <- sum(predicted_classes[confiaveis_idx] == ground_truth[confiaveis_idx])
+        total_confiaveis <- length(confiaveis_idx)
+        accuracy <- acertos / total_confiaveis
+      } else {
+        accuracy <- NA
+      }
+      output$model_analysis_accuracy <- renderPrint({
+        cat("Acurácia (confiáveis):", accuracy, "\n")
+      })
+    } else {
+      output$model_analysis_accuracy <- renderPrint({
+        cat("ground truth não disponível. Não foi possível calcular métricas de desempenho.\n")
+      })
+    }
+  })
 }
 
+# Funções auxiliares para carregar dataset e checkboxes
 load_ml_list <- function() {
   all_models <- getModelInfo()
   ml_available <<- list()
@@ -1463,72 +1104,46 @@ load_ml_list <- function() {
       }
     }
   }
-  removeUI(selector = paste0("#", "ml_checkbox_group"))
+  removeUI(selector = "#ml_checkbox_group")
   insertUI(
     selector = "#dynamic_machine_learning",
     where = "afterEnd",
-    ui = checkboxGroupInput(
-      inputId = "ml_checkbox_group",
-      label = NULL,
-      choices = ml_available,
-      selected = ml_available
-    )
+    ui = checkboxGroupInput(inputId = "ml_checkbox_group", label = NULL, choices = ml_available, selected = ml_available)
   )
-  removeUI(selector = paste0("#", "ml_missing_checkbox_group"))
+  removeUI(selector = "#ml_missing_checkbox_group")
   insertUI(
     selector = "#dynamic_machine_learning_missing",
     where = "afterEnd",
-    ui = checkboxGroupInput(
-      inputId = "ml_missing_checkbox_group",
-      label = NULL,
-      choices = ml_not_available
-    )
+    ui = checkboxGroupInput(inputId = "ml_missing_checkbox_group", label = NULL, choices = ml_not_available)
   )
 }
 
-load_file_into_table <-
-  function(textarea_columns,
-    textarea_rows,
-    localsession) {
-    column_names <- strsplit(textarea_columns, "\n")[[1]]
-    rown_names <- strsplit(textarea_rows, "\n")[[1]]
-    dff <<- df_pre[rown_names, column_names, drop = FALSE]
-
-    # # Remover colunas vazias automaticamente
-    # empty_columns <- sapply(dff, function(column) all(is.na(column)))
-    # if (any(empty_columns)) {
-    #   dff <<- dff[, !empty_columns, drop = FALSE]
-    #   showNotification("Colunas vazias removidas automaticamente.", type = "message")
-    # }
-
-    # Verifica e remove colunas vazias
-    empty_columns <- sapply(dff, function(column) all(is.na(column)))
-    removed_columns <- names(dff)[empty_columns]
-    if (any(empty_columns)) {
-      dff <<- dff[, !empty_columns, drop = FALSE]
-      # removed_columns_message <- paste("As seguintes colunas foram removidas por estarem completamente vazias:", paste(removed_columns, collapse = ", "))
-      table_cleaning_message_text(paste("Those columns have been removed because are empty: ",paste(removed_columns, collapse = ", ")))
-      # table_cleaning_message_text(removed_columns_message)
-    } else {
-      table_cleaning_message_text("")
-    }
-
-    changed_table <<- dff
-    load_checkbox_group()
-    updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
-    enable("merge_all_columns")
-    enable("merge_all_rows")
-    showTab(inputId = "tabs", target = "2) TABLE")
-    showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
-    showTab(inputId = "tabs", target = "4) 2D PLOT")
-    showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
-    showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
+load_file_into_table <- function(textarea_columns, textarea_rows, localsession) {
+  column_names <- strsplit(textarea_columns, "\n")[[1]]
+  rown_names <- strsplit(textarea_rows, "\n")[[1]]
+  dff <<- df_pre[rown_names, column_names, drop = FALSE]
+  empty_columns <- sapply(dff, function(column) all(is.na(column)))
+  removed_columns <- names(dff)[empty_columns]
+  if (any(empty_columns)) {
+    dff <<- dff[, !empty_columns, drop = FALSE]
+    table_cleaning_message_text(paste("Those columns have been removed because are empty: ", paste(removed_columns, collapse = ", ")))
+  } else {
+    table_cleaning_message_text("")
   }
+  changed_table <<- dff
+  load_checkbox_group()
+  updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
+  enable("merge_all_columns")
+  enable("merge_all_rows")
+  showTab(inputId = "tabs", target = "2) TABLE")
+  showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
+  showTab(inputId = "tabs", target = "4) 2D PLOT")
+  showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
+  showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
+}
 
 load_dataset_into_table <- function(localsession) {
   if (exists("dff") && is.data.frame(dff) && nrow(dff) > 0) {
-    column_names <- colnames(dff)
-    rown_names <- rownames(dff)
     changed_table <<- dff
     load_checkbox_group()
     updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
@@ -1544,10 +1159,8 @@ load_dataset_into_table <- function(localsession) {
 
 generate_annotation_colors <- function(annotation_df) {
   color_list <- list()
-  # Loop through each column in the annotation dataframe
   for (colname in names(annotation_df)) {
     unique_vals <- unique(annotation_df[[colname]])
-    # Generate colors for the unique values
     colors <- rainbow(length(unique_vals))
     color_list[[colname]] <- setNames(colors, unique_vals)
   }
@@ -1555,54 +1168,25 @@ generate_annotation_colors <- function(annotation_df) {
 }
 
 load_checkbox_group <- function() {
-  removeUI(selector = paste0("#", "column_checkbox_group"))
-  removeUI(selector = paste0("#", "row_checkbox_group"))
-  removeUI(selector = paste0("#", "checkbox_group_categories"))
+  removeUI(selector = "#column_checkbox_group")
+  removeUI(selector = "#row_checkbox_group")
+  removeUI(selector = "#checkbox_group_categories")
   insertUI(
     selector = "#dynamic_columns",
     where = "afterEnd",
-    ui = checkboxGroupInput(
-      inputId = "column_checkbox_group",
-      label = NULL,
-      choices = names(dff),
-      selected = names(dff)
-    )
+    ui = checkboxGroupInput(inputId = "column_checkbox_group", label = NULL, choices = names(dff), selected = names(dff))
   )
-
   insertUI(
     selector = "#dynamic_rows",
     where = "afterEnd",
-    ui = checkboxGroupInput(
-      inputId = "row_checkbox_group",
-      label = NULL,
-      choices = rownames(dff),
-      selected = rownames(dff)
-    )
+    ui = checkboxGroupInput(inputId = "row_checkbox_group", label = NULL, choices = rownames(dff), selected = rownames(dff))
   )
-
   insertUI(
     selector = "#dynamic_columns_categories",
     where = "afterEnd",
-    ui = checkboxGroupInput(
-      inputId = "checkbox_group_categories",
-      label = NULL,
-      choices = names(dff)
-    )
+    ui = checkboxGroupInput(inputId = "checkbox_group_categories", label = NULL, choices = names(dff))
   )
 }
-
-#' Opens a window with the application
-#'
-#' @param dataset A data.frame to be automatically loaded. Leave empty to add later
-#'
-#' @return NULL when no error
-#' @export
-#'
-#' @examples
-#' \donttest{
-#'     ugPlot(dataset = mtcars)
-#' }
-#'
 
 ugPlot <- function(dataset = data.frame()) {
   if (nrow(dataset) > 0) {
@@ -1611,4 +1195,5 @@ ugPlot <- function(dataset = data.frame()) {
   shinyApp(ui = ui, server = server)
 }
 
+# Executa a aplicação
 shinyApp(ui, server)
