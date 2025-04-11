@@ -21,6 +21,7 @@ library(gridExtra)
 library(randomForest) # need for windows
 library(doParallel)
 library(R.utils)
+library(ConsensusClusterPlus)
 sink("ugplot.log", split = TRUE)
 #Sys.setenv(OMP_NUM_THREADS = 2)  # Define o máximo de threads para 2
 #Sys.setenv(MKL_NUM_THREADS = 2)  # Se estiver usando Intel MKL
@@ -87,6 +88,8 @@ dff <<- ""
 ml_available <<- list()
 ml_not_available <<- list()
 ml_prediction <<- list()
+best_model_object <- reactiveVal(NULL)
+
 
 getImage <- function(fileName) {
   dataURI(file = system.file("extdata", fileName, package = "ugplot"),
@@ -400,6 +403,7 @@ ui <- fluidPage(
               actionButton("check_all_ml", "Check all"),
               actionButton("play_search_best_model_caret",
                 "RUN"),
+              uiOutput("downloadModelUI"),
               tags$br(),
               tags$p(slow_models_text, style = "color: gray; font-size: 11px;")
             ),
@@ -421,6 +425,11 @@ ui <- fluidPage(
           )
         )
       )
+    ),
+    tabPanel("6) MODEL ANALYSIS",
+      class = "sidebar-layout",
+
+      tags$div()
     )
   )
 )
@@ -430,6 +439,7 @@ server <- function(input, output, session) {
   hideTab(inputId = "tabs", target = "3) HEATMAP PLOT")
   hideTab(inputId = "tabs", target = "4) 2D PLOT")
   hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
+  hideTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
   disable("merge_all_columns")
   disable("merge_all_rows")
   session$allowReconnect(TRUE)
@@ -469,6 +479,23 @@ server <- function(input, output, session) {
       write.csv(data_to_download, file, row.names = TRUE)
     }
   )
+
+  output$downloadBestModel <- downloadHandler(
+    # A function that returns the name of the file
+    filename = function() {
+      paste0("ugplot_best_model.rds")
+    },
+    # A function that saves the best model into the file
+    content = function(file) {
+      saveRDS(best_model_object, file = file)
+    }
+  )
+
+  output$downloadModelUI <- renderUI({
+    if (!is.null(best_model_object())) {
+      downloadButton("downloadBestModel", "Download best model")
+    }
+  })
 
   ####################### TAB 1) LOAD DATA
   observeEvent(input$file1, {
@@ -1101,11 +1128,11 @@ server <- function(input, output, session) {
 
     # Stop the cluster after training is complete
 
-
     temp_models_list <- list()
     ml_prediction <<- list()
     ml_prediction_plot <- ("")
     ml_error_message_text("")
+
     tryCatch({
       withProgress(
         message = 'Searching the best model...',
@@ -1331,6 +1358,7 @@ server <- function(input, output, session) {
                     if (accuracy > best_result) {
                       best_result <- accuracy
                       best_model <-  paste(model_name,"(",loop_dataset_seed,":",loop_seed,")")
+                      best_model_object(model)
                     }
                     model_results <- data.frame(Model = model_name,
                       "Accuracy" = accuracy,
@@ -1340,6 +1368,10 @@ server <- function(input, output, session) {
                     temp_models_list[[model_name]] <- model
                     # Acessar o modelo final
                     #modelo_final <- model$finalModel
+
+                    # saving the model
+                    #saveRDS(model, file = paste0("modelo_", model_name, ".rds"))
+
 
                     # Capturar as regras
                     #regras_texto <- capture.output(summary(modelo_final))
@@ -1490,6 +1522,7 @@ load_file_into_table <-
     showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
     showTab(inputId = "tabs", target = "4) 2D PLOT")
     showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
+    showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
   }
 
 load_dataset_into_table <- function(localsession) {
@@ -1505,6 +1538,7 @@ load_dataset_into_table <- function(localsession) {
     showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
     showTab(inputId = "tabs", target = "4) 2D PLOT")
     showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
+    showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
   }
 }
 
