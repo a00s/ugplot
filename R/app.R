@@ -904,7 +904,20 @@ server <- function(input, output, session) {
               }
               tryCatch({
                 incProgress((1*count_model/(length(input$ml_checkbox_group)+1)),
-                  detail = paste('Fitting model', model_name, "(", loop_dataset_seed, ":", loop_seed, ")"))
+                  #detail = paste('Fitting model', model_name, "(", loop_dataset_seed, ":", loop_seed, ")"))
+
+                  detail = paste(
+                    'Fitting model',
+                    paste(model_name,"(",loop_dataset_seed,":",loop_seed,")"),
+                    ". ",
+                    count_model,
+                    " of ",
+                    length(input$ml_checkbox_group),
+                    " (Best model: ",
+                    best_model,
+                    " Result: ",
+                    best_result,
+                    ")"))
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
                 result <- tryCatch({
