@@ -1,6 +1,6 @@
 # app.R
 
-# Carrega as bibliotecas necessárias
+# Load required libraries
 library(shiny)
 library(shinyWidgets)
 library(shinybusy)
@@ -21,20 +21,20 @@ library(base64enc)
 library(shinyjs)
 library(ggExtra)
 library(gridExtra)
-library(randomForest) # Necessário para Windows
+library(randomForest)  # Required for Windows
 library(doParallel)
 library(R.utils)
 library(ConsensusClusterPlus)
 
 sink("ugplot.log", split = TRUE)
-# Opcional: definir número máximo de threads
+# Optional: set maximum number of threads
 # Sys.setenv(OMP_NUM_THREADS = 2)
 # Sys.setenv(MKL_NUM_THREADS = 2)
 # Sys.setenv(OPENBLAS_NUM_THREADS = 2)
 
 options(shiny.maxRequestSize = 800 * 1024 * 1024)
 
-# Funções auxiliares para carregar arquivos de exemplo, palettes e css
+# Auxiliary functions to load example files, palettes, and CSS
 path_to_2dplotlist <- function() {
   system.file("extdata", "2dplotlist.csv", package = "ugplot")
 }
@@ -65,28 +65,18 @@ path_to_sample_data <- function() {
 }
 lines <- readLines(path_to_sample_data())
 sample_data <- read.csv(text = lines, sep = ",", header = TRUE)
-row.names(sample_data) <- sample_data[,1]
-sample_data <- sample_data[,-1]
+row.names(sample_data) <- sample_data[, 1]
+sample_data <- sample_data[, -1]
 
 slow_models <- c(
-  'bam',
-  'ANFIS',
-  'DENFIS',
-  'FH.GBML',
-  'FIR.DM',
-  'FS.HGD',
-  'gam',
-  'GFS.LT.RS',
-  'GFS.FR.MOGUL',
-  'GFS.THRIFT',
-  'HYFIS',
-  'gaussprRadial',
-  'gaussprLinear',
-  'rbf'
+  'bam', 'ANFIS', 'DENFIS', 'FH.GBML', 'FIR.DM', 'FS.HGD',
+  'gam', 'GFS.LT.RS', 'GFS.FR.MOGUL', 'GFS.THRIFT', 'HYFIS',
+  'gaussprRadial', 'gaussprLinear', 'rbf'
 )
-slow_models_text <- paste("Slow or problematic models automaticaly removed:",
+slow_models_text <- paste("Slow or problematic models automatically removed:",
   paste(slow_models, collapse = ", "))
 
+# Global variables (seguindo o padrão utilizado)
 df_pre <<- ""
 dff <<- ""
 ml_available <<- list()
@@ -99,7 +89,7 @@ getImage <- function(fileName) {
     mime = "image/png")
 }
 
-# Define a interface do aplicativo
+# Define the UI of the application
 ui <- fluidPage(
   tags$script("
     $(document).on('shiny:sessioninitialized', function(event) {
@@ -194,8 +184,7 @@ ui <- fluidPage(
             div(id = "dynamic_rows")),
           actionButton("uncheck_all_rows", "Uncheck all"),
           actionButton("check_all_rows", "Check all"),
-          br(),
-          br()
+          br(), br()
         ),
         column(
           width = 4,
@@ -205,8 +194,7 @@ ui <- fluidPage(
             div(id = "dynamic_columns_categories")),
           actionButton("transpose_table", "Transpose table", icon = icon("retweet")),
           downloadButton("downloadData", "Download"),
-          br(),
-          br()
+          br(), br()
         ),
         uiOutput("table_cleaning_message"), br(),
         uiOutput("table_message"), br(),
@@ -285,17 +273,19 @@ ui <- fluidPage(
       tags$div(
         style = "display: inline-block; vertical-align: top;",
         selectizeInput("ml_target", "Target column (healthy, cancer, ...)", choices = ""),
+        # Aqui, os inputs para seeds e timeout foram organizados em um fluidRow
         conditionalPanel(
           condition = "input.ml_target != ''",
-          tags$div(
-            style = "display: inline-block; vertical-align: top;",
-            class = "small-input",
-            numericInput("ml_dataset_seedi", "Initial Dataset Seed:", step = 1, value = 1),
-            numericInput("ml_dataset_seedf", "Final Dataset Seed:", step = 1, value = 1),
-            numericInput("ml_seedi", "Initial Training Seed:", step = 1, value = 1),
-            numericInput("ml_seedf", "Final Training Seed:", step = 1, value = 1),
-            numericInput("ml_timeout", "Timeout (s):", step = 1, value = 1200)
-          ),
+          fluidRow(
+            column(2, numericInput("ml_dataset_seedi", "Initial Dataset Seed:", step = 1, value = 1)),
+            column(2, numericInput("ml_dataset_seedf", "Final Dataset Seed:", step = 1, value = 1)),
+            column(2, numericInput("ml_seedi", "Initial Training Seed:", step = 1, value = 1)),
+            column(2, numericInput("ml_seedf", "Final Training Seed:", step = 1, value = 1)),
+            column(2, numericInput("ml_timeout", "Timeout (s):", step = 1, value = 1200))
+          )
+        ),
+        conditionalPanel(
+          condition = "input.ml_target != ''",
           tags$div(
             verbatimTextOutput("console_output"),
             column(
@@ -326,29 +316,137 @@ ui <- fluidPage(
         )
       )
     ),
-    # Aba 6: MODEL ANALYSIS
+    # Tab 6: MODEL ANALYSIS (vertical layout)
     tabPanel("6) MODEL ANALYSIS",
-      sidebarLayout(
-        sidebarPanel(
-          fileInput("model_file", "Carregar modelo RDS", accept = c(".rds")),
-          actionButton("load_model_btn", "Carregar modelo"),
-          br(), br(),
-          actionButton("run_model_analysis", "Run"),
-          br(), br(),
-          verbatimTextOutput("model_details")
-        ),
-        mainPanel(
-          DT::DTOutput("model_analysis_table"),
-          br(),
-          verbatimTextOutput("model_analysis_accuracy")
-        )
+      fluidPage(
+        # File input and model details display
+        fileInput("model_file", "Load RDS Model", accept = c(".rds")),
+        verbatimTextOutput("model_details"),
+        # Input for confidence threshold
+        numericInput("confidence_threshold", "Confidence Threshold", value = 0.8, min = 0, max = 1, step = 0.01),
+        actionButton("run_model_analysis", "Run Analysis"),
+        br(), br(),
+        # Extra metrics will be displayed here (before the table)
+        verbatimTextOutput("model_analysis_accuracy"),
+        br(),
+        DT::DTOutput("model_analysis_table")
       )
     )
   )
 )
 
-# Define as funções reativas e observadores do servidor
+# --- Helper functions (defined globally) ---
+
+load_ml_list <- function() {
+  all_models <- getModelInfo()
+  ml_available <<- list()
+  ml_not_available <<- list()
+  for (model_name in names(all_models)) {
+    if (any(!all_models[[model_name]]$library %in% installed.packages())) {
+      ml_not_available <<- c(ml_not_available, model_name)
+    } else {
+      if (!(model_name %in% slow_models)) {
+        ml_available <<- c(ml_available, model_name)
+      }
+    }
+  }
+  removeUI(selector = "#ml_checkbox_group")
+  insertUI(
+    selector = "#dynamic_machine_learning",
+    where = "afterEnd",
+    ui = checkboxGroupInput(inputId = "ml_checkbox_group", label = NULL, choices = ml_available, selected = ml_available)
+  )
+  removeUI(selector = "#ml_missing_checkbox_group")
+  insertUI(
+    selector = "#dynamic_machine_learning_missing",
+    where = "afterEnd",
+    ui = checkboxGroupInput(inputId = "ml_missing_checkbox_group", label = NULL, choices = ml_not_available)
+  )
+}
+
+load_file_into_table <- function(textarea_columns, textarea_rows, localsession) {
+  column_names <- strsplit(textarea_columns, "\n")[[1]]
+  rown_names <- strsplit(textarea_rows, "\n")[[1]]
+  dff <<- df_pre[rown_names, column_names, drop = FALSE]
+  empty_columns <- sapply(dff, function(column) all(is.na(column)))
+  removed_columns <- names(dff)[empty_columns]
+  if (any(empty_columns)) {
+    dff <<- dff[, !empty_columns, drop = FALSE]
+    table_cleaning_message_text(paste("Those columns have been removed because they are empty: ", paste(removed_columns, collapse = ", ")))
+  } else {
+    table_cleaning_message_text("")
+  }
+  changed_table <<- dff
+  load_checkbox_group()
+  updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
+  enable("merge_all_columns")
+  enable("merge_all_rows")
+  showTab(inputId = "tabs", target = "2) TABLE")
+  showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
+  showTab(inputId = "tabs", target = "4) 2D PLOT")
+  showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
+  showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
+}
+
+load_dataset_into_table <- function(localsession) {
+  if (exists("dff") && is.data.frame(dff) && nrow(dff) > 0) {
+    changed_table <<- dff
+    load_checkbox_group()
+    updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
+    enable("merge_all_columns")
+    enable("merge_all_rows")
+    showTab(inputId = "tabs", target = "2) TABLE")
+    showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
+    showTab(inputId = "tabs", target = "4) 2D PLOT")
+    showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
+    showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
+  }
+}
+
+generate_annotation_colors <- function(annotation_df) {
+  color_list <- list()
+  for (colname in names(annotation_df)) {
+    unique_vals <- unique(annotation_df[[colname]])
+    colors <- rainbow(length(unique_vals))
+    color_list[[colname]] <- setNames(colors, unique_vals)
+  }
+  return(color_list)
+}
+
+load_checkbox_group <- function() {
+  removeUI(selector = "#column_checkbox_group")
+  removeUI(selector = "#row_checkbox_group")
+  removeUI(selector = "#checkbox_group_categories")
+  insertUI(
+    selector = "#dynamic_columns",
+    where = "afterEnd",
+    ui = checkboxGroupInput(inputId = "column_checkbox_group", label = NULL, choices = names(dff), selected = names(dff))
+  )
+  insertUI(
+    selector = "#dynamic_rows",
+    where = "afterEnd",
+    ui = checkboxGroupInput(inputId = "row_checkbox_group", label = NULL, choices = rownames(dff), selected = rownames(dff))
+  )
+  insertUI(
+    selector = "#dynamic_columns_categories",
+    where = "afterEnd",
+    ui = checkboxGroupInput(inputId = "checkbox_group_categories", label = NULL, choices = names(dff))
+  )
+}
+
+ugPlot <- function(dataset = data.frame()) {
+  if (nrow(dataset) > 0) {
+    dff <<- dataset
+  }
+  shinyApp(ui = ui, server = server)
+}
+
+# --- End of helper functions ---
+
+# Define the server function
 server <- function(input, output, session) {
+  # Define reactive to store the loaded model
+  loaded_model <- reactiveVal(NULL)
 
   hideTab(inputId = "tabs", target = "2) TABLE")
   hideTab(inputId = "tabs", target = "3) HEATMAP PLOT")
@@ -421,14 +519,14 @@ server <- function(input, output, session) {
       updateTextAreaInput(session, "textarea_rows", value = paste(rownames(df_pre), collapse = "\n"))
     }, error = function(e) {
       error_info <- ""
-      if(e$message == "duplicate 'row.names' are not allowed"){
+      if (e$message == "duplicate 'row.names' are not allowed") {
         data <- read.table(filepath, header = TRUE, sep = tab_separator(), row.names = NULL,
           dec = ".", stringsAsFactors = FALSE, strip.white = TRUE, skip = skipline)
-        error_info <- toString(unique(data[duplicated(data[,1]) | duplicated(data[,1], fromLast = TRUE), 1]))
+        error_info <- toString(unique(data[duplicated(data[, 1]) | duplicated(data[, 1], fromLast = TRUE), 1]))
       }
       showModal(modalDialog(
         title = "Error",
-        paste(paste(e$message, error_info)),
+        paste(e$message, error_info),
         easyClose = TRUE,
         footer = modalButton("OK")
       ))
@@ -437,15 +535,15 @@ server <- function(input, output, session) {
 
   output$contents <- DT::renderDT({
     if (last_file_click_count == 0 || (last_file_click_count != file_click_count())) {
-      ## Pode adicionar código para lidar com múltiplos arquivos
+      ## Code to handle multiple files can be added here
     }
     if (length(input$column_checkbox_group) < 2) {
       table_message_text("")
       return(NULL)
     }
     subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
-    print(paste(nrow(subset_table)," x ",ncol(subset_table)))
-    if(ncol(subset_table) > max_table_columns) {
+    print(paste(nrow(subset_table), " x ", ncol(subset_table)))
+    if (ncol(subset_table) > max_table_columns) {
       table_message_text(paste("Data has more than ", max_table_columns,
         " columns. For performance reasons, only the first ", max_table_columns,
         " will be shown on the screen."))
@@ -467,7 +565,7 @@ server <- function(input, output, session) {
   })
 
   output$table_cleaning_message <- renderUI({
-    if(table_cleaning_message_text() != ""){
+    if (table_cleaning_message_text() != "") {
       tags$h5(style = "color: orange;", table_cleaning_message_text())
     }
   })
@@ -512,7 +610,7 @@ server <- function(input, output, session) {
     rown_names <- strsplit(input$textarea_rows, "\n")[[1]]
     new_df <- as.data.frame(t(df_pre[rown_names, column_names, drop = FALSE]))
     common_rownames <- intersect(rownames(dff), rownames(new_df))
-    dff[common_rownames, names(new_df)] <<- new_df[common_rownames,]
+    dff[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
     changed_table <<- as.matrix(dff)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
@@ -523,16 +621,10 @@ server <- function(input, output, session) {
     if (is.null(changed_table) || length(current_selected) == 0) return()
     data <- as.data.frame(changed_table)
     new_selection <- current_selected
-    for(col in current_selected) {
+    for (col in current_selected) {
       if (col %in% names(data) && is.numeric(data[[col]])) {
         nonzero_values <- data[[col]][data[[col]] != 0 & !is.na(data[[col]])]
-        if (length(nonzero_values) == 0) {
-          diff_val <- 0
-        } else {
-          min_val <- min(nonzero_values)
-          max_val <- max(data[[col]], na.rm = TRUE)
-          diff_val <- max_val - min_val
-        }
+        diff_val <- if (length(nonzero_values) == 0) 0 else max(data[[col]], na.rm = TRUE) - min(nonzero_values)
         if (diff_val < input$minvariability) {
           new_selection <- setdiff(new_selection, col)
         }
@@ -546,7 +638,7 @@ server <- function(input, output, session) {
     rown_names <- strsplit(input$textarea_rows, "\n")[[1]]
     new_df <- df_pre[rown_names, column_names, drop = FALSE]
     common_rownames <- intersect(rownames(dff), rownames(new_df))
-    dff[common_rownames, names(new_df)] <<- new_df[common_rownames,]
+    dff[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
     changed_table <<- as.data.frame(dff)
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
@@ -592,7 +684,7 @@ server <- function(input, output, session) {
         numeric_table <- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
         numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
         if (input$plot_xy == "ROW x COL") {
-          # Pode inserir o código para plot "ROW x COL" se necessário
+          # Insert code for "ROW x COL" plot if needed
         } else if (input$plot_xy == "COL x COL") {
           numeric_table <- cor(numeric_table)
         }
@@ -641,7 +733,7 @@ server <- function(input, output, session) {
       numeric_table <- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
       numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
       if (input$plot_xy == "ROW x COL") {
-        # Código para ROW x COL se necessário
+        # Code for ROW x COL if needed
       } else if (input$plot_xy == "COL x COL") {
         numeric_table <- cor(numeric_table)
       }
@@ -727,7 +819,7 @@ server <- function(input, output, session) {
   ####### TAB 5) MACHINE LEARNING
   all_models_reactive <- reactiveVal(list())
   output$ml_table_results_output <- DT::renderDT({
-    datatable(ml_table_results(), selection = "single",
+    datatable(ml_table_results(),
       options = list(lengthChange = FALSE, paging = FALSE, searching = FALSE, info = FALSE),
       rownames = FALSE)
   })
@@ -752,8 +844,8 @@ server <- function(input, output, session) {
   output$ml_row_details <- renderPrint({
     selected_row <- input$ml_table_results_output_rows_selected
     if (length(selected_row) == 1) {
-      row_data <- ml_table_results()[selected_row,]
-      selected_model_name <- ml_table_results()[selected_row,]$Model
+      row_data <- ml_table_results()[selected_row, ]
+      selected_model_name <- ml_table_results()[selected_row, ]$Model
       specific_model <- all_models_reactive()[[selected_model_name]]
       ml_plot_importance(ml_prediction[[selected_model_name]])
       print(ml_plot_importance())
@@ -782,7 +874,7 @@ server <- function(input, output, session) {
   })
 
   output$ml_plot <- renderPlot({
-    if(!is.null(ml_plot_importance())){
+    if (!is.null(ml_plot_importance())) {
       data <- ml_plot_importance()
       data$Residual <- data$Prediction.Predicted - data$Prediction.Actual
       residual_plot <- ggplot(data, aes(x = Prediction.Actual, y = Residual)) +
@@ -858,11 +950,11 @@ server <- function(input, output, session) {
         do_dataset_seed <- 0
         loop_dataset_seedi <- as.numeric(input$ml_dataset_seedi)
         loop_dataset_seedf <- as.numeric(input$ml_dataset_seedf)
-        if (!is.na(loop_dataset_seedi) && !is.na(loop_dataset_seedf)){
+        if (!is.na(loop_dataset_seedi) && !is.na(loop_dataset_seedf)) {
           do_dataset_seed <- 1
         }
         for (loop_dataset_seed in loop_dataset_seedi:loop_dataset_seedf) {
-          if(do_dataset_seed == 1){
+          if (do_dataset_seed == 1) {
             set.seed(loop_dataset_seed)
             print(paste("SEED: ", loop_dataset_seed))
           }
@@ -899,25 +991,18 @@ server <- function(input, output, session) {
             model_types <- model_info$type
             print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
             for (loop_seed in loop_seedi:loop_seedf) {
-              if(do_seed == 1){
+              if (do_seed == 1) {
                 set.seed(loop_seed)
               }
               tryCatch({
-                incProgress((1*count_model/(length(input$ml_checkbox_group)+1)),
-                  #detail = paste('Fitting model', model_name, "(", loop_dataset_seed, ":", loop_seed, ")"))
-
+                incProgress((1 * count_model / (length(input$ml_checkbox_group) + 1)),
                   detail = paste(
                     'Fitting model',
-                    paste(model_name,"(",loop_dataset_seed,":",loop_seed,")"),
-                    ". ",
-                    count_model,
-                    " of ",
+                    paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")"),
+                    ". ", count_model, " of ",
                     length(input$ml_checkbox_group),
-                    " (Best model: ",
-                    best_model,
-                    " Result: ",
-                    best_result,
-                    ")"))
+                    " (Best model: ", best_model,
+                    " Result: ", best_result, ")"))
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
                 result <- tryCatch({
@@ -926,14 +1011,14 @@ server <- function(input, output, session) {
                     model
                   }, timeout = input$ml_timeout, onTimeout = "error")
                 }, TimeoutException = function(ex) {
-                  ml_error_message_text(paste(ml_error_message_text()," ", "TIMEOUT:", model_name, "/"))
+                  ml_error_message_text(paste(ml_error_message_text(), " ", "TIMEOUT:", model_name, "/"))
                   print(paste("Training timed out for model:", model_name))
                   return(NULL)
                 }, error = function(e) {
                   print(paste("Error training model", model_name, ":", conditionMessage(e)))
                   return(NULL)
                 })
-                if(is.null(result)) next
+                if (is.null(result)) next
                 pred <- predict(model, newdata = testSet)
                 ml_pred_real <- data.frame(Actual = testSet[[target_name]], Predicted = pred)
                 model_prediction <- data.frame(Model = model_name, "Prediction" = ml_pred_real)
@@ -963,17 +1048,17 @@ server <- function(input, output, session) {
                     "Dataset seed" = loop_dataset_seed,
                     "Training seed" = loop_seed)
                   ml_table_results(rbind(ml_table_results(), model_results))
-                  if(result_pred["Rsquared"] >= 0.6) {
+                  if (result_pred["Rsquared"] >= 0.6) {
                     temp_models_list[[model_name]] <- model
                   }
                 }
                 print(head(ml_table_results()[order(-as.numeric(as.character(ml_table_results()$Accuracy))), ], 10))
               }, error = function(e) {
-                ml_error_message_text(paste(ml_error_message_text()," ", "Could't run model", model_name, ":", conditionMessage(e)))
-                print(paste("Could't run model", model_name, ":", conditionMessage(e)))
+                ml_error_message_text(paste(ml_error_message_text(), " ", "Couldn't run model", model_name, ":", conditionMessage(e)))
+                print(paste("Couldn't run model", model_name, ":", conditionMessage(e)))
               })
             }
-            print(paste("Memory used:", pryr::mem_used()/1024/1024))
+            print(paste("Memory used:", pryr::mem_used() / 1024 / 1024))
             gc()
           }
         }
@@ -985,41 +1070,26 @@ server <- function(input, output, session) {
     stopCluster(cl)
   })
 
-  session$onSessionEnded(function() {
-    rm(dff, changed_table, ml_available, ml_not_available, ml_prediction, envir = globalenv())
-    if (exists("df_pre")) {
-      rm(df_pre, envir = globalenv())
-    }
-  })
-
-  load_dataset_into_table(session)
-  load_ml_list()
-
-  ####################### TAB 6) MODEL ANALYSIS - Carregar modelo e rodar análise
-  # Variável reativa para armazenar o modelo carregado
-  loaded_model <- reactiveVal(NULL)
-
-  # Botão para carregar o modelo RDS
-  observeEvent(input$load_model_btn, {
+  # Auto-load model when a file is selected (no extra button)
+  observeEvent(input$model_file, {
     req(input$model_file)
     tryCatch({
       model_obj <- readRDS(input$model_file$datapath)
       loaded_model(model_obj)
       output$model_details <- renderPrint({
-        # Exibe informações do modelo, como summary() ou dados relevantes
         print(summary(model_obj))
       })
     }, error = function(e) {
       showModal(modalDialog(
-        title = "Erro ao carregar modelo",
-        paste("Erro:", e$message),
+        title = "Error loading model",
+        paste("Error:", e$message),
         easyClose = TRUE,
         footer = modalButton("OK")
       ))
     })
   })
 
-  # Botão para rodar a análise do modelo comparando com o dataset atual (changed_table)
+  # Model Analysis: Run analysis when clicking the button
   observeEvent(input$run_model_analysis, {
     req(loaded_model())
     req(changed_table)
@@ -1048,6 +1118,17 @@ server <- function(input, output, session) {
     predicted_classes <- predict(loaded_model(), newdata = analysis_data)
     predicted_probs <- predict(loaded_model(), newdata = analysis_data, type = "prob")
 
+    if (ncol(predicted_probs) == 2) {
+      confidence_margin <- abs(predicted_probs[, "1"] - predicted_probs[, "0"])
+    } else {
+      confidence_margin <- apply(predicted_probs, 1, function(x) {
+        diff(sort(x, decreasing = TRUE)[1:2])
+      })
+    }
+
+    threshold <- input$confidence_threshold
+    confidence_status <- ifelse(confidence_margin < threshold, "inconclusive", "reliable")
+
     predicted_numeric <- as.numeric(as.character(predicted_classes))
     if (!is.na(ground_truth[1])) {
       original_numeric <- as.numeric(as.character(ground_truth))
@@ -1056,157 +1137,65 @@ server <- function(input, output, session) {
       difference <- NA
     }
 
-    confidence_margin <- abs(predicted_probs[, "1"] - predicted_probs[, "0"])
-    confidence_threshold <- 0.8
-    confidence_status <- ifelse(confidence_margin < confidence_threshold, "inconclusivo", "confiavel")
-
-    if (!is.na(ground_truth[1])) {
-      resultado <- ifelse(confidence_status == "inconclusivo", "inconclusivo",
-        ifelse(predicted_classes == ground_truth, "acerto", "erro"))
-    } else {
-      resultado <- NA
-    }
-
     output_table <- data.frame(
       Sample = sample_names,
       Ground_Truth = ground_truth,
       Predicted_Class = predicted_classes,
-      Probability_0 = predicted_probs[, "0"],
-      Probability_1 = predicted_probs[, "1"],
+      Probability_0 = if("0" %in% colnames(predicted_probs)) predicted_probs[, "0"] else NA,
+      Probability_1 = if("1" %in% colnames(predicted_probs)) predicted_probs[, "1"] else NA,
       Difference = difference,
       Confidence_Margin = confidence_margin,
       Prediction_Status = confidence_status,
-      Resultado = resultado
+      Result = if (!is.na(ground_truth[1])) ifelse(predicted_classes == ground_truth, "correct", "error") else NA,
+      stringsAsFactors = FALSE
     )
 
-    output$model_analysis_table <- DT::renderDT({
-      DT::datatable(output_table, options = list(pageLength = 10, scrollX = TRUE))
-    })
-
+    # Compute extra metrics and display before the table
     if (!is.na(ground_truth[1])) {
-      confiaveis_idx <- which(confidence_status == "confiavel")
-      if (length(confiaveis_idx) > 0) {
-        acertos <- sum(predicted_classes[confiaveis_idx] == ground_truth[confiaveis_idx])
-        total_confiaveis <- length(confiaveis_idx)
-        accuracy <- acertos / total_confiaveis
+      total_items <- length(sample_names)
+      reliable_idx <- which(confidence_status == "reliable")
+      inconclusive_idx <- which(confidence_status == "inconclusive")
+      count_reliable <- length(reliable_idx)
+      count_inconclusive <- length(inconclusive_idx)
+      if (count_reliable > 0) {
+        correct_count <- sum(predicted_classes[reliable_idx] == ground_truth[reliable_idx])
+        wrong_count <- count_reliable - correct_count
+        accuracy <- correct_count / count_reliable
       } else {
+        correct_count <- 0
+        wrong_count <- 0
         accuracy <- NA
       }
       output$model_analysis_accuracy <- renderPrint({
-        cat("Acurácia (confiáveis):", accuracy, "\n")
+        cat("Total items:", total_items, "\n",
+          "Reliable predictions:", count_reliable, "\n",
+          "Inconclusive predictions:", count_inconclusive, "\n",
+          "Correct predictions (reliable):", correct_count, "\n",
+          "Wrong predictions (reliable):", wrong_count, "\n",
+          "Accuracy (reliable predictions):", accuracy, "\n")
       })
     } else {
       output$model_analysis_accuracy <- renderPrint({
-        cat("ground truth não disponível. Não foi possível calcular métricas de desempenho.\n")
+        cat("Ground truth not available. Unable to calculate performance metrics.\n")
       })
     }
+
+    output$model_analysis_table <- DT::renderDT({
+      DT::datatable(output_table, options = list(paging = FALSE, scrollX = TRUE))
+    })
   })
-}
 
-# Funções auxiliares para carregar dataset e checkboxes
-load_ml_list <- function() {
-  all_models <- getModelInfo()
-  ml_available <<- list()
-  ml_not_available <<- list()
-  for (model_name in names(all_models)) {
-    if (any(!all_models[[model_name]]$library %in% installed.packages())) {
-      ml_not_available <<- c(ml_not_available, model_name)
-    } else {
-      if (!(model_name %in% slow_models)) {
-        ml_available <<- c(ml_available, model_name)
-      }
+  session$onSessionEnded(function() {
+    rm(dff, changed_table, ml_available, ml_not_available, ml_prediction, envir = globalenv())
+    if (exists("df_pre")) {
+      rm(df_pre, envir = globalenv())
     }
-  }
-  removeUI(selector = "#ml_checkbox_group")
-  insertUI(
-    selector = "#dynamic_machine_learning",
-    where = "afterEnd",
-    ui = checkboxGroupInput(inputId = "ml_checkbox_group", label = NULL, choices = ml_available, selected = ml_available)
-  )
-  removeUI(selector = "#ml_missing_checkbox_group")
-  insertUI(
-    selector = "#dynamic_machine_learning_missing",
-    where = "afterEnd",
-    ui = checkboxGroupInput(inputId = "ml_missing_checkbox_group", label = NULL, choices = ml_not_available)
-  )
-}
+  })
 
-load_file_into_table <- function(textarea_columns, textarea_rows, localsession) {
-  column_names <- strsplit(textarea_columns, "\n")[[1]]
-  rown_names <- strsplit(textarea_rows, "\n")[[1]]
-  dff <<- df_pre[rown_names, column_names, drop = FALSE]
-  empty_columns <- sapply(dff, function(column) all(is.na(column)))
-  removed_columns <- names(dff)[empty_columns]
-  if (any(empty_columns)) {
-    dff <<- dff[, !empty_columns, drop = FALSE]
-    table_cleaning_message_text(paste("Those columns have been removed because are empty: ", paste(removed_columns, collapse = ", ")))
-  } else {
-    table_cleaning_message_text("")
-  }
-  changed_table <<- dff
-  load_checkbox_group()
-  updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
-  enable("merge_all_columns")
-  enable("merge_all_rows")
-  showTab(inputId = "tabs", target = "2) TABLE")
-  showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
-  showTab(inputId = "tabs", target = "4) 2D PLOT")
-  showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
-  showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
-}
+  load_dataset_into_table(session)
+  load_ml_list()
 
-load_dataset_into_table <- function(localsession) {
-  if (exists("dff") && is.data.frame(dff) && nrow(dff) > 0) {
-    changed_table <<- dff
-    load_checkbox_group()
-    updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
-    enable("merge_all_columns")
-    enable("merge_all_rows")
-    showTab(inputId = "tabs", target = "2) TABLE")
-    showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
-    showTab(inputId = "tabs", target = "4) 2D PLOT")
-    showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
-    showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
-  }
-}
+}  # End of server function
 
-generate_annotation_colors <- function(annotation_df) {
-  color_list <- list()
-  for (colname in names(annotation_df)) {
-    unique_vals <- unique(annotation_df[[colname]])
-    colors <- rainbow(length(unique_vals))
-    color_list[[colname]] <- setNames(colors, unique_vals)
-  }
-  return(color_list)
-}
-
-load_checkbox_group <- function() {
-  removeUI(selector = "#column_checkbox_group")
-  removeUI(selector = "#row_checkbox_group")
-  removeUI(selector = "#checkbox_group_categories")
-  insertUI(
-    selector = "#dynamic_columns",
-    where = "afterEnd",
-    ui = checkboxGroupInput(inputId = "column_checkbox_group", label = NULL, choices = names(dff), selected = names(dff))
-  )
-  insertUI(
-    selector = "#dynamic_rows",
-    where = "afterEnd",
-    ui = checkboxGroupInput(inputId = "row_checkbox_group", label = NULL, choices = rownames(dff), selected = rownames(dff))
-  )
-  insertUI(
-    selector = "#dynamic_columns_categories",
-    where = "afterEnd",
-    ui = checkboxGroupInput(inputId = "checkbox_group_categories", label = NULL, choices = names(dff))
-  )
-}
-
-ugPlot <- function(dataset = data.frame()) {
-  if (nrow(dataset) > 0) {
-    dff <<- dataset
-  }
-  shinyApp(ui = ui, server = server)
-}
-
-# Executa a aplicação
+# Run the application
 shinyApp(ui, server)
