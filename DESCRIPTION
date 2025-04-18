@@ -29,5 +29,11 @@ Imports:
     plotly,
     tidyr,
     keras,
-    caret
+    caret,
+    base64enc,
+    ggExtra,
+    gridExtra,
+    doParallel,
+    R.utils,
+    ConsensusClusterPlus  
 RoxygenNote: 7.2.3
