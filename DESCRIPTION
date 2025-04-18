@@ -2,7 +2,7 @@ Package: ugplot
 Type: Package
 Title: Find the best Caret model for your data and generate plots for papers
 Version: 1.0
-Author:  Ulrich Pfeffer, Francesco Reggiani, Thiago Benazzi Maia
+Author: Thiago Benazzi Maia, Francesco Reggiani, Ulrich Pfeffer 
 Maintainer: Thiago Benazzi Maia <a00s@a00s.com>
 Description: Is an R library that uses shiny to assists in finding relationships between columns of a data matrix in three ways:
               1. With heatmap and distribution graphics.
@@ -33,7 +33,8 @@ Imports:
     base64enc,
     ggExtra,
     gridExtra,
+    parallel,
     doParallel,
     R.utils,
-    ConsensusClusterPlus  
-RoxygenNote: 7.2.3
+    ConsensusClusterPlus
+RoxygenNote: 7.3.2
