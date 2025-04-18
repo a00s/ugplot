@@ -322,6 +322,14 @@ ui <- fluidPage(
         # File input and model details display
         fileInput("model_file", "Load RDS Model", accept = c(".rds")),
         verbatimTextOutput("model_details"),
+        ## NOVO: mostrar variável alvo do modelo
+        uiOutput("model_target_var_ui"),
+
+        ## NOVO: escolher no dataset qual coluna é o ground truth
+        selectInput("dataset_response_col", "Target column:",
+                                                   choices = NULL,
+                                                   selected = NULL),
+
         # Input for confidence threshold
         numericInput("confidence_threshold", "Confidence Threshold", value = 0.8, min = 0, max = 1, step = 0.01),
         actionButton("run_model_analysis", "Run Analysis"),
@@ -1041,6 +1049,7 @@ server <- function(input, output, session) {
                   if (result_pred["Rsquared"] > best_result) {
                     best_result <- result_pred["Rsquared"]
                     best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
+                    best_model_object(model)
                   }
                   model_results <- data.frame(Model = model_name,
                     "R2" = result_pred["Rsquared"],
@@ -1070,120 +1079,216 @@ server <- function(input, output, session) {
     stopCluster(cl)
   })
 
-  # Auto-load model when a file is selected (no extra button)
-  observeEvent(input$model_file, {
-    req(input$model_file)
-    tryCatch({
-      model_obj <- readRDS(input$model_file$datapath)
-      loaded_model(model_obj)
-      output$model_details <- renderPrint({
-        print(summary(model_obj))
-      })
-    }, error = function(e) {
-      showModal(modalDialog(
-        title = "Error loading model",
-        paste("Error:", e$message),
-        easyClose = TRUE,
-        footer = modalButton("OK")
-      ))
-    })
-  })
+  # Tab 6) MODEL ANALYSIS: Carrega o modelo e detecta variável‑alvo
+observeEvent(input$model_file, {
+  req(input$model_file)
+  tryCatch({
+    # 1) Carrega o objeto
+    model_obj <- readRDS(input$model_file$datapath)
+    loaded_model(model_obj)
 
-  # Model Analysis: Run analysis when clicking the button
+    # 2) Mostra resumo do modelo
+    output$model_details <- renderPrint({
+      print(summary(model_obj))
+    })
+
+    # 3) Prepara vetor de colunas do dataset
+    cols_dataset <- colnames(changed_table)
+
+    # 4) Detecta variável‑alvo em várias etapas
+    model_target <- ""
+
+    # 4.1) Se for um objeto caret::train, o call$formula guarda a fórmula
+    if (!is.null(model_obj$call$formula)) {
+      model_target <- as.character(model_obj$call$formula[[2]])
+    }
+    # 4.2) Caso seja um objeto randomForest puro treinado por fórmula
+    else if (inherits(model_obj, "randomForest") && !is.null(model_obj$terms)) {
+      # extrai a segunda variável dos terms
+      vars <- as.character(attr(model_obj$terms, "variables"))
+      if (length(vars) >= 2) model_target <- vars[2]
+    }
+    # 4.3) Fallback para caret::train (se por algum motivo o fórmula sumiu):
+    #      pegamos o .outcome no trainingData (mas aí o nome real não fica disponível)
+    else if (!is.null(model_obj$trainingData)) {
+      # a coluna .outcome guarda o vetor de resposta
+      if (".outcome" %in% colnames(model_obj$trainingData)) {
+        # não é o nome original, mas mostramos ao menos que veio do treinamento
+        model_target <- ".outcome"
+      }
+    }
+
+    # 4.4) Se ainda vazio ou não estiver no dataset, usar o que o usuário selecionou
+    selected_manual <- input$dataset_response_col
+    if (!(model_target %in% cols_dataset)) {
+      model_target <- selected_manual
+    }
+
+    # 5) Exibe na UI SEMPRE o nome que vamos usar como target
+    output$model_target_var_ui <- renderUI({
+      tags$p(
+        strong("Model target:"),
+        tags$span(model_target, style = "color: steelblue;")
+      )
+    })
+
+    # 6) Atualiza o selectInput do dataset com as colunas disponíveis,
+    #    e já seleciona a variável‑alvo detectada (ou manual)
+    updateSelectInput(
+      session,
+      "dataset_response_col",
+      choices  = cols_dataset,
+      selected = model_target
+    )
+
+  }, error = function(e) {
+    showModal(modalDialog(
+      title = "Error loading model",
+      paste("Error:", e$message),
+      easyClose = TRUE,
+      footer = modalButton("OK")
+    ))
+  })
+})
+
+
+
+  # Tab 6) MODEL ANALYSIS: Run analysis when clicking the button
   observeEvent(input$run_model_analysis, {
     req(loaded_model())
     req(changed_table)
 
+    # 1) Prepara os dados
     analysis_data <- as.data.frame(changed_table)
-    analysis_data[is.na(analysis_data)] <- 0.0
-    analysis_data[analysis_data == ""] <- 0.0
-    analysis_data <- analysis_data[, sapply(analysis_data, function(col) !all(col == 0.0))]
+    analysis_data[is.na(analysis_data)]      <- 0
+    analysis_data[analysis_data == ""]       <- 0
+    analysis_data <- analysis_data[, !apply(analysis_data, 2, function(col) all(col == 0))]
 
+    # 2) Garante que todos os features do modelo existam nos dados
     model_features <- loaded_model()$finalModel$xNames
-    for (feature in model_features) {
-      if (!(feature %in% colnames(analysis_data))) {
-        analysis_data[[feature]] <- 0
+    for (feat in model_features) {
+      if (!(feat %in% colnames(analysis_data))) {
+        analysis_data[[feat]] <- 0
       }
     }
 
-    if ("response" %in% colnames(analysis_data)) {
-      analysis_data[["response"]] <- as.factor(analysis_data[["response"]])
-      ground_truth <- analysis_data[["response"]]
-      analysis_data <- analysis_data[, setdiff(colnames(analysis_data), "response")]
+    # 3) Extrai ground truth a partir do selectInput
+    dataset_col <- input$dataset_response_col
+    if (!is.null(dataset_col) && dataset_col %in% colnames(analysis_data)) {
+      # classificação só se houver ao menos 1 nível
+      if (length(loaded_model()$levels) > 0) {
+        analysis_data[[dataset_col]] <- as.factor(analysis_data[[dataset_col]])
+        ground_truth <- analysis_data[[dataset_col]]
+      } else {
+        ground_truth <- as.numeric(analysis_data[[dataset_col]])
+      }
+      # remove a coluna alvo das features
+      analysis_data <- analysis_data[, setdiff(colnames(analysis_data), dataset_col), drop = FALSE]
     } else {
       ground_truth <- NA
     }
 
-    sample_names <- rownames(analysis_data)
-    predicted_classes <- predict(loaded_model(), newdata = analysis_data)
-    predicted_probs <- predict(loaded_model(), newdata = analysis_data, type = "prob")
+    sample_names   <- rownames(analysis_data)
+    pred_raw       <- predict(loaded_model(), newdata = analysis_data)
+    is_classif     <- length(loaded_model()$levels) > 0
 
-    if (ncol(predicted_probs) == 2) {
-      confidence_margin <- abs(predicted_probs[, "1"] - predicted_probs[, "0"])
-    } else {
-      confidence_margin <- apply(predicted_probs, 1, function(x) {
-        diff(sort(x, decreasing = TRUE)[1:2])
-      })
-    }
+    if (is_classif) {
 
-    threshold <- input$confidence_threshold
-    confidence_status <- ifelse(confidence_margin < threshold, "inconclusive", "reliable")
+      # ---- CLASSIFICAÇÃO ----
+      predicted_class <- as.character(pred_raw)
 
-    predicted_numeric <- as.numeric(as.character(predicted_classes))
-    if (!is.na(ground_truth[1])) {
-      original_numeric <- as.numeric(as.character(ground_truth))
-      difference <- predicted_numeric - original_numeric
-    } else {
-      difference <- NA
-    }
+      # tenta obter probabilidades
+      probs <- tryCatch({
+        predict(loaded_model(), newdata = analysis_data, type = "prob")
+      }, error = function(e) NULL)
 
-    output_table <- data.frame(
-      Sample = sample_names,
-      Ground_Truth = ground_truth,
-      Predicted_Class = predicted_classes,
-      Probability_0 = if("0" %in% colnames(predicted_probs)) predicted_probs[, "0"] else NA,
-      Probability_1 = if("1" %in% colnames(predicted_probs)) predicted_probs[, "1"] else NA,
-      Difference = difference,
-      Confidence_Margin = confidence_margin,
-      Prediction_Status = confidence_status,
-      Result = if (!is.na(ground_truth[1])) ifelse(predicted_classes == ground_truth, "correct", "error") else NA,
-      stringsAsFactors = FALSE
-    )
-
-    # Compute extra metrics and display before the table
-    if (!is.na(ground_truth[1])) {
-      total_items <- length(sample_names)
-      reliable_idx <- which(confidence_status == "reliable")
-      inconclusive_idx <- which(confidence_status == "inconclusive")
-      count_reliable <- length(reliable_idx)
-      count_inconclusive <- length(inconclusive_idx)
-      if (count_reliable > 0) {
-        correct_count <- sum(predicted_classes[reliable_idx] == ground_truth[reliable_idx])
-        wrong_count <- count_reliable - correct_count
-        accuracy <- correct_count / count_reliable
+      if (!is.null(probs)) {
+        max_prob    <- apply(probs, 1, max)
+        sorted_probs <- t(apply(probs, 1, sort, decreasing = TRUE))
+        conf_margin <- sorted_probs[,1] - sorted_probs[,2]
       } else {
-        correct_count <- 0
-        wrong_count <- 0
-        accuracy <- NA
+        max_prob    <- rep(NA_real_, length(predicted_class))
+        conf_margin <- rep(NA_real_, length(predicted_class))
       }
-      output$model_analysis_accuracy <- renderPrint({
-        cat("Total items:", total_items, "\n",
-          "Reliable predictions:", count_reliable, "\n",
-          "Inconclusive predictions:", count_inconclusive, "\n",
-          "Correct predictions (reliable):", correct_count, "\n",
-          "Wrong predictions (reliable):", wrong_count, "\n",
-          "Accuracy (reliable predictions):", accuracy, "\n")
-      })
+
+      # status confiável vs inconclusivo
+      threshold <- input$confidence_threshold
+      status    <- ifelse(conf_margin < threshold, "inconclusive", "reliable")
+
+      # diferença numérica (classe codificada como número)
+      diff_num <- if (!all(is.na(ground_truth))) {
+        as.numeric(predicted_class) - as.numeric(as.character(ground_truth))
+      } else {
+        NA_real_
+      }
+
+      # monta a tabela de saída
+      output_table <- data.frame(
+        Sample            = sample_names,
+        Ground_Truth      = ground_truth,
+        Predicted         = predicted_class,
+        Confidence        = max_prob,
+        Confidence_Margin = conf_margin,
+        Difference        = diff_num,
+        Status            = status,
+        stringsAsFactors  = FALSE
+      )
+
+    } else {
+
+      # ---- REGRESSÃO ----
+      predicted_value <- as.numeric(pred_raw)
+      diff_val        <- predicted_value - ground_truth
+
+      output_table <- data.frame(
+        Sample       = sample_names,
+        Ground_Truth = ground_truth,
+        Predicted    = predicted_value,
+        Difference   = diff_val,
+        stringsAsFactors = FALSE
+      )
+    }
+
+    # 4) Métricas adicionais
+    if (!all(is.na(ground_truth))) {
+      if (is_classif) {
+        total_items        <- length(sample_names)
+        reliable_idx       <- which(status == "reliable")
+        count_reliable     <- length(reliable_idx)
+        count_inconclusive <- sum(status == "inconclusive")
+        correct_count      <- if (count_reliable>0) sum(predicted_class[reliable_idx]==ground_truth[reliable_idx]) else 0
+        wrong_count        <- count_reliable - correct_count
+        accuracy           <- if (count_reliable>0) correct_count/count_reliable else NA
+
+        output$model_analysis_accuracy <- renderPrint({
+          cat(
+            "Total items: ",            total_items,        "\n",
+            "Reliable: ",               count_reliable,     "\n",
+            "Inconclusive: ",           count_inconclusive, "\n",
+            "Correct (reliable): ",     correct_count,      "\n",
+            "Wrong (reliable): ",       wrong_count,        "\n",
+            "Accuracy (reliable): ",    accuracy,           "\n",
+            sep = ""
+          )
+        })
+      } else {
+        output$model_analysis_accuracy <- renderPrint({
+          cat("Regressão: sem métricas de classificação.\n")
+        })
+      }
     } else {
       output$model_analysis_accuracy <- renderPrint({
-        cat("Ground truth not available. Unable to calculate performance metrics.\n")
+        cat("Ground truth não disponível.\n")
       })
     }
 
+    # 5) Renderiza a tabela final
     output$model_analysis_table <- DT::renderDT({
       DT::datatable(output_table, options = list(paging = FALSE, scrollX = TRUE))
     })
   })
+
+
 
   session$onSessionEnded(function() {
     rm(dff, changed_table, ml_available, ml_not_available, ml_prediction, envir = globalenv())
