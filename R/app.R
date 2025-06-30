@@ -25,6 +25,7 @@ library(randomForest)  # Required for Windows
 library(doParallel)
 library(R.utils)
 library(ConsensusClusterPlus)
+library(gam)
 
 sink("ugplot.log", split = TRUE)
 # Optional: set maximum number of threads
