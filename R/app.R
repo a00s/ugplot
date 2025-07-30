@@ -208,7 +208,7 @@ ui <- fluidPage(
         column(
           width = 3,
           class = "sidebar-panel-custom",
-          selectInput(inputId = "plot_xy", label = NULL, choices = c("ROW x COL", "COL x COL")),
+          selectInput(inputId = "plot_xy", label = NULL, choices = c("ROW x COL", "COL x COL", "ROW x ROW")),
           div(class = "rowplotlist",
             lapply(1:nrow(plotlist), function(i) {
               bname <- paste0("buttonplot", i)
@@ -696,6 +696,9 @@ server <- function(input, output, session) {
           # Insert code for "ROW x COL" plot if needed
         } else if (input$plot_xy == "COL x COL") {
           numeric_table <- cor(numeric_table)
+        } else if (input$plot_xy == "ROW x ROW") {
+          # Aqui calcula correlação entre amostras
+          numeric_table <- cor(t(numeric_table), use = "pairwise.complete.obs")
         }
         comandtorun <- gsub("\\{\\{dataset\\}\\}", "numeric_table", comandtorun)
         if (plotlist$palette[i] != "" && changed_palette == 0) {
