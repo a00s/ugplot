@@ -72,7 +72,7 @@ sample_data <- sample_data[, -1]
 slow_models <- c(
   'bam', 'ANFIS', 'DENFIS', 'FH.GBML', 'FIR.DM', 'FS.HGD',
   'gam', 'GFS.LT.RS', 'GFS.FR.MOGUL', 'GFS.THRIFT', 'HYFIS',
-  'gaussprRadial', 'gaussprLinear', 'rbf', 'randomGLM'
+  'gaussprRadial', 'gaussprLinear', 'rbf', 'randomGLM', 'gamLoess'
 )
 slow_models_text <- paste("Slow or problematic models automatically removed:",
   paste(slow_models, collapse = ", "))
