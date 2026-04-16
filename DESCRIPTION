@@ -36,5 +36,8 @@ Imports:
     parallel,
     doParallel,
     R.utils,
-    ConsensusClusterPlus
+    ConsensusClusterPlus,
+    gam
+URL: https://github.com/a00s/ugplot
+BugReports: https://github.com/a00s/ugplot/issues
 RoxygenNote: 7.3.2

@@ -24,3 +24,5 @@ importFrom("grDevices", "colorRampPalette", "rainbow")
 importFrom("stats", "as.formula", "complete.cases", "cor", "predict", "setNames", "var")
 importFrom("utils", "install.packages", "installed.packages", "read.table", "write.csv")
 importFrom("R.utils", "withTimeout")
+
+import("gam")
