@@ -85,3 +85,122 @@
   border: none;
   width: 300px;
 }
+
+.small-input {
+  width: 100px;
+}
+
+button.ml-section-toggle.btn,
+button.ml-section-toggle,
+#ml_toggle_seeds,
+#ml_toggle_missing {
+  display: block;
+  width: 100% !important;
+  margin-top: 12px;
+  padding: 10px 14px;
+  text-align: left !important;
+  font-size: 16px;
+  font-weight: 600;
+  color: #ffffff;
+  background: #6f7781 !important;
+  border: 1px solid #626a74 !important;
+  border-radius: 8px;
+  box-shadow: none !important;
+  background-image: none !important;
+}
+
+button.ml-section-toggle:hover,
+button.ml-section-toggle:active,
+button.ml-section-toggle:focus,
+#ml_toggle_seeds:hover,
+#ml_toggle_seeds:active,
+#ml_toggle_seeds:focus,
+#ml_toggle_missing:hover,
+#ml_toggle_missing:active,
+#ml_toggle_missing:focus {
+  color: #ffffff;
+  background: #626a74 !important;
+  border: 1px solid #565e68 !important;
+  outline: none;
+}
+
+.ml-section-panel {
+  width: 100%;
+  border: 1px solid #d3d8de;
+  border-radius: 8px;
+  background: #eef1f4;
+  padding: 14px 16px 12px 16px;
+  margin-top: 8px;
+}
+
+.ml-missing-stack > * {
+  margin-bottom: 12px;
+}
+
+.ml-missing-stack .form-group {
+  margin-bottom: 12px;
+}
+
+.ml-missing-stack .ml-threshold-input {
+  width: 100%;
+  max-width: 460px;
+}
+
+.ml-missing-stack .ml-threshold-input label {
+  white-space: nowrap;
+}
+
+.ml-threshold-input {
+  width: 110px;
+}
+
+.ml-summary-table {
+  width: 100%;
+  max-width: 760px;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-size: 14px;
+  background: #ffffff;
+  border: 1px solid #e2e6ea;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.ml-summary-table th,
+.ml-summary-table td {
+  border-bottom: 1px solid #edf0f3;
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: middle;
+  white-space: normal;
+}
+
+.ml-summary-table th {
+  background: #f5f7fa;
+  color: #2f3b46;
+  font-weight: 700;
+}
+
+.ml-summary-table th:nth-child(1),
+.ml-summary-table td:nth-child(1) {
+  min-width: 220px;
+}
+
+.ml-summary-table th:nth-child(2),
+.ml-summary-table th:nth-child(3),
+.ml-summary-table td:nth-child(2),
+.ml-summary-table td:nth-child(3) {
+  min-width: 130px;
+}
+
+.ml-summary-table tbody tr:nth-child(even) td {
+  background: #fbfcfd;
+}
+
+.ml-summary-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.ml-summary-row-changed td {
+  background: #fff7df !important;
+}
