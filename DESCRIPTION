@@ -11,6 +11,7 @@ Description: Is an R library that uses shiny to assists in finding relationships
 License: GPL-3
 Encoding: UTF-8
 LazyData: true
+SystemRequirements: C/C++ build tools; libcurl (development headers); libuv (development headers)
 Imports:
     shiny,
     shinyWidgets,
