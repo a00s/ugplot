@@ -27,3 +27,10 @@ Depois de instalar, no R:
 library(ugplot)
 ugPlot()
 ```
+
+## English installation documentation
+
+For a complete English guide (system libraries + R dependencies + container example), see:
+
+- [`INSTALLATION.md`](INSTALLATION.md)
+

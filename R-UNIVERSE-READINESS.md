@@ -19,3 +19,9 @@ R CMD check --as-cran ugplot_1.0.tar.gz
 ```
 
 If both commands finish with no ERROR (and ideally no WARNING), the package is typically ready for r-universe publication.
+
+## Common install blockers on Linux
+- Some transitive dependencies (notably `curl` and `fs`) require system development headers.
+- If installation fails with messages like `dependency 'curl' is not available` or `dependency 'fs' is not available`, install OS packages first, then retry `install.packages()`.
+- Typical Debian/Ubuntu packages: `build-essential`, `libcurl4-openssl-dev`, `libssl-dev`, `libxml2-dev`, `libuv1-dev`.
+
