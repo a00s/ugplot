@@ -29,7 +29,6 @@ Imports:
     plotly,
     tidyr,
     missForest,
-    pryr,
     methyLImp2,
     caret,
     base64enc,
