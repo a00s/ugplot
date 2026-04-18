@@ -28,7 +28,6 @@ Imports:
     glmnet,
     plotly,
     tidyr,
-    keras,
     caret,
     base64enc,
     ggExtra,
