@@ -13,8 +13,9 @@ WORKDIR /srv/shiny-server/ugplot
 COPY . .
 
 # Instala remotes e dependências do DESCRIPTION
-RUN R -e "install.packages('remotes', repos='https://cloud.r-project.org')" && \
-    R -e "remotes::install_deps(dependencies = TRUE, repos = 'https://cloud.r-project.org')"
+RUN R -e "install.packages(c('remotes','BiocManager'), repos='https://cloud.r-project.org')" && \
+    R -e "remotes::install_deps(dependencies = TRUE, repos = 'https://cloud.r-project.org')" && \
+    R -e "BiocManager::install('ConsensusClusterPlus', ask = FALSE, update = FALSE)"
 
 # Porta padrão do Shiny
 EXPOSE 3838
