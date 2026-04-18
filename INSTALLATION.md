@@ -69,7 +69,7 @@ ugPlot()
 ## 4) One-command install in a clean container (Podman)
 
 ```bash
-podman run --rm -it \
+podman run -it \
   -p 127.0.0.1:8787:8787 \
   -e DISABLE_AUTH=true \
   docker.io/rocker/rstudio:latest \
