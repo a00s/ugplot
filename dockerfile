@@ -12,13 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /srv/shiny-server/ugplot
 COPY . .
 
-# Instala remotes e dependências do DESCRIPTION
+# Instala remotes e o pacote local (incluindo inst/extdata)
 RUN R -e "install.packages(c('remotes','BiocManager'), repos='https://cloud.r-project.org')" && \
-    R -e "remotes::install_deps(dependencies = TRUE, repos = 'https://cloud.r-project.org')" && \
-    R -e "BiocManager::install('ConsensusClusterPlus', ask = FALSE, update = FALSE)"
+    R -e "BiocManager::install('ConsensusClusterPlus', ask = FALSE, update = FALSE)" && \
+    R -e "remotes::install_local('/srv/shiny-server/ugplot', dependencies = TRUE, upgrade = 'never', repos = 'https://cloud.r-project.org')"
 
 # Porta padrão do Shiny
 EXPOSE 3838
 
-# Sobe o app (ajuste se seu entrypoint for outro)
-CMD ["R", "-e", "shiny::runApp('/srv/shiny-server/ugplot/R/app.R', host='0.0.0.0', port=3838)"]
+# Sobe o app a partir do pacote instalado
+CMD ["R", "-e", "app <- ugplot::ugPlot(); shiny::runApp(app, host='0.0.0.0', port=3838)"]
