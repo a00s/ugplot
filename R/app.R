@@ -1079,7 +1079,11 @@ server <- function(input, output, session) {
 
   output$downloadData <- downloadHandler(
     filename = function() {
-      paste("data-", Sys.Date(), ".csv", sep = "")
+      file_name <- basename(original_dataset_filename())
+      if (is.null(file_name) || !nzchar(file_name)) {
+        file_name <- paste0("data-", Sys.Date(), ".csv")
+      }
+      file_name
     },
     content = function(file) {
       data_to_download <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
