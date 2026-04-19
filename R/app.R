@@ -1623,6 +1623,7 @@ server <- function(input, output, session) {
     common_rownames <- intersect(rownames(dff), rownames(new_df))
     dff[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
     changed_table <<- as.matrix(dff)
+    refresh_counter(refresh_counter() + 1)
     scrambled_columns(character(0))
     scramble_original_columns(list())
     load_checkbox_group()
@@ -1666,6 +1667,7 @@ server <- function(input, output, session) {
     }
 
     changed_table <<- changed_table_df
+    refresh_counter(refresh_counter() + 1)
     scramble_original_columns(original_columns)
     scrambled_columns(unique(c(scrambled_columns(), col_to_scramble)))
   })
@@ -1683,6 +1685,7 @@ server <- function(input, output, session) {
       }
     }
     changed_table <<- changed_table_df
+    refresh_counter(refresh_counter() + 1)
     scrambled_columns(character(0))
     scramble_original_columns(list())
   })
@@ -1694,6 +1697,7 @@ server <- function(input, output, session) {
     common_rownames <- intersect(rownames(dff), rownames(new_df))
     dff[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
     changed_table <<- as.data.frame(dff)
+    refresh_counter(refresh_counter() + 1)
     scrambled_columns(character(0))
     scramble_original_columns(list())
     load_checkbox_group()
@@ -1705,6 +1709,7 @@ server <- function(input, output, session) {
     scrambled_columns(character(0))
     scramble_original_columns(list())
     load_file_into_table(input$textarea_columns, input$textarea_rows, session)
+    refresh_counter(refresh_counter() + 1)
     update_scramble_selector()
   })
 
@@ -1716,6 +1721,7 @@ server <- function(input, output, session) {
     scramble_original_columns(list())
     head(dff)
     load_dataset_into_table(session)
+    refresh_counter(refresh_counter() + 1)
     update_scramble_selector()
   })
 
@@ -1834,6 +1840,7 @@ server <- function(input, output, session) {
     }
     dff <<- data.frame(t(as.matrix(dff)))
     changed_table <<- dff
+    refresh_counter(refresh_counter() + 1)
     scrambled_columns(character(0))
     scramble_original_columns(list())
     load_checkbox_group()
@@ -2387,6 +2394,8 @@ observeEvent(input$model_file, {
 })
 
   model_analysis_missing_preview <- reactive({
+    refresh_counter()
+    input$model_file
     req(changed_table)
     analysis_data_raw <- as.data.frame(changed_table)
     analysis_data_raw[analysis_data_raw == ""] <- NA
