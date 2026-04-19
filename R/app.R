@@ -596,6 +596,7 @@ apply_missing_filters_with_order <- function(predictors, missing_definition,
   if (order == "cols_first") {
     if (ncol(filtered_predictors) > 0) {
       col_missing_pct <- colMeans(filtered_mask) * 100
+      col_missing_pct[!is.finite(col_missing_pct)] <- 100
       keep_cols <- names(col_missing_pct[col_missing_pct <= threshold_cols])
       filtered_predictors <- filtered_predictors[, keep_cols, drop = FALSE]
       filtered_mask <- build_missing_mask(filtered_predictors, missing_definition, zero_exceptions)
@@ -616,6 +617,7 @@ apply_missing_filters_with_order <- function(predictors, missing_definition,
     }
     if (ncol(filtered_predictors) > 0) {
       col_missing_pct <- colMeans(filtered_mask) * 100
+      col_missing_pct[!is.finite(col_missing_pct)] <- 100
       keep_cols <- names(col_missing_pct[col_missing_pct <= threshold_cols])
       filtered_predictors <- filtered_predictors[, keep_cols, drop = FALSE]
       filtered_mask <- build_missing_mask(filtered_predictors, missing_definition, zero_exceptions)
@@ -724,6 +726,7 @@ compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
         }
         if (ncol(filtered_mask_outer) > 0) {
           col_missing_pct <- colMeans(filtered_mask_outer) * 100
+          col_missing_pct <- col_missing_pct[is.finite(col_missing_pct)]
           inner_thresholds <- sort(unique(pmin(100, pmax(0, ceiling(c(0, 100, col_missing_pct))))))
         } else {
           inner_thresholds <- c(0, 100)
