@@ -1,259 +1,307 @@
 # ugplot
 
-ugPlot is an interactive Shiny application for **loading tabular omics/biomedical datasets**, **filtering rows and variables**, **building exploratory plots (heatmaps + 2D correlation views)**, **training multiple caret machine learning models**, and **running post-training model analysis from saved `.rds` models**.
+ugPlot is an interactive Shiny application to **prepare omics/biomedical tabular datasets**, **explore patterns visually**, **train and compare machine learning models**, and **analyze saved models on new data**.
 
 Preprint DOI: https://doi.org/10.64898/2026.02.09.704870
 
-## Documentation and installation
+---
 
-For full installation details (system libraries, R dependencies, and troubleshooting), see [`INSTALLATION.md`](INSTALLATION.md).
+## Installation
 
-Quick install in a clean Podman container:
+### 1) Recommended (main) installation: prebuilt Podman image
+
+This is the easiest and most reliable way to run ugPlot with all dependencies already configured.
 
 ```bash
-podman run -it -p 127.0.0.1:8787:8787 -e DISABLE_AUTH=true docker.io/rocker/rstudio:latest bash -lc 'apt-get update && apt-get install -y --no-install-recommends build-essential gfortran pkg-config libcurl4-openssl-dev libssl-dev libxml2-dev libgit2-dev libuv1-dev libfontconfig1-dev libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev libcairo2-dev libharfbuzz-dev libfribidi-dev && R -q -e "install.packages(\"BiocManager\", repos=\"https://cloud.r-project.org\"); options(repos=c(a00s=\"https://a00s.r-universe.dev\", CRAN=\"https://cloud.r-project.org\", BiocManager::repositories())); install.packages(c(\"fs\",\"curl\",\"sass\",\"bslib\",\"rmarkdown\",\"httpuv\",\"httr\",\"htmlwidgets\",\"miniUI\",\"colourpicker\")); BiocManager::install(\"ConsensusClusterPlus\", ask=FALSE, update=FALSE); install.packages(\"ugplot\")"'
+podman pull ghcr.io/a00s/ugplot:latest
+podman run --name ugplot -p 3838:3838 ghcr.io/a00s/ugplot:latest
+podman start -a ugplot
 ```
 
-After installation, run in R:
+Then open in your browser:
+
+- `http://127.0.0.1:3838`
+
+> Why this is the main path: it avoids local R/system library conflicts and is ideal for users who just want to run the app quickly.
+
+### 2) Alternative installation from R (for users who need package-level imports/workflows)
+
+Use this when you want to integrate ugPlot into your own R environment and scripts.
+
+```r
+install.packages(
+  "ugplot",
+  repos = c("https://a00s.r-universe.dev", "https://cloud.r-project.org")
+)
+```
+
+Run in R:
 
 ```r
 library(ugplot)
 ugPlot()
 ```
 
+For full dependency troubleshooting and system libraries, see [`INSTALLATION.md`](INSTALLATION.md).
+
 ---
 
-# Full User Manual (GitHub edition)
+# Full How-To Manual
 
-This manual follows the numeric order of screenshots in `man/img/doc*.png` and explains all buttons and controls from each page.
+This guide is written as a real workflow, not only a screen description. Follow the same order used by the app tabs.
 
-## 0) App startup and general navigation
+## What ugPlot is best for
+
+Use ugPlot when you need to:
+
+1. Load a matrix-like dataset (samples × features).
+2. Select/filter rows and columns without coding.
+3. Explore data structure (heatmaps, correlations, distributions).
+4. Train many caret models and compare metrics.
+5. Save/load models and validate predictions in a reproducible way.
+
+---
+
+## 0) Interface overview
 
 ![doc1 - initial screen](man/img/doc1.png)
 
-- The top menu is organized into six workflow tabs:
-  1. **LOAD DATA**
-  2. **TABLE**
-  3. **HEATMAP PLOT**
-  4. **2D PLOT**
-  5. **MACHINE LEARNING**
-  6. **MODEL ANALYSIS**
-- Tabs 2–6 become useful after data is loaded and processed.
+The workflow is linear:
+
+1. **LOAD DATA**
+2. **TABLE**
+3. **HEATMAP PLOT**
+4. **2D PLOT**
+5. **MACHINE LEARNING**
+6. **MODEL ANALYSIS**
+
+A practical recommendation: always finish row/column cleanup in **TABLE** before training models.
 
 ---
 
-## 1) LOAD DATA
+## 1) LOAD DATA — bring your dataset correctly
 
-### Step 1.1 — Select your file
+### 1.1 Choose file format settings first
 
 ![doc2 - select CSV file](man/img/doc2.png)
 
-Use the controls in this order:
+- **Start at line**: if your file has metadata in first lines, start later (e.g., 2, 3, 4...).
+- **Separator**: pick the true delimiter of your file (`;`, `,`, tab, etc.).
+- **Choose a CSV file**: upload your file.
 
-- **Start at line**: chooses the first line to read from the file (skip metadata/header text when needed).
-- **Separator**: choose delimiter (`space`, `tab`, `;`, `,`, `|`).
-- **Choose a CSV file**: upload your dataset.
+If separator/line start is wrong, downstream columns may be broken. Fix this here before moving on.
 
-### Step 1.2 — Confirm uploaded content and move forward
+### 1.2 Confirm detected columns and rows
 
 ![doc3 - load tab after upload](man/img/doc3.png)
 
-After upload:
+After upload, ugPlot shows:
 
-- Left text area shows detected **column names**.
-- Right text area shows detected **row/sample IDs**.
-- Buttons under each text area:
-  - **Add all**: include all listed items.
-  - **Remove all**: clear selected list.
-  - **Join columns**: merge entered lines into a usable selection block.
-- **GO TO STEP 2 (TABLE)**: load selected rows/columns into the table module.
-- **Click here to load an example**: loads packaged demo data.
+- Left box: detected **columns/features**.
+- Right box: detected **rows/samples**.
+
+Buttons below each box:
+
+- **Add all**: include everything.
+- **Remove all**: clear all selections.
+- **Join columns**: normalize text list into a merged selection.
+
+Then click **GO TO STEP 2 (TABLE)**.
+
+If you just want to test the app first, click **Click here to load an example**.
 
 ---
 
-## 2) TABLE
+## 2) TABLE — the most important preprocessing page
 
 ![doc4 - table tab controls](man/img/doc4.png)
 
-The TABLE page is the main data curation panel.
+Think of this tab as your "quality gate" before plotting/training.
 
-### Left panel (Columns)
+### 2.1 Columns panel (features)
 
-- Checkbox list for all variables/features.
-- **Uncheck all / Check all**: bulk toggle all feature columns.
-- Numeric field + **Uncheck variability**:
-  - removes (unchecks) low-variability columns according to threshold.
-- **Scramble** selector + controls:
-  - choose one column,
-  - **Scramble column** randomizes sample order for that column,
-  - **Restore** brings original values back.
+- Checkboxes let you keep/remove features.
+- **Uncheck all / Check all**: bulk operations.
+- **Uncheck variability** with numeric threshold:
+  - removes low-information columns.
+  - useful to reduce noisy/near-constant features.
+- **Scramble column**:
+  - selects one feature and randomizes it across samples,
+  - useful for quick sanity checks / negative controls.
+- **Restore** reverts scrambled data.
 
-### Middle panel (Rows)
+### 2.2 Rows panel (samples)
 
-- Checkbox list of samples/rows.
-- **Uncheck all / Check all** for sample filtering.
+- Select only the samples you want to keep.
+- Use **Uncheck all / Check all** for fast cohort filtering.
 
-### Right panel (Categories)
+### 2.3 Categories panel
 
-- Checkbox list used as category/annotation columns.
-- **Transpose table**: swaps rows and columns.
-- **Download**: export the currently filtered/transformed dataset.
+- Select columns that should behave like category/annotation fields.
+- **Transpose table** swaps rows/columns (useful when dataset orientation is opposite of expected).
+- **Download** exports exactly what is currently selected.
 
-### Bottom area
+### 2.4 Bottom data table
 
-- Interactive data table with pagination/search/sort for manual inspection.
+Use search/sort to inspect suspicious values before plotting or ML.
 
 ---
 
-## 3) HEATMAP PLOT
+## 3) HEATMAP PLOT — fast visual diagnostics + editable code
 
 ![doc5 - heatmap plot tab](man/img/doc5.png)
 
-This page supports gallery-driven plotting plus editable code.
+- **plot_xy** controls matrix orientation (`ROW x COL`, `COL x COL`, `ROW x ROW`).
+- Left gallery (large images): choose plot template.
+- Palette strips: choose color scheme.
+- Top code area:
+  - **Play button** runs the displayed plotting code.
+  - editable code box allows fine customization.
 
-- **plot_xy** selector (`ROW x COL`, `COL x COL`, `ROW x ROW`): defines plotting orientation.
-- Left image gallery (large icons): selects predefined plot template.
-- Left palette gallery (small strips): selects color palette.
-- Top code bar:
-  - **Play button** executes current plotting code.
-  - **Code text area** lets you modify generated plotting command directly.
-- Main area: rendered plot output.
+Best practice: choose a template close to your goal, then refine code in the text area.
 
 ---
 
-## 4) 2D PLOT
+## 4) 2D PLOT — discover pairwise relationships
 
-### Scatter/correlation exploration
+### 4.1 Correlation filtering
 
 ![doc6 - 2d correlations](man/img/doc6.png)
 
-Controls:
+- Correlation method: `pearson`, `spearman`, `kendall`.
+- Positive threshold slider (`>= x`).
+- Negative threshold slider (`<= x`).
+- Left mini-buttons:
+  - **Minimalist** for scatter-style quick reading.
+  - **Distribution** for histogram-like views.
 
-- Correlation method selector (**pearson**, **spearman**, **kendall**).
-- **Spearman Correlation >= x** slider (positive correlation threshold).
-- **Negative correlation <= x** slider (negative threshold).
-- Left mini-previews each have a button:
-  - **Minimalist**: scatter-style compact plot.
-  - **Distribution**: histogram/distribution view.
-- Main panel lists all variable pairs that pass thresholds.
+Main panel displays only pairs that pass your thresholds.
 
-### Distribution rendering mode
+### 4.2 Distribution mode example
 
 ![doc7 - 2d distribution mode](man/img/doc7.png)
 
-When **Distribution** is chosen in a preview, matched pairs are rendered as distribution plots in the main panel.
+Use distribution mode to check whether correlations may be driven by skewed ranges/outliers.
 
 ---
 
-## 5) MACHINE LEARNING
+## 5) MACHINE LEARNING — train, compare, and troubleshoot models
 
-### Model configuration
+### 5.1 Core setup
 
 ![doc8 - machine learning seeds](man/img/doc8.png)
 
-- **Target column**: outcome/label to predict.
-- **Seeds** collapsible section:
-  - Initial/Final Dataset Seed,
-  - Initial/Final Training Seed.
-  - Use ranges to repeat training across random seeds.
-- **Timeout (s)**: max training time per process block.
+- **Target column**: variable to predict (class or numeric).
+- **Seeds** section:
+  - initial/final dataset seed,
+  - initial/final training seed,
+  - supports repeatability and robustness checks.
+- **Timeout (s)** controls maximum training time.
 
-### Missing data strategy
+### 5.2 Missing data strategy (critical for robust models)
 
 ![doc9 - missing data strategy](man/img/doc9.png)
 
-Inside **Missing Data Strategy** section:
+You can define what missing means and how to process it:
 
-- **Consider as missing**: mark Empty string, `NA`, and/or numeric zero as missing.
-- **Zero rule exceptions**: columns where 0 is biologically/technically valid.
-- **How to handle missing values**:
-  - Do nothing,
-  - Replace with zero,
-  - KNN imputation,
-  - Mean imputation,
+- Missing definitions: Empty string, `NA`, and/or zero.
+- **Zero rule exceptions** for columns where zero is valid.
+- Imputation method:
+  - none,
+  - replace zero,
+  - KNN,
+  - mean,
   - missForest,
   - methyLImp2.
-- **Imputation scope**:
-  - impute train/test separately, or
-  - impute full dataset once before split.
-- Threshold filters:
-  - remove columns above X% missingness,
-  - remove samples above X% missingness.
-- **Run exhaustive threshold scan (0-100%)**: brute-force search for better thresholds.
-- Summary tables/plots report how filtering changed data.
+- Imputation scope:
+  - train/test separately,
+  - or whole dataset before split.
+- Missingness thresholds to remove columns/samples.
+- **Run exhaustive threshold scan (0-100%)** to test many threshold combinations automatically.
 
-### Model lists and execution
+Read the summary table/plots before running models, to confirm filtering did not distort target distribution.
+
+### 5.3 Installing missing model libraries (step-by-step)
 
 ![doc10 - installed/missing models](man/img/doc10.png)
 
-- **Download dataset with current thresholds (CSV)** exports the current ML-ready dataset.
-- **Models installed** panel:
-  - select models,
-  - **Uncheck all / Check all**,
-  - **RUN** to train all selected models.
-- **Models missing** panel:
-  - shows unavailable methods,
-  - **Install libraries** attempts package installation.
+When models appear in **Models missing**, do this:
 
-### Training results and diagnostics
+1. In **Models missing**, click **Check all** (or select specific models).
+2. Click **Install libraries**.
+3. Wait for installation logs to finish.
+4. Re-check the model lists; installed models should move to **Models installed**.
+5. In **Models installed**, click **Check all** (or keep a subset).
+6. Click **RUN**.
+
+Also available on this page:
+
+- **Download dataset with current thresholds (CSV)** for reproducibility.
+- Side-by-side panels for installed vs missing models.
+
+### 5.4 Interpreting output
 
 ![doc11 - machine learning results](man/img/doc11.png)
 
-Output area includes:
+After running:
 
-- residual plot,
-- residual distribution histogram,
-- ranked performance table (`R2`, `MAE`, `RMSE`, seed/scope metadata),
-- detailed prediction table for selected model row.
+- residual plot: checks error structure,
+- residual histogram: checks bias spread,
+- ranking table: compare `R2`, `MAE`, `RMSE`,
+- detailed prediction table per selected model.
+
+Tip: prefer models with stable performance across seed combinations, not only best single score.
 
 ---
 
-## 6) MODEL ANALYSIS (from saved `.rds` model)
+## 6) MODEL ANALYSIS — validate saved `.rds` models
 
-### Load model and configure analysis
+### 6.1 Initial setup
 
 ![doc12 - model analysis initial](man/img/doc12.png)
 
-- **Load RDS Model**: upload previously saved model.
-- **Target column**: choose ground truth column in current dataset.
-- Missingness rules and row-threshold filter (same logic as ML tab).
-- **Confidence Threshold**: cut-off used in reliability/decision reporting.
-- **Run Analysis** launches evaluation.
+- Upload model with **Load RDS Model**.
+- Select dataset **Target column** (ground truth).
+- Configure missingness definition + sample threshold.
+- Set **Confidence Threshold**.
+- Click **Run Analysis**.
 
-### Model metadata after upload
+### 6.2 Model metadata view
 
 ![doc13 - model details loaded](man/img/doc13.png)
 
-After loading an `.rds`, ugPlot displays:
+ugPlot displays model call/statistics, compatibility/preprocess notes, and inferred target details when available.
 
-- model call/details,
-- preprocessing compatibility info,
-- detected model target (when available).
-
-### Summary metrics and consistency checks
+### 6.3 Summary and reliability report
 
 ![doc14 - analysis summary](man/img/doc14.png)
 
-- Missingness summary table (before/after threshold).
-- Count of total/reliable/inconclusive/correct/wrong outputs.
-- Accuracy summary for reliable subset.
+Inspect:
 
-### Final plots and downloadable table
+- missingness before/after threshold,
+- reliable/inconclusive counts,
+- accuracy summary in reliable subset.
+
+### 6.4 Final outputs and export
 
 ![doc15 - analysis outputs](man/img/doc15.png)
 
-- **Real vs Predicted** scatter plot with identity/regression lines.
-- Statistics overlay (Pearson R, R², MAE, sample size).
-- **Download analysis table (CSV)** exports per-sample predictions.
-- Final table columns include: sample ID, ground truth, predicted value, confidence metrics, difference, status.
+- Real vs Predicted scatter (identity + regression lines).
+- Correlation/performance stats overlay.
+- **Download analysis table (CSV)** for downstream reporting.
+- Per-sample table with truth, prediction, confidence, error, and status.
 
 ---
 
-## Suggested end-to-end workflow
+## Suggested end-to-end workflow (quick checklist)
 
-1. Load file in **1) LOAD DATA**.
-2. Curate features/samples in **2) TABLE**.
-3. Explore structure in **3) HEATMAP PLOT** and **4) 2D PLOT**.
-4. Train/compare models in **5) MACHINE LEARNING**.
-5. Re-open best saved model in **6) MODEL ANALYSIS** for external validation/reporting.
+1. Install with Podman image (recommended).
+2. Load file and verify separator/start line.
+3. Clean rows/columns in TABLE.
+4. Explore patterns in HEATMAP and 2D tabs.
+5. Configure missing data strategy carefully.
+6. Install missing libraries (Check all → Install libraries).
+7. Train multiple models and compare metrics.
+8. Validate final `.rds` model in MODEL ANALYSIS.
+9. Export processed dataset and analysis tables.
 
