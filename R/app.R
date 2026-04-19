@@ -222,6 +222,16 @@ ui <- fluidPage(
             numericInput("minvariability", NULL, value = 10, min = 0.1, step = 0.1)
           ),
           actionButton("remove_columns_variability", "Uncheck variability"),
+          br(),
+          tags$div(
+            class = "scramble-controls",
+            tags$div(
+              class = "scramble-select",
+              selectInput("scramble_column", NULL, choices = character(0), width = "100%")
+            ),
+            actionButton("scramble_column_button", "Scramble column"),
+            actionButton("reset_scramble_columns", "Restore")
+          ),
           br()
         ),
         column(
@@ -1053,6 +1063,8 @@ server <- function(input, output, session) {
   defaultpalette <- reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
   transpose_table2 <- reactiveVal(0)
   refresh_counter <- reactiveVal(0)
+  scrambled_columns <- reactiveVal(character(0))
+  scramble_original_columns <- reactiveVal(list())
 
   tab_separator <- reactiveVal(",")
   file_click_count <- reactiveVal(0)
@@ -1205,7 +1217,20 @@ server <- function(input, output, session) {
     na_count_per_non_empty_column <- na_count_per_column[!empty]
     print("Number of empty rows in each non-completely empty column:")
     print(na_count_per_non_empty_column)
-    return(subset_table)
+    scrambled_visible <- intersect(scrambled_columns(), colnames(subset_table))
+    dt <- DT::datatable(
+      subset_table,
+      options = list(scrollX = TRUE),
+      selection = "none"
+    )
+    if (length(scrambled_visible) > 0) {
+      dt <- DT::formatStyle(
+        dt,
+        columns = scrambled_visible,
+        backgroundColor = "var(--scrambled-column-bg)"
+      )
+    }
+    return(dt)
   })
 
   output$table_message <- renderUI({
@@ -1543,6 +1568,21 @@ server <- function(input, output, session) {
       server = TRUE)
   })
 
+  observe({
+    req(is.data.frame(changed_table) || is.matrix(changed_table))
+    current_columns <- colnames(changed_table)
+    current_selected <- input$scramble_column
+    if (is.null(current_selected) || !(current_selected %in% current_columns)) {
+      current_selected <- if (length(current_columns) > 0) current_columns[1] else character(0)
+    }
+    updateSelectInput(
+      session,
+      inputId = "scramble_column",
+      choices = current_columns,
+      selected = current_selected
+    )
+  })
+
   observeEvent(input$remove_empty_columns, {
     subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
     empty <- sapply(subset_table, function(column) all(is.na(column)))
@@ -1575,6 +1615,8 @@ server <- function(input, output, session) {
     common_rownames <- intersect(rownames(dff), rownames(new_df))
     dff[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
     changed_table <<- as.matrix(dff)
+    scrambled_columns(character(0))
+    scramble_original_columns(list())
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
   })
@@ -1596,6 +1638,46 @@ server <- function(input, output, session) {
     updateCheckboxGroupInput(session, inputId = "column_checkbox_group", selected = new_selection)
   })
 
+  observeEvent(input$scramble_column_button, {
+    req(input$scramble_column)
+    req(is.data.frame(changed_table) || is.matrix(changed_table))
+    col_to_scramble <- input$scramble_column
+    if (!(col_to_scramble %in% colnames(changed_table))) return()
+
+    changed_table_df <- as.data.frame(changed_table, stringsAsFactors = FALSE)
+    original_columns <- scramble_original_columns()
+
+    if (is.null(original_columns[[col_to_scramble]])) {
+      original_columns[[col_to_scramble]] <- changed_table_df[[col_to_scramble]]
+    }
+
+    column_values <- changed_table_df[[col_to_scramble]]
+    if (length(column_values) > 1) {
+      changed_table_df[[col_to_scramble]] <- sample(column_values, length(column_values), replace = FALSE)
+    }
+
+    changed_table <<- changed_table_df
+    scramble_original_columns(original_columns)
+    scrambled_columns(unique(c(scrambled_columns(), col_to_scramble)))
+  })
+
+  observeEvent(input$reset_scramble_columns, {
+    req(is.data.frame(changed_table) || is.matrix(changed_table))
+    original_columns <- scramble_original_columns()
+    if (length(original_columns) == 0) return()
+
+    changed_table_df <- as.data.frame(changed_table, stringsAsFactors = FALSE)
+    for (col_name in names(original_columns)) {
+      if (col_name %in% colnames(changed_table_df) &&
+          length(original_columns[[col_name]]) == nrow(changed_table_df)) {
+        changed_table_df[[col_name]] <- original_columns[[col_name]]
+      }
+    }
+    changed_table <<- changed_table_df
+    scrambled_columns(character(0))
+    scramble_original_columns(list())
+  })
+
   observeEvent(input$merge_all_rows, {
     column_names <- strsplit(input$textarea_columns, "\n")[[1]]
     rown_names <- strsplit(input$textarea_rows, "\n")[[1]]
@@ -1603,11 +1685,15 @@ server <- function(input, output, session) {
     common_rownames <- intersect(rownames(dff), rownames(new_df))
     dff[common_rownames, names(new_df)] <<- new_df[common_rownames, ]
     changed_table <<- as.data.frame(dff)
+    scrambled_columns(character(0))
+    scramble_original_columns(list())
     load_checkbox_group()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
   })
 
   observeEvent(input$process_table_content, {
+    scrambled_columns(character(0))
+    scramble_original_columns(list())
     load_file_into_table(input$textarea_columns, input$textarea_rows, session)
   })
 
@@ -1615,6 +1701,8 @@ server <- function(input, output, session) {
     dff <<- sample_data
     original_dataset_filename("sample.csv")
     reset_missing_strategy_ui()
+    scrambled_columns(character(0))
+    scramble_original_columns(list())
     head(dff)
     load_dataset_into_table(session)
   })
@@ -1734,6 +1822,8 @@ server <- function(input, output, session) {
     }
     dff <<- data.frame(t(as.matrix(dff)))
     changed_table <<- dff
+    scrambled_columns(character(0))
+    scramble_original_columns(list())
     load_checkbox_group()
   })
 

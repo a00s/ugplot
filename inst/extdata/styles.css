@@ -90,6 +90,22 @@
   width: 100px;
 }
 
+.scramble-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.scramble-select {
+  width: 220px;
+}
+
+:root {
+  --scrambled-column-bg: #fff3cd;
+}
+
 button.ml-section-toggle.btn,
 button.ml-section-toggle,
 #ml_toggle_seeds,
