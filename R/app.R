@@ -224,7 +224,12 @@ ui <- fluidPage(
           actionButton("remove_columns_variability", "Uncheck variability"),
           br(),
           tags$div(
+            class = "scramble-description",
+            "Shuffle only one selected column across samples (keeps the same values in random order)."
+          ),
+          tags$div(
             class = "scramble-controls",
+            tags$span("Scramble:", class = "scramble-label"),
             tags$div(
               class = "scramble-select",
               selectInput("scramble_column", NULL, choices = character(0), width = "100%")
@@ -1568,20 +1573,23 @@ server <- function(input, output, session) {
       server = TRUE)
   })
 
-  observe({
-    req(is.data.frame(changed_table) || is.matrix(changed_table))
-    current_columns <- colnames(changed_table)
-    current_selected <- input$scramble_column
-    if (is.null(current_selected) || !(current_selected %in% current_columns)) {
-      current_selected <- if (length(current_columns) > 0) current_columns[1] else character(0)
+  update_scramble_selector <- function(selected = NULL) {
+    if (!(is.data.frame(changed_table) || is.matrix(changed_table))) {
+      updateSelectInput(session, "scramble_column", choices = character(0), selected = character(0))
+      return(invisible(NULL))
     }
+    current_columns <- colnames(changed_table)
+    if (is.null(selected) || !(selected %in% current_columns)) {
+      selected <- if (length(current_columns) > 0) current_columns[1] else character(0)
+    }
+    freezeReactiveValue(input, "scramble_column")
     updateSelectInput(
       session,
       inputId = "scramble_column",
       choices = current_columns,
-      selected = current_selected
+      selected = selected
     )
-  })
+  }
 
   observeEvent(input$remove_empty_columns, {
     subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
@@ -1618,6 +1626,7 @@ server <- function(input, output, session) {
     scrambled_columns(character(0))
     scramble_original_columns(list())
     load_checkbox_group()
+    update_scramble_selector()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
   })
 
@@ -1688,6 +1697,7 @@ server <- function(input, output, session) {
     scrambled_columns(character(0))
     scramble_original_columns(list())
     load_checkbox_group()
+    update_scramble_selector()
     updateTabsetPanel(session, "tabs", selected = "2) TABLE")
   })
 
@@ -1695,6 +1705,7 @@ server <- function(input, output, session) {
     scrambled_columns(character(0))
     scramble_original_columns(list())
     load_file_into_table(input$textarea_columns, input$textarea_rows, session)
+    update_scramble_selector()
   })
 
   observeEvent(input$load_sample, {
@@ -1705,6 +1716,7 @@ server <- function(input, output, session) {
     scramble_original_columns(list())
     head(dff)
     load_dataset_into_table(session)
+    update_scramble_selector()
   })
 
   observeEvent(input$separator, {
@@ -1825,6 +1837,7 @@ server <- function(input, output, session) {
     scrambled_columns(character(0))
     scramble_original_columns(list())
     load_checkbox_group()
+    update_scramble_selector()
   })
 
   ####################### TAB 4) 2D PLOT
@@ -2690,6 +2703,7 @@ observeEvent(input$model_file, {
   })
 
   load_dataset_into_table(session)
+  update_scramble_selector()
   load_ml_list()
 
 }  # End of server function
