@@ -41,14 +41,9 @@ Run in R:
 library(ugplot)
 ugPlot()
 ```
-
-For full dependency troubleshooting and system libraries, see [`INSTALLATION.md`](INSTALLATION.md).
-
 ---
 
-# Full How-To Manual
-
-This guide is written as a real workflow, not only a screen description. Follow the same order used by the app tabs.
+# How-To Manual
 
 ## What ugPlot is best for
 
