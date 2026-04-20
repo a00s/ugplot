@@ -1629,6 +1629,7 @@ server <- function(input, output, session) {
     updateSelectizeInput(session, "ml_target", choices = c("", input$column_checkbox_group),
       selected = if (length(input$column_checkbox_group) > 0) input$column_checkbox_group[1] else "",
       server = TRUE)
+    update_scramble_selector(selected = isolate(input$scramble_column))
   })
 
   update_scramble_selector <- function(selected = NULL) {
@@ -1636,7 +1637,7 @@ server <- function(input, output, session) {
       updateSelectInput(session, "scramble_column", choices = character(0), selected = character(0))
       return(invisible(NULL))
     }
-    current_columns <- colnames(changed_table)
+    current_columns <- intersect(colnames(changed_table), input$column_checkbox_group %||% character(0))
     if (is.null(selected) || !(selected %in% current_columns)) {
       selected <- if (length(current_columns) > 0) current_columns[1] else character(0)
     }
