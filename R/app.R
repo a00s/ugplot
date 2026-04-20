@@ -466,7 +466,16 @@ ui <- fluidPage(
             ),
             div(style = "width: 100%; overflow-x: auto;", uiOutput("ml_error_message")),
             div(style = "overflow-x: auto; width: 100%;", uiOutput("dynamic_ml_plot")),
-            div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table_results_output")),
+            fluidRow(
+              column(
+                width = 6,
+                div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table_results_output"))
+              ),
+              column(
+                width = 6,
+                div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table_summary_output"))
+              )
+            ),
             verbatimTextOutput("ml_row_details"),
             div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table"))
           )
@@ -1958,6 +1967,65 @@ server <- function(input, output, session) {
       ml_results <- data.frame()
     }
     datatable(ml_results,
+      options = list(lengthChange = FALSE, paging = FALSE, searching = FALSE, info = FALSE),
+      rownames = FALSE)
+  })
+
+  output$ml_table_summary_output <- DT::renderDT({
+    ml_results <- ml_table_results()
+    if (!is.data.frame(ml_results) || nrow(ml_results) == 0 || !("Model" %in% names(ml_results))) {
+      return(datatable(data.frame(),
+        options = list(lengthChange = FALSE, paging = FALSE, searching = FALSE, info = FALSE),
+        rownames = FALSE))
+    }
+
+    metric_iqr <- function(x) {
+      stats::IQR(x, na.rm = TRUE)
+    }
+
+    if ("Accuracy" %in% names(ml_results)) {
+      ml_summary <- aggregate(
+        Accuracy ~ Model,
+        data = ml_results,
+        FUN = function(x) c(Median = stats::median(x, na.rm = TRUE), IQR = metric_iqr(x), Runs = length(x))
+      )
+      ml_summary <- data.frame(
+        Model = ml_summary$Model,
+        "Median Accuracy" = as.numeric(ml_summary$Accuracy[, "Median"]),
+        "IQR Accuracy" = as.numeric(ml_summary$Accuracy[, "IQR"]),
+        "Runs" = as.integer(ml_summary$Accuracy[, "Runs"]),
+        check.names = FALSE
+      )
+      ml_summary <- ml_summary[order(-ml_summary[["Median Accuracy"]]), , drop = FALSE]
+    } else if ("R2" %in% names(ml_results)) {
+      r2_summary <- aggregate(R2 ~ Model, data = ml_results, FUN = function(x) c(Median = stats::median(x, na.rm = TRUE), IQR = metric_iqr(x)))
+      mae_summary <- aggregate(MAE ~ Model, data = ml_results, FUN = function(x) c(Median = stats::median(x, na.rm = TRUE), IQR = metric_iqr(x)))
+      rmse_summary <- aggregate(RMSE ~ Model, data = ml_results, FUN = function(x) c(Median = stats::median(x, na.rm = TRUE), IQR = metric_iqr(x)))
+      runs_summary <- aggregate(R2 ~ Model, data = ml_results, FUN = length)
+
+      ml_summary <- merge(r2_summary, mae_summary, by = "Model", suffixes = c("_R2", "_MAE"))
+      ml_summary <- merge(ml_summary, rmse_summary, by = "Model")
+      names(ml_summary)[names(ml_summary) == "RMSE"] <- "RMSE_stats"
+      ml_summary <- merge(ml_summary, runs_summary, by = "Model")
+      names(ml_summary)[names(ml_summary) == "R2"] <- "Runs"
+
+      ml_summary <- data.frame(
+        Model = ml_summary$Model,
+        "Median R2" = as.numeric(ml_summary$R2_R2[, "Median"]),
+        "IQR R2" = as.numeric(ml_summary$R2_R2[, "IQR"]),
+        "Median MAE" = as.numeric(ml_summary$MAE[, "Median"]),
+        "IQR MAE" = as.numeric(ml_summary$MAE[, "IQR"]),
+        "Median RMSE" = as.numeric(ml_summary$RMSE_stats[, "Median"]),
+        "IQR RMSE" = as.numeric(ml_summary$RMSE_stats[, "IQR"]),
+        "Runs" = as.integer(ml_summary$Runs),
+        check.names = FALSE
+      )
+      ml_summary <- ml_summary[order(-ml_summary[["Median R2"]]), , drop = FALSE]
+    } else {
+      ml_summary <- data.frame()
+    }
+
+    datatable(ml_summary,
       options = list(lengthChange = FALSE, paging = FALSE, searching = FALSE, info = FALSE),
       rownames = FALSE)
   })
