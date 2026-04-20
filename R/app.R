@@ -300,7 +300,9 @@ ui <- fluidPage(
               style = "flex-grow: 1;"
             )
           ),
-          plotOutput("plot", height = "90%")
+          plotOutput("plot", height = "90%"),
+          br(),
+          downloadButton("downloadHeatmapPlotTiff", "Download plot (TIFF)")
         )
       )
     ),
@@ -1076,6 +1078,7 @@ server <- function(input, output, session) {
   last_file_click_count <- 0
   original_dataset_filename <- reactiveVal("model_analysis_results")
   model_analysis_results_data <- reactiveVal(data.frame())
+  heatmap_recorded_plot <- reactiveVal(NULL)
 
   output$downloadData <- downloadHandler(
     filename = function() {
@@ -1171,6 +1174,23 @@ server <- function(input, output, session) {
       }, logical(1))
       table_to_download <- table_to_download[, has_content, drop = FALSE]
       utils::write.csv(table_to_download, file, row.names = FALSE)
+    }
+  )
+
+  output$downloadHeatmapPlotTiff <- downloadHandler(
+    filename = function() {
+      base_name <- tools::file_path_sans_ext(basename(original_dataset_filename()))
+      if (is.null(base_name) || !nzchar(base_name)) {
+        base_name <- "heatmap_plot"
+      }
+      paste0(base_name, ".tiff")
+    },
+    content = function(file) {
+      recorded_plot <- heatmap_recorded_plot()
+      req(!is.null(recorded_plot))
+      tiff(filename = file, width = 2000, height = 2000, res = 300, compression = "lzw")
+      replayPlot(recorded_plot)
+      dev.off()
     }
   )
 
@@ -1776,6 +1796,7 @@ server <- function(input, output, session) {
         annotation_colors_auto <- generate_annotation_colors(annotation_row)
         comandtorun <- gsub("\\{\\{annotation_color\\}\\}", "annotation_colors_auto", comandtorun)
         eval(parse(text = comandtorun))
+        heatmap_recorded_plot(recordPlot())
       })
     })
   })
@@ -1821,6 +1842,7 @@ server <- function(input, output, session) {
       annotation_colors_auto <- generate_annotation_colors(annotation_row)
       comandtorun <- gsub("\\{\\{annotation_color\\}\\}", "annotation_colors_auto", comandtorun)
       eval(parse(text = comandtorun))
+      heatmap_recorded_plot(recordPlot())
     })
   })
 
