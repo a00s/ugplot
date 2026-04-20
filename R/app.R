@@ -300,7 +300,7 @@ ui <- fluidPage(
               style = "flex-grow: 1;"
             ),
             tags$div(
-              uiOutput("downloadHeatmapPlotTiffUI"),
+              hidden(downloadButton("downloadHeatmapPlotTiff", "Download plot (TIFF)", icon = icon("download"))),
               style = "flex: none; margin-left: 10px;"
             )
           ),
@@ -1195,6 +1195,7 @@ server <- function(input, output, session) {
       }
       paste0(base_name, ".tiff")
     },
+    contentType = "image/tiff",
     content = function(file) {
       recorded_plot <- heatmap_recorded_plot()
       req(!is.null(recorded_plot))
@@ -1204,19 +1205,13 @@ server <- function(input, output, session) {
     }
   )
 
-  output$downloadHeatmapPlotTiffUI <- renderUI({
-    if (is.null(heatmap_recorded_plot())) {
-      return(NULL)
-    }
-    downloadButton("downloadHeatmapPlotTiff", "Download plot (TIFF)", icon = icon("download"))
-  })
-
   ####################### TAB 1) LOAD DATA
   observeEvent(input$file1, {
     file_click_count(file_click_count() + 1)
     filepath <- req(input$file1$datapath)
     original_dataset_filename(input$file1$name)
     heatmap_recorded_plot(NULL)
+    hide("downloadHeatmapPlotTiff")
     skipline <- input$startfromline - 1
     tryCatch({
       df_pre <<- read.table(filepath, header = TRUE, sep = tab_separator(), row.names = 1,
@@ -1751,6 +1746,7 @@ server <- function(input, output, session) {
     scrambled_columns(character(0))
     scramble_original_columns(list())
     heatmap_recorded_plot(NULL)
+    hide("downloadHeatmapPlotTiff")
     load_file_into_table(input$textarea_columns, input$textarea_rows, session)
     refresh_counter(refresh_counter() + 1)
     update_scramble_selector()
@@ -1760,6 +1756,7 @@ server <- function(input, output, session) {
     dff <<- sample_data
     original_dataset_filename("sample.csv")
     heatmap_recorded_plot(NULL)
+    hide("downloadHeatmapPlotTiff")
     reset_missing_strategy_ui()
     scrambled_columns(character(0))
     scramble_original_columns(list())
@@ -1817,6 +1814,7 @@ server <- function(input, output, session) {
         comandtorun <- gsub("\\{\\{annotation_color\\}\\}", "annotation_colors_auto", comandtorun)
         eval(parse(text = comandtorun))
         heatmap_recorded_plot(recordPlot())
+        show("downloadHeatmapPlotTiff")
       })
     })
   })
@@ -1863,6 +1861,7 @@ server <- function(input, output, session) {
       comandtorun <- gsub("\\{\\{annotation_color\\}\\}", "annotation_colors_auto", comandtorun)
       eval(parse(text = comandtorun))
       heatmap_recorded_plot(recordPlot())
+      show("downloadHeatmapPlotTiff")
     })
   })
 
@@ -1887,6 +1886,7 @@ server <- function(input, output, session) {
     dff <<- data.frame(t(as.matrix(dff)))
     changed_table <<- dff
     heatmap_recorded_plot(NULL)
+    hide("downloadHeatmapPlotTiff")
     refresh_counter(refresh_counter() + 1)
     scrambled_columns(character(0))
     scramble_original_columns(list())
