@@ -2259,6 +2259,12 @@ server <- function(input, output, session) {
           }
           if (nrow(trainSet) < 5 || ncol(trainSet) < 2) {
             ml_error_message_text(paste(ml_error_message_text(), " ", "Not enough data after missing strategy for seed", loop_dataset_seed, "/"))
+            invalid_runs <- invalid_runs + (length(all_models) * total_seed_runs)
+            invalid_models <- union(invalid_models, all_models)
+            for (model_name in all_models) {
+              current_invalid <- if (!is.null(model_invalid_runs[[model_name]])) model_invalid_runs[[model_name]] else 0
+              model_invalid_runs[[model_name]] <- current_invalid + total_seed_runs
+            }
             next
           }
           count_model <- 0
@@ -2418,6 +2424,10 @@ server <- function(input, output, session) {
                   print(current_results)
                 }
               }, error = function(e) {
+                invalid_runs <- invalid_runs + 1
+                invalid_models <- union(invalid_models, model_name)
+                current_invalid <- if (!is.null(model_invalid_runs[[model_name]])) model_invalid_runs[[model_name]] else 0
+                model_invalid_runs[[model_name]] <- current_invalid + 1
                 ml_error_message_text(paste(ml_error_message_text(), " ", "Couldn't run model", model_name, ":", conditionMessage(e)))
                 print(paste("Couldn't run model", model_name, ":", conditionMessage(e)))
               })
