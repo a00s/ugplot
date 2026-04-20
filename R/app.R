@@ -1330,39 +1330,36 @@ server <- function(input, output, session) {
     }
     tags$div(
       class = "ml-final-summary",
-      tags$strong("Final search summary"),
+      tags$strong("Best result"),
       tags$ul(
         class = "ml-final-summary-list",
         tags$li(paste0("Best model: ", summary_data$best_model)),
         tags$li(paste0("Dataset seed: ", summary_data$dataset_seed)),
         tags$li(paste0("Training seed: ", summary_data$training_seed)),
         tags$li(paste0("Main metric (", summary_data$metric_name, "): ", metric_value)),
+        tags$li(paste0("Minimum ", summary_data$metric_name, " (best model): ", summary_data$best_model_min)),
+        tags$li(paste0("Maximum ", summary_data$metric_name, " (best model): ", summary_data$best_model_max)),
         mae_rmse_line,
-        tags$li(paste0(
-          "Valid/invalid models: ",
-          summary_data$valid_models, " / ", summary_data$invalid_models
-        )),
-        tags$li(paste0(
-          "Valid/invalid runs: ",
-          summary_data$valid_runs, " / ", summary_data$invalid_runs
-        ))
+        tags$li(paste0("Mean ", summary_data$metric_name, " (best model): ", summary_data$best_model_mean)),
+        tags$li(paste0("Median ", summary_data$metric_name, " (best model): ", summary_data$best_model_median))
       ),
       if (is.data.frame(summary_data$model_robust_stats) && nrow(summary_data$model_robust_stats) > 0) {
         tags$div(
           class = "ml-robust-summary",
-          tags$strong("Robust per-model summary (across seeds)"),
-          tags$ul(
-            class = "ml-robust-summary-list",
+          tags$strong("Variation across seed runs"),
+          tagList(
             lapply(seq_len(nrow(summary_data$model_robust_stats)), function(i) {
               row <- summary_data$model_robust_stats[i, , drop = FALSE]
-              tags$li(
-                paste0(
-                  row$Model,
-                  " | median ", summary_data$metric_name, ": ", row$MedianMetric,
-                  " | IQR: ", row$IQRMetric,
-                  " | SD: ", row$SDMetric,
-                  " | range: ", row$RangeMetric,
-                  " | valid/invalid runs: ", row$ValidRuns, "/", row$InvalidRuns
+              tags$div(
+                tags$strong(as.character(row$Model)),
+                tags$ul(
+                  class = "ml-robust-summary-list",
+                  tags$li(paste0("Mean ", summary_data$metric_name, ": ", row$MeanMetric)),
+                  tags$li(paste0("Median ", summary_data$metric_name, ": ", row$MedianMetric)),
+                  tags$li(paste0("IQR: ", row$IQRMetric)),
+                  tags$li(paste0("Minimum ", summary_data$metric_name, ": ", row$MinMetric)),
+                  tags$li(paste0("Maximum ", summary_data$metric_name, ": ", row$MaxMetric)),
+                  tags$li(paste0("Range: ", row$RangeMetric))
                 )
               )
             })
@@ -2142,13 +2139,7 @@ server <- function(input, output, session) {
         best_rmse <- NA_real_
         worst_result <- Inf
         worst_model <- "-"
-        valid_runs <- 0
-        invalid_runs <- 0
-        valid_models <- character(0)
-        invalid_models <- character(0)
         model_metric_values <- list()
-        model_valid_runs <- list()
-        model_invalid_runs <- list()
         target_name <- input$ml_target
         X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
         Y <- X[[target_name]]
@@ -2330,10 +2321,6 @@ server <- function(input, output, session) {
                   return(NULL)
                 })
                 if (is.null(result)) {
-                  invalid_runs <- invalid_runs + 1
-                  invalid_models <- union(invalid_models, model_name)
-                  current_invalid <- if (!is.null(model_invalid_runs[[model_name]])) model_invalid_runs[[model_name]] else 0
-                  model_invalid_runs[[model_name]] <- current_invalid + 1
                   next
                 }
                 pred <- predict(model, newdata = testSet)
@@ -2383,11 +2370,7 @@ server <- function(input, output, session) {
                     "Threshold scope" = threshold_scope,
                     "Imputation scope" = imputation_scope)
                   ml_table_results(rbind(ml_table_results(), model_results))
-                  valid_runs <- valid_runs + 1
-                  valid_models <- union(valid_models, model_name)
                   model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], accuracy)
-                  current_valid <- if (!is.null(model_valid_runs[[model_name]])) model_valid_runs[[model_name]] else 0
-                  model_valid_runs[[model_name]] <- current_valid + 1
                   temp_models_list[[model_name]] <- model
                 } else {
                   result_pred <- postResample(pred, actual_values)
@@ -2421,11 +2404,7 @@ server <- function(input, output, session) {
                     "Threshold scope" = threshold_scope,
                     "Imputation scope" = imputation_scope)
                   ml_table_results(rbind(ml_table_results(), model_results))
-                  valid_runs <- valid_runs + 1
-                  valid_models <- union(valid_models, model_name)
                   model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], rsq_value)
-                  current_valid <- if (!is.null(model_valid_runs[[model_name]])) model_valid_runs[[model_name]] else 0
-                  model_valid_runs[[model_name]] <- current_valid + 1
                   if (rsq_value >= 0.6) {
                     temp_models_list[[model_name]] <- model
                   }
@@ -2465,20 +2444,20 @@ server <- function(input, output, session) {
         robust_stats_rows <- lapply(all_models, function(model_name) {
           metrics <- model_metric_values[[model_name]]
           metrics <- metrics[is.finite(metrics)]
-          valid_count <- if (!is.null(model_valid_runs[[model_name]])) model_valid_runs[[model_name]] else 0
-          invalid_count <- if (!is.null(model_invalid_runs[[model_name]])) model_invalid_runs[[model_name]] else 0
+          mean_metric <- if (length(metrics) > 0) round(mean(metrics), 4) else NA_real_
           median_metric <- if (length(metrics) > 0) round(median(metrics), 4) else NA_real_
           iqr_metric <- if (length(metrics) > 1) round(IQR(metrics), 4) else NA_real_
-          sd_metric <- if (length(metrics) > 1) round(sd(metrics), 4) else NA_real_
+          min_metric <- if (length(metrics) > 0) round(min(metrics), 4) else NA_real_
+          max_metric <- if (length(metrics) > 0) round(max(metrics), 4) else NA_real_
           range_metric <- if (length(metrics) > 1) round(diff(range(metrics)), 4) else NA_real_
           data.frame(
             Model = model_name,
+            MeanMetric = mean_metric,
             MedianMetric = median_metric,
             IQRMetric = iqr_metric,
-            SDMetric = sd_metric,
+            MinMetric = min_metric,
+            MaxMetric = max_metric,
             RangeMetric = range_metric,
-            ValidRuns = valid_count,
-            InvalidRuns = invalid_count,
             stringsAsFactors = FALSE
           )
         })
@@ -2486,18 +2465,20 @@ server <- function(input, output, session) {
         if (is.data.frame(robust_stats) && nrow(robust_stats) > 0) {
           robust_stats <- robust_stats[order(-robust_stats$MedianMetric, robust_stats$Model), , drop = FALSE]
         }
+        best_model_metrics <- model_metric_values[[best_model_name]]
+        best_model_metrics <- best_model_metrics[is.finite(best_model_metrics)]
         ml_final_summary(list(
           best_model = best_model_name,
           dataset_seed = dataset_seed_label,
           training_seed = training_seed_label,
           metric_name = metric_name,
           metric_value = if (is.finite(best_result)) best_result else NA_real_,
+          best_model_min = if (length(best_model_metrics) > 0) round(min(best_model_metrics), 4) else "N/A",
+          best_model_max = if (length(best_model_metrics) > 0) round(max(best_model_metrics), 4) else "N/A",
+          best_model_mean = if (length(best_model_metrics) > 0) round(mean(best_model_metrics), 4) else "N/A",
+          best_model_median = if (length(best_model_metrics) > 0) round(median(best_model_metrics), 4) else "N/A",
           mae = if (identical(metric_name, "R2")) best_mae else NA_real_,
           rmse = if (identical(metric_name, "R2")) best_rmse else NA_real_,
-          valid_models = length(valid_models),
-          invalid_models = length(setdiff(invalid_models, valid_models)),
-          valid_runs = valid_runs,
-          invalid_runs = invalid_runs,
           model_robust_stats = robust_stats
         ))
       })
