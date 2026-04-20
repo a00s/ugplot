@@ -1118,9 +1118,28 @@ server <- function(input, output, session) {
     }
   )
 
+  output$downloadCalculatedMLTable <- downloadHandler(
+    filename = function() {
+      base_name <- tools::file_path_sans_ext(basename(original_dataset_filename()))
+      if (is.null(base_name) || !nzchar(base_name)) {
+        base_name <- "ugplot_calculated_table"
+      }
+      paste0(base_name, "_calculated_table.csv")
+    },
+    content = function(file) {
+      table_to_download <- ml_table_results()
+      req(is.data.frame(table_to_download), nrow(table_to_download) > 0)
+      utils::write.csv(table_to_download, file, row.names = FALSE)
+    }
+  )
+
   output$downloadModelUI <- renderUI({
     if (!is.null(best_model_object())) {
-      downloadButton("downloadBestModel", "Download best model")
+      tags$div(
+        style = "display: flex; gap: 8px; align-items: center; flex-wrap: wrap;",
+        downloadButton("downloadBestModel", "Download best model"),
+        downloadButton("downloadCalculatedMLTable", "Download calculated table (CSV)")
+      )
     }
   })
 
