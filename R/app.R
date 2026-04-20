@@ -300,7 +300,7 @@ ui <- fluidPage(
               style = "flex-grow: 1;"
             ),
             tags$div(
-              downloadButton("downloadHeatmapPlotTiff", "Download plot (TIFF)", icon = icon("download")),
+              downloadButton("downloadHeatmapPlotTiffTop", "Download plot (TIFF)", icon = icon("download")),
               style = "flex: none; margin-left: 10px;"
             )
           ),
@@ -1183,7 +1183,7 @@ server <- function(input, output, session) {
     }
   )
 
-  output$downloadHeatmapPlotTiff <- downloadHandler(
+  output$downloadHeatmapPlotTiffTop <- downloadHandler(
     filename = function() {
       source_name <- original_dataset_filename()
       if (!is.null(input$file1$name) && nzchar(input$file1$name)) {
@@ -1803,7 +1803,11 @@ server <- function(input, output, session) {
     comandtorun <- gsub("\\{\\{annotation\\}\\}", "annotation_row", comandtorun)
     annotation_colors_auto <- generate_annotation_colors(annotation_row)
     comandtorun <- gsub("\\{\\{annotation_color\\}\\}", "annotation_colors_auto", comandtorun)
-    eval(parse(text = comandtorun))
+    plotted_obj <- eval(parse(text = comandtorun))
+    if (inherits(plotted_obj, "ggplot") || inherits(plotted_obj, "gg")) {
+      print(plotted_obj)
+    }
+    invisible(plotted_obj)
   }
 
   lapply(1:nrow(plotlist), function(i) {
