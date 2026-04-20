@@ -304,7 +304,9 @@ ui <- fluidPage(
               style = "flex: none; margin-left: 10px;"
             )
           ),
-          plotOutput("plot", height = "90%")
+          plotOutput("plot", height = "90%"),
+          br(),
+          downloadButton("downloadHeatmapPlotTiff", "Download plot (TIFF)")
         )
       )
     ),
@@ -514,6 +516,8 @@ ui <- fluidPage(
         verbatimTextOutput("model_analysis_accuracy"),
         br(),
         plotOutput("model_analysis_correlation_plot", height = "520px", width = "520px"),
+        br(),
+        downloadButton("downloadModelAnalysisPlotTiff", "Download plot (TIFF)"),
         br(),
         downloadButton("downloadModelAnalysisTable", "Download analysis table (CSV)"),
         br(), br(),
@@ -1080,6 +1084,7 @@ server <- function(input, output, session) {
   last_file_click_count <- 0
   original_dataset_filename <- reactiveVal("model_analysis_results")
   model_analysis_results_data <- reactiveVal(data.frame())
+  heatmap_recorded_plot <- reactiveVal(NULL)
 
   output$downloadData <- downloadHandler(
     filename = function() {
@@ -1203,6 +1208,8 @@ server <- function(input, output, session) {
     file_click_count(file_click_count() + 1)
     filepath <- req(input$file1$datapath)
     original_dataset_filename(input$file1$name)
+    heatmap_recorded_plot(NULL)
+    hide("downloadHeatmapPlotTiff")
     skipline <- input$startfromline - 1
     tryCatch({
       df_pre <<- read.table(filepath, header = TRUE, sep = tab_separator(), row.names = 1,
@@ -1736,6 +1743,8 @@ server <- function(input, output, session) {
   observeEvent(input$process_table_content, {
     scrambled_columns(character(0))
     scramble_original_columns(list())
+    heatmap_recorded_plot(NULL)
+    hide("downloadHeatmapPlotTiff")
     load_file_into_table(input$textarea_columns, input$textarea_rows, session)
     refresh_counter(refresh_counter() + 1)
     update_scramble_selector()
@@ -1744,6 +1753,8 @@ server <- function(input, output, session) {
   observeEvent(input$load_sample, {
     dff <<- sample_data
     original_dataset_filename("sample.csv")
+    heatmap_recorded_plot(NULL)
+    hide("downloadHeatmapPlotTiff")
     reset_missing_strategy_ui()
     scrambled_columns(character(0))
     scramble_original_columns(list())
@@ -1859,6 +1870,8 @@ server <- function(input, output, session) {
     }
     dff <<- data.frame(t(as.matrix(dff)))
     changed_table <<- dff
+    heatmap_recorded_plot(NULL)
+    hide("downloadHeatmapPlotTiff")
     refresh_counter(refresh_counter() + 1)
     scrambled_columns(character(0))
     scramble_original_columns(list())
@@ -2502,6 +2515,7 @@ observeEvent(input$model_file, {
   observeEvent(input$run_model_analysis, {
     req(loaded_model())
     req(changed_table)
+    model_analysis_recorded_plot(NULL)
     model_container <- loaded_model()
     model_obj <- model_container$model
     preprocess_meta <- model_container$preprocess_meta
@@ -2712,6 +2726,7 @@ observeEvent(input$model_file, {
         plot.new()
         text(0.5, 0.5, "Correlation plot unavailable for this model/output.")
       }
+      model_analysis_recorded_plot(recordPlot())
     })
 
     # 5) Renderiza a tabela final
