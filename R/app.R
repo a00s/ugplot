@@ -513,6 +513,8 @@ ui <- fluidPage(
         br(),
         plotOutput("model_analysis_correlation_plot", height = "520px", width = "520px"),
         br(),
+        downloadButton("downloadModelAnalysisPlotTiff", "Download plot (TIFF)"),
+        br(),
         downloadButton("downloadModelAnalysisTable", "Download analysis table (CSV)"),
         br(), br(),
         DT::DTOutput("model_analysis_table")
@@ -2509,6 +2511,7 @@ observeEvent(input$model_file, {
   observeEvent(input$run_model_analysis, {
     req(loaded_model())
     req(changed_table)
+    model_analysis_recorded_plot(NULL)
     model_container <- loaded_model()
     model_obj <- model_container$model
     preprocess_meta <- model_container$preprocess_meta
@@ -2719,6 +2722,7 @@ observeEvent(input$model_file, {
         plot.new()
         text(0.5, 0.5, "Correlation plot unavailable for this model/output.")
       }
+      model_analysis_recorded_plot(recordPlot())
     })
 
     # 5) Renderiza a tabela final
