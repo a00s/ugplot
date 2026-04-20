@@ -2140,6 +2140,9 @@ server <- function(input, output, session) {
         worst_result <- Inf
         worst_model <- "-"
         model_metric_values <- list()
+        invalid_runs <- 0
+        invalid_models <- character(0)
+        model_invalid_runs <- list()
         target_name <- input$ml_target
         X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
         Y <- X[[target_name]]
