@@ -511,6 +511,8 @@ ui <- fluidPage(
         br(),
         plotOutput("model_analysis_correlation_plot", height = "520px", width = "520px"),
         br(),
+        downloadButton("downloadModelAnalysisPlotTiff", "Download plot (TIFF)"),
+        br(),
         downloadButton("downloadModelAnalysisTable", "Download analysis table (CSV)"),
         br(), br(),
         DT::DTOutput("model_analysis_table")
@@ -1076,6 +1078,7 @@ server <- function(input, output, session) {
   last_file_click_count <- 0
   original_dataset_filename <- reactiveVal("model_analysis_results")
   model_analysis_results_data <- reactiveVal(data.frame())
+  model_analysis_recorded_plot <- reactiveVal(NULL)
 
   output$downloadData <- downloadHandler(
     filename = function() {
@@ -1171,6 +1174,23 @@ server <- function(input, output, session) {
       }, logical(1))
       table_to_download <- table_to_download[, has_content, drop = FALSE]
       utils::write.csv(table_to_download, file, row.names = FALSE)
+    }
+  )
+
+  output$downloadModelAnalysisPlotTiff <- downloadHandler(
+    filename = function() {
+      base_name <- tools::file_path_sans_ext(basename(original_dataset_filename()))
+      if (is.null(base_name) || !nzchar(base_name)) {
+        base_name <- "model_analysis_plot"
+      }
+      paste0(base_name, ".tiff")
+    },
+    content = function(file) {
+      recorded_plot <- model_analysis_recorded_plot()
+      req(!is.null(recorded_plot))
+      tiff(filename = file, width = 2000, height = 2000, res = 300, compression = "lzw")
+      replayPlot(recorded_plot)
+      dev.off()
     }
   )
 
@@ -2487,6 +2507,7 @@ observeEvent(input$model_file, {
   observeEvent(input$run_model_analysis, {
     req(loaded_model())
     req(changed_table)
+    model_analysis_recorded_plot(NULL)
     model_container <- loaded_model()
     model_obj <- model_container$model
     preprocess_meta <- model_container$preprocess_meta
@@ -2697,6 +2718,7 @@ observeEvent(input$model_file, {
         plot.new()
         text(0.5, 0.5, "Correlation plot unavailable for this model/output.")
       }
+      model_analysis_recorded_plot(recordPlot())
     })
 
     # 5) Renderiza a tabela final
