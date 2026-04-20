@@ -298,6 +298,10 @@ ui <- fluidPage(
             tags$div(
               textAreaInput("textarea_code_plot", label = NULL, row = 1, width = '100%'),
               style = "flex-grow: 1;"
+            ),
+            tags$div(
+              uiOutput("downloadHeatmapPlotTiffUI"),
+              style = "flex: none; margin-left: 10px;"
             )
           ),
           plotOutput("plot", height = "90%"),
@@ -1181,7 +1185,11 @@ server <- function(input, output, session) {
 
   output$downloadHeatmapPlotTiff <- downloadHandler(
     filename = function() {
-      base_name <- tools::file_path_sans_ext(basename(original_dataset_filename()))
+      source_name <- original_dataset_filename()
+      if (!is.null(input$file1$name) && nzchar(input$file1$name)) {
+        source_name <- input$file1$name
+      }
+      base_name <- tools::file_path_sans_ext(basename(source_name))
       if (is.null(base_name) || !nzchar(base_name)) {
         base_name <- "heatmap_plot"
       }
@@ -1196,11 +1204,19 @@ server <- function(input, output, session) {
     }
   )
 
+  output$downloadHeatmapPlotTiffUI <- renderUI({
+    if (is.null(heatmap_recorded_plot())) {
+      return(NULL)
+    }
+    downloadButton("downloadHeatmapPlotTiff", "Download plot (TIFF)", icon = icon("download"))
+  })
+
   ####################### TAB 1) LOAD DATA
   observeEvent(input$file1, {
     file_click_count(file_click_count() + 1)
     filepath <- req(input$file1$datapath)
     original_dataset_filename(input$file1$name)
+    heatmap_recorded_plot(NULL)
     skipline <- input$startfromline - 1
     tryCatch({
       df_pre <<- read.table(filepath, header = TRUE, sep = tab_separator(), row.names = 1,
@@ -1734,6 +1750,7 @@ server <- function(input, output, session) {
   observeEvent(input$process_table_content, {
     scrambled_columns(character(0))
     scramble_original_columns(list())
+    heatmap_recorded_plot(NULL)
     load_file_into_table(input$textarea_columns, input$textarea_rows, session)
     refresh_counter(refresh_counter() + 1)
     update_scramble_selector()
@@ -1742,6 +1759,7 @@ server <- function(input, output, session) {
   observeEvent(input$load_sample, {
     dff <<- sample_data
     original_dataset_filename("sample.csv")
+    heatmap_recorded_plot(NULL)
     reset_missing_strategy_ui()
     scrambled_columns(character(0))
     scramble_original_columns(list())
@@ -1868,6 +1886,7 @@ server <- function(input, output, session) {
     }
     dff <<- data.frame(t(as.matrix(dff)))
     changed_table <<- dff
+    heatmap_recorded_plot(NULL)
     refresh_counter(refresh_counter() + 1)
     scrambled_columns(character(0))
     scramble_original_columns(list())
