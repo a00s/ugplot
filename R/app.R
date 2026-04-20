@@ -1329,24 +1329,46 @@ server <- function(input, output, session) {
       mae_rmse_line <- tags$li(paste0("MAE/RMSE: ", mae_label, " / ", rmse_label))
     }
     tags$div(
-      style = "border: 1px solid #d9d9d9; border-radius: 6px; padding: 10px; margin: 8px 0; background: #fafafa;",
-      tags$strong("Resumo final da busca"),
+      class = "ml-final-summary",
+      tags$strong("Final search summary"),
       tags$ul(
-        style = "margin: 8px 0 0 18px;",
+        class = "ml-final-summary-list",
         tags$li(paste0("Best model: ", summary_data$best_model)),
         tags$li(paste0("Dataset seed: ", summary_data$dataset_seed)),
         tags$li(paste0("Training seed: ", summary_data$training_seed)),
-        tags$li(paste0("Métrica principal (", summary_data$metric_name, "): ", metric_value)),
+        tags$li(paste0("Main metric (", summary_data$metric_name, "): ", metric_value)),
         mae_rmse_line,
         tags$li(paste0(
-          "Modelos válidos/inválidos: ",
+          "Valid/invalid models: ",
           summary_data$valid_models, " / ", summary_data$invalid_models
         )),
         tags$li(paste0(
-          "Runs válidos/inválidos: ",
+          "Valid/invalid runs: ",
           summary_data$valid_runs, " / ", summary_data$invalid_runs
         ))
-      )
+      ),
+      if (is.data.frame(summary_data$model_robust_stats) && nrow(summary_data$model_robust_stats) > 0) {
+        tags$div(
+          class = "ml-robust-summary",
+          tags$strong("Robust per-model summary (across seeds)"),
+          tags$ul(
+            class = "ml-robust-summary-list",
+            lapply(seq_len(nrow(summary_data$model_robust_stats)), function(i) {
+              row <- summary_data$model_robust_stats[i, , drop = FALSE]
+              tags$li(
+                paste0(
+                  row$Model,
+                  " | median ", summary_data$metric_name, ": ", row$MedianMetric,
+                  " | IQR: ", row$IQRMetric,
+                  " | SD: ", row$SDMetric,
+                  " | range: ", row$RangeMetric,
+                  " | valid/invalid runs: ", row$ValidRuns, "/", row$InvalidRuns
+                )
+              )
+            })
+          )
+        )
+      }
     )
   })
 
@@ -2124,6 +2146,9 @@ server <- function(input, output, session) {
         invalid_runs <- 0
         valid_models <- character(0)
         invalid_models <- character(0)
+        model_metric_values <- list()
+        model_valid_runs <- list()
+        model_invalid_runs <- list()
         target_name <- input$ml_target
         X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
         Y <- X[[target_name]]
@@ -2245,6 +2270,10 @@ server <- function(input, output, session) {
             ml_error_message_text(paste(ml_error_message_text(), " ", "Not enough data after missing strategy for seed", loop_dataset_seed, "/"))
             invalid_runs <- invalid_runs + (length(all_models) * total_seed_runs)
             invalid_models <- union(invalid_models, all_models)
+            for (model_name in all_models) {
+              current_invalid <- if (!is.null(model_invalid_runs[[model_name]])) model_invalid_runs[[model_name]] else 0
+              model_invalid_runs[[model_name]] <- current_invalid + total_seed_runs
+            }
             next
           }
           count_model <- 0
@@ -2303,6 +2332,8 @@ server <- function(input, output, session) {
                 if (is.null(result)) {
                   invalid_runs <- invalid_runs + 1
                   invalid_models <- union(invalid_models, model_name)
+                  current_invalid <- if (!is.null(model_invalid_runs[[model_name]])) model_invalid_runs[[model_name]] else 0
+                  model_invalid_runs[[model_name]] <- current_invalid + 1
                   next
                 }
                 pred <- predict(model, newdata = testSet)
@@ -2354,6 +2385,9 @@ server <- function(input, output, session) {
                   ml_table_results(rbind(ml_table_results(), model_results))
                   valid_runs <- valid_runs + 1
                   valid_models <- union(valid_models, model_name)
+                  model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], accuracy)
+                  current_valid <- if (!is.null(model_valid_runs[[model_name]])) model_valid_runs[[model_name]] else 0
+                  model_valid_runs[[model_name]] <- current_valid + 1
                   temp_models_list[[model_name]] <- model
                 } else {
                   result_pred <- postResample(pred, actual_values)
@@ -2389,6 +2423,9 @@ server <- function(input, output, session) {
                   ml_table_results(rbind(ml_table_results(), model_results))
                   valid_runs <- valid_runs + 1
                   valid_models <- union(valid_models, model_name)
+                  model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], rsq_value)
+                  current_valid <- if (!is.null(model_valid_runs[[model_name]])) model_valid_runs[[model_name]] else 0
+                  model_valid_runs[[model_name]] <- current_valid + 1
                   if (rsq_value >= 0.6) {
                     temp_models_list[[model_name]] <- model
                   }
@@ -2410,6 +2447,8 @@ server <- function(input, output, session) {
               }, error = function(e) {
                 invalid_runs <- invalid_runs + 1
                 invalid_models <- union(invalid_models, model_name)
+                current_invalid <- if (!is.null(model_invalid_runs[[model_name]])) model_invalid_runs[[model_name]] else 0
+                model_invalid_runs[[model_name]] <- current_invalid + 1
                 ml_error_message_text(paste(ml_error_message_text(), " ", "Couldn't run model", model_name, ":", conditionMessage(e)))
                 print(paste("Couldn't run model", model_name, ":", conditionMessage(e)))
               })
@@ -2423,6 +2462,30 @@ server <- function(input, output, session) {
         metric_name <- if (is.factor(Y_base)) "Accuracy" else "R2"
         dataset_seed_label <- if (!is.na(best_dataset_seed)) best_dataset_seed else "N/A"
         training_seed_label <- if (!is.na(best_training_seed)) best_training_seed else "N/A"
+        robust_stats_rows <- lapply(all_models, function(model_name) {
+          metrics <- model_metric_values[[model_name]]
+          metrics <- metrics[is.finite(metrics)]
+          valid_count <- if (!is.null(model_valid_runs[[model_name]])) model_valid_runs[[model_name]] else 0
+          invalid_count <- if (!is.null(model_invalid_runs[[model_name]])) model_invalid_runs[[model_name]] else 0
+          median_metric <- if (length(metrics) > 0) round(median(metrics), 4) else NA_real_
+          iqr_metric <- if (length(metrics) > 1) round(IQR(metrics), 4) else NA_real_
+          sd_metric <- if (length(metrics) > 1) round(sd(metrics), 4) else NA_real_
+          range_metric <- if (length(metrics) > 1) round(diff(range(metrics)), 4) else NA_real_
+          data.frame(
+            Model = model_name,
+            MedianMetric = median_metric,
+            IQRMetric = iqr_metric,
+            SDMetric = sd_metric,
+            RangeMetric = range_metric,
+            ValidRuns = valid_count,
+            InvalidRuns = invalid_count,
+            stringsAsFactors = FALSE
+          )
+        })
+        robust_stats <- do.call(rbind, robust_stats_rows)
+        if (is.data.frame(robust_stats) && nrow(robust_stats) > 0) {
+          robust_stats <- robust_stats[order(-robust_stats$MedianMetric, robust_stats$Model), , drop = FALSE]
+        }
         ml_final_summary(list(
           best_model = best_model_name,
           dataset_seed = dataset_seed_label,
@@ -2434,7 +2497,8 @@ server <- function(input, output, session) {
           valid_models = length(valid_models),
           invalid_models = length(setdiff(invalid_models, valid_models)),
           valid_runs = valid_runs,
-          invalid_runs = invalid_runs
+          invalid_runs = invalid_runs,
+          model_robust_stats = robust_stats
         ))
       })
     }, error = function(e) {

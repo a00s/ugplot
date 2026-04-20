@@ -234,3 +234,23 @@ button.ml-section-toggle:focus,
 .ml-summary-row-changed td {
   background: #fff7df !important;
 }
+
+.ml-final-summary {
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  padding: 10px;
+  margin: 8px 0;
+  background: #fafafa;
+}
+
+.ml-final-summary-list {
+  margin: 8px 0 0 18px;
+}
+
+.ml-robust-summary {
+  margin-top: 10px;
+}
+
+.ml-robust-summary-list {
+  margin: 8px 0 0 18px;
+}
