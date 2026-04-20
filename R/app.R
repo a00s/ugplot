@@ -466,6 +466,7 @@ ui <- fluidPage(
             ),
             div(style = "width: 100%; overflow-x: auto;", uiOutput("ml_error_message")),
             div(style = "overflow-x: auto; width: 100%;", uiOutput("dynamic_ml_plot")),
+            div(style = "width: 100%; overflow-x: auto;", uiOutput("ml_final_status")),
             div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table_results_output")),
             verbatimTextOutput("ml_row_details"),
             div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table"))
@@ -1059,6 +1060,7 @@ server <- function(input, output, session) {
 
   ml_data_table <- reactiveVal(data.frame())
   ml_table_results <- reactiveVal(data.frame())
+  ml_final_summary <- reactiveVal(NULL)
   ml_plot_importance <- reactiveVal()
   num_rows <- reactiveVal(0)
   num_cols <- reactiveVal(0)
@@ -1308,6 +1310,63 @@ server <- function(input, output, session) {
 
   output$ml_error_message <- renderUI({
     tags$span(ml_error_message_text(), style = "color: black; font-size: 12px;")
+  })
+
+  output$ml_final_status <- renderUI({
+    summary_data <- ml_final_summary()
+    if (is.null(summary_data)) {
+      return(NULL)
+    }
+    metric_value <- if (!is.null(summary_data$metric_value) && is.finite(summary_data$metric_value)) {
+      round(summary_data$metric_value, 4)
+    } else {
+      "N/A"
+    }
+    mae_rmse_line <- NULL
+    if (identical(summary_data$metric_name, "R2")) {
+      mae_label <- if (!is.null(summary_data$mae) && is.finite(summary_data$mae)) round(summary_data$mae, 4) else "N/A"
+      rmse_label <- if (!is.null(summary_data$rmse) && is.finite(summary_data$rmse)) round(summary_data$rmse, 4) else "N/A"
+      mae_rmse_line <- tags$li(paste0("MAE/RMSE: ", mae_label, " / ", rmse_label))
+    }
+    tags$div(
+      class = "ml-final-summary",
+      tags$strong("Best result"),
+      tags$ul(
+        class = "ml-final-summary-list",
+        tags$li(paste0("Best model: ", summary_data$best_model)),
+        tags$li(paste0("Dataset seed: ", summary_data$dataset_seed)),
+        tags$li(paste0("Training seed: ", summary_data$training_seed)),
+        tags$li(paste0("Main metric (", summary_data$metric_name, "): ", metric_value)),
+        tags$li(paste0("Minimum ", summary_data$metric_name, " (best model): ", summary_data$best_model_min)),
+        tags$li(paste0("Maximum ", summary_data$metric_name, " (best model): ", summary_data$best_model_max)),
+        mae_rmse_line,
+        tags$li(paste0("Mean ", summary_data$metric_name, " (best model): ", summary_data$best_model_mean)),
+        tags$li(paste0("Median ", summary_data$metric_name, " (best model): ", summary_data$best_model_median))
+      ),
+      if (is.data.frame(summary_data$model_robust_stats) && nrow(summary_data$model_robust_stats) > 0) {
+        tags$div(
+          class = "ml-robust-summary",
+          tags$strong("Variation across seed runs"),
+          tagList(
+            lapply(seq_len(nrow(summary_data$model_robust_stats)), function(i) {
+              row <- summary_data$model_robust_stats[i, , drop = FALSE]
+              tags$div(
+                tags$strong(as.character(row$Model)),
+                tags$ul(
+                  class = "ml-robust-summary-list",
+                  tags$li(paste0("Mean ", summary_data$metric_name, ": ", row$MeanMetric)),
+                  tags$li(paste0("Median ", summary_data$metric_name, ": ", row$MedianMetric)),
+                  tags$li(paste0("IQR: ", row$IQRMetric)),
+                  tags$li(paste0("Minimum ", summary_data$metric_name, ": ", row$MinMetric)),
+                  tags$li(paste0("Maximum ", summary_data$metric_name, ": ", row$MaxMetric)),
+                  tags$li(paste0("Range: ", row$RangeMetric))
+                )
+              )
+            })
+          )
+        )
+      }
+    )
   })
 
   observeEvent(input$ml_toggle_seeds, {
@@ -2067,13 +2126,20 @@ server <- function(input, output, session) {
     ml_prediction <<- list()
     best_model_preprocess(NULL)
     ml_error_message_text("")
+    ml_final_summary(NULL)
 
     tryCatch({
       withProgress(message = 'Searching the best model...', {
         best_result <- -Inf
         best_model <- "-"
+        best_model_name <- "-"
+        best_dataset_seed <- NA
+        best_training_seed <- NA
+        best_mae <- NA_real_
+        best_rmse <- NA_real_
         worst_result <- Inf
         worst_model <- "-"
+        model_metric_values <- list()
         target_name <- input$ml_target
         X <- changed_table[input$row_checkbox_group, input$column_checkbox_group]
         Y <- X[[target_name]]
@@ -2104,6 +2170,14 @@ server <- function(input, output, session) {
         do_dataset_seed <- 0
         loop_dataset_seedi <- as.numeric(input$ml_dataset_seedi)
         loop_dataset_seedf <- as.numeric(input$ml_dataset_seedf)
+        all_models <- input$ml_checkbox_group
+        loop_seedi <- as.numeric(input$ml_seedi)
+        loop_seedf <- as.numeric(input$ml_seedf)
+        total_seed_runs <- if (!is.na(loop_seedi) && !is.na(loop_seedf)) {
+          max(1, (loop_seedf - loop_seedi + 1))
+        } else {
+          1
+        }
         metric_label <- if (is.factor(Y)) "Accuracy" else "R2 (MAE/RMSE na tabela)"
         if (!is.na(loop_dataset_seedi) && !is.na(loop_dataset_seedf)) {
           do_dataset_seed <- 1
@@ -2187,16 +2261,8 @@ server <- function(input, output, session) {
             ml_error_message_text(paste(ml_error_message_text(), " ", "Not enough data after missing strategy for seed", loop_dataset_seed, "/"))
             next
           }
-          all_models <- input$ml_checkbox_group
           count_model <- 0
           do_seed <- 0
-          loop_seedi <- as.numeric(input$ml_seedi)
-          loop_seedf <- as.numeric(input$ml_seedf)
-          total_seed_runs <- if (!is.na(loop_seedi) && !is.na(loop_seedf)) {
-            max(1, (loop_seedf - loop_seedi + 1))
-          } else {
-            1
-          }
           if (!is.na(loop_seedi) && !is.na(loop_seedf)) {
             do_seed <- 1
           }
@@ -2248,7 +2314,9 @@ server <- function(input, output, session) {
                   print(paste("Error training model", model_name, ":", conditionMessage(e)))
                   return(NULL)
                 })
-                if (is.null(result)) next
+                if (is.null(result)) {
+                  next
+                }
                 pred <- predict(model, newdata = testSet)
                 if (is.null(pred) || length(pred) == 0) {
                   stop("model returned empty predictions")
@@ -2277,6 +2345,11 @@ server <- function(input, output, session) {
                   if (accuracy > best_result) {
                     best_result <- accuracy
                     best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
+                    best_model_name <- model_name
+                    best_dataset_seed <- loop_dataset_seed
+                    best_training_seed <- loop_seed
+                    best_mae <- NA_real_
+                    best_rmse <- NA_real_
                     best_model_object(model)
                     best_model_preprocess(preprocess_meta_for_seed)
                   }
@@ -2291,6 +2364,7 @@ server <- function(input, output, session) {
                     "Threshold scope" = threshold_scope,
                     "Imputation scope" = imputation_scope)
                   ml_table_results(rbind(ml_table_results(), model_results))
+                  model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], accuracy)
                   temp_models_list[[model_name]] <- model
                 } else {
                   result_pred <- postResample(pred, actual_values)
@@ -2303,6 +2377,11 @@ server <- function(input, output, session) {
                   if (rsq_value > best_result) {
                     best_result <- rsq_value
                     best_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
+                    best_model_name <- model_name
+                    best_dataset_seed <- loop_dataset_seed
+                    best_training_seed <- loop_seed
+                    best_mae <- mae_value
+                    best_rmse <- rmse_value
                     best_model_object(model)
                     best_model_preprocess(preprocess_meta_for_seed)
                   }
@@ -2319,6 +2398,7 @@ server <- function(input, output, session) {
                     "Threshold scope" = threshold_scope,
                     "Imputation scope" = imputation_scope)
                   ml_table_results(rbind(ml_table_results(), model_results))
+                  model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], rsq_value)
                   if (rsq_value >= 0.6) {
                     temp_models_list[[model_name]] <- model
                   }
@@ -2348,6 +2428,49 @@ server <- function(input, output, session) {
             gc()
           }
         }
+        metric_name <- if (is.factor(Y_base)) "Accuracy" else "R2"
+        dataset_seed_label <- if (!is.na(best_dataset_seed)) best_dataset_seed else "N/A"
+        training_seed_label <- if (!is.na(best_training_seed)) best_training_seed else "N/A"
+        robust_stats_rows <- lapply(all_models, function(model_name) {
+          metrics <- model_metric_values[[model_name]]
+          metrics <- metrics[is.finite(metrics)]
+          mean_metric <- if (length(metrics) > 0) round(mean(metrics), 4) else NA_real_
+          median_metric <- if (length(metrics) > 0) round(median(metrics), 4) else NA_real_
+          iqr_metric <- if (length(metrics) > 1) round(IQR(metrics), 4) else NA_real_
+          min_metric <- if (length(metrics) > 0) round(min(metrics), 4) else NA_real_
+          max_metric <- if (length(metrics) > 0) round(max(metrics), 4) else NA_real_
+          range_metric <- if (length(metrics) > 1) round(diff(range(metrics)), 4) else NA_real_
+          data.frame(
+            Model = model_name,
+            MeanMetric = mean_metric,
+            MedianMetric = median_metric,
+            IQRMetric = iqr_metric,
+            MinMetric = min_metric,
+            MaxMetric = max_metric,
+            RangeMetric = range_metric,
+            stringsAsFactors = FALSE
+          )
+        })
+        robust_stats <- do.call(rbind, robust_stats_rows)
+        if (is.data.frame(robust_stats) && nrow(robust_stats) > 0) {
+          robust_stats <- robust_stats[order(-robust_stats$MedianMetric, robust_stats$Model), , drop = FALSE]
+        }
+        best_model_metrics <- model_metric_values[[best_model_name]]
+        best_model_metrics <- best_model_metrics[is.finite(best_model_metrics)]
+        ml_final_summary(list(
+          best_model = best_model_name,
+          dataset_seed = dataset_seed_label,
+          training_seed = training_seed_label,
+          metric_name = metric_name,
+          metric_value = if (is.finite(best_result)) best_result else NA_real_,
+          best_model_min = if (length(best_model_metrics) > 0) round(min(best_model_metrics), 4) else "N/A",
+          best_model_max = if (length(best_model_metrics) > 0) round(max(best_model_metrics), 4) else "N/A",
+          best_model_mean = if (length(best_model_metrics) > 0) round(mean(best_model_metrics), 4) else "N/A",
+          best_model_median = if (length(best_model_metrics) > 0) round(median(best_model_metrics), 4) else "N/A",
+          mae = if (identical(metric_name, "R2")) best_mae else NA_real_,
+          rmse = if (identical(metric_name, "R2")) best_rmse else NA_real_,
+          model_robust_stats = robust_stats
+        ))
       })
     }, error = function(e) {
       print(e)
