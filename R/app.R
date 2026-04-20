@@ -1803,9 +1803,22 @@ server <- function(input, output, session) {
     comandtorun <- gsub("\\{\\{annotation\\}\\}", "annotation_row", comandtorun)
     annotation_colors_auto <- generate_annotation_colors(annotation_row)
     comandtorun <- gsub("\\{\\{annotation_color\\}\\}", "annotation_colors_auto", comandtorun)
-    plotted_obj <- eval(parse(text = comandtorun))
+    eval_env <- new.env(parent = environment())
+    eval_env$numeric_table <- numeric_table
+    eval_env$annotation_row <- annotation_row
+    eval_env$annotation_colors_auto <- annotation_colors_auto
+    plotted_obj <- eval(parse(text = comandtorun), envir = eval_env)
     if (inherits(plotted_obj, "ggplot") || inherits(plotted_obj, "gg")) {
       print(plotted_obj)
+    } else {
+      env_objects <- rev(ls(envir = eval_env, all.names = TRUE))
+      for (obj_name in env_objects) {
+        obj_val <- get(obj_name, envir = eval_env)
+        if (inherits(obj_val, "ggplot") || inherits(obj_val, "gg")) {
+          print(obj_val)
+          break
+        }
+      }
     }
     invisible(plotted_obj)
   }
