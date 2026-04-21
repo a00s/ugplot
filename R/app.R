@@ -34,6 +34,11 @@ sink("ugplot.log", split = TRUE)
 
 options(shiny.maxRequestSize = 800 * 1024 * 1024)
 
+
+`%||%` <- function(lhs, rhs) {
+  if (is.null(lhs)) rhs else lhs
+}
+
 # Auxiliary functions to load example files, palettes, and CSS
 resolve_extdata <- function(filename) {
   package_path <- system.file("extdata", filename, package = "ugplot")
@@ -2993,9 +2998,10 @@ observeEvent(input$model_file, {
 
 
   session$onSessionEnded(function() {
-    rm(dff, changed_table, ml_available, ml_not_available, ml_prediction, envir = globalenv())
-    if (exists("df_pre")) {
-      rm(df_pre, envir = globalenv())
+    objects_to_remove <- c("dff", "changed_table", "ml_available", "ml_not_available", "ml_prediction", "df_pre")
+    existing_objects <- objects_to_remove[vapply(objects_to_remove, exists, logical(1), envir = globalenv(), inherits = FALSE)]
+    if (length(existing_objects) > 0) {
+      rm(list = existing_objects, envir = globalenv())
     }
   })
 
