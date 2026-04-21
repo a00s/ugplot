@@ -1317,56 +1317,50 @@ server <- function(input, output, session) {
     if (is.null(summary_data)) {
       return(NULL)
     }
-    metric_value <- if (!is.null(summary_data$metric_value) && is.finite(summary_data$metric_value)) {
-      round(summary_data$metric_value, 4)
-    } else {
-      "N/A"
+    fmt <- function(value, digits = 2) {
+      if (is.null(value) || length(value) == 0 || !is.finite(as.numeric(value))) {
+        return("N/A")
+      }
+      format(round(as.numeric(value), digits), nsmall = digits, trim = TRUE)
     }
-    mae_rmse_line <- NULL
+    best_model_title <- paste0(summary_data$best_model, "(", summary_data$dataset_seed, ":", summary_data$training_seed, ")")
     if (identical(summary_data$metric_name, "R2")) {
-      mae_label <- if (!is.null(summary_data$mae) && is.finite(summary_data$mae)) round(summary_data$mae, 4) else "N/A"
-      rmse_label <- if (!is.null(summary_data$rmse) && is.finite(summary_data$rmse)) round(summary_data$rmse, 4) else "N/A"
-      mae_rmse_line <- tags$li(paste0("MAE/RMSE: ", mae_label, " / ", rmse_label))
-    }
-    tags$div(
-      class = "ml-final-summary",
-      tags$strong("Best result"),
-      tags$ul(
-        class = "ml-final-summary-list",
-        tags$li(paste0("Best model: ", summary_data$best_model)),
-        tags$li(paste0("Dataset seed: ", summary_data$dataset_seed)),
-        tags$li(paste0("Training seed: ", summary_data$training_seed)),
-        tags$li(paste0("Main metric (", summary_data$metric_name, "): ", metric_value)),
-        tags$li(paste0("Minimum ", summary_data$metric_name, " (best model): ", summary_data$best_model_min)),
-        tags$li(paste0("Maximum ", summary_data$metric_name, " (best model): ", summary_data$best_model_max)),
-        mae_rmse_line,
-        tags$li(paste0("Mean ", summary_data$metric_name, " (best model): ", summary_data$best_model_mean)),
-        tags$li(paste0("Median ", summary_data$metric_name, " (best model): ", summary_data$best_model_median))
-      ),
-      if (is.data.frame(summary_data$model_robust_stats) && nrow(summary_data$model_robust_stats) > 0) {
-        tags$div(
-          class = "ml-robust-summary",
-          tags$strong("Variation across seed runs"),
-          tagList(
-            lapply(seq_len(nrow(summary_data$model_robust_stats)), function(i) {
-              row <- summary_data$model_robust_stats[i, , drop = FALSE]
-              tags$div(
-                tags$strong(as.character(row$Model)),
-                tags$ul(
-                  class = "ml-robust-summary-list",
-                  tags$li(paste0("Mean ", summary_data$metric_name, ": ", row$MeanMetric)),
-                  tags$li(paste0("Median ", summary_data$metric_name, ": ", row$MedianMetric)),
-                  tags$li(paste0("IQR: ", row$IQRMetric)),
-                  tags$li(paste0("Minimum ", summary_data$metric_name, ": ", row$MinMetric)),
-                  tags$li(paste0("Maximum ", summary_data$metric_name, ": ", row$MaxMetric)),
-                  tags$li(paste0("Range: ", row$RangeMetric))
-                )
-              )
-            })
+      tags$div(
+        class = "ml-final-summary",
+        tags$strong("Best result"),
+        tags$pre(
+          style = "margin-top: 10px; margin-bottom: 0;",
+          paste(
+            best_model_title,
+            paste0("Min R²: ", fmt(summary_data$best_model_min)),
+            paste0("Max R²: ", fmt(summary_data$best_model_max)),
+            paste0("Range R²: ", fmt(summary_data$best_model_range)),
+            "Medians:",
+            paste0("R²: ", fmt(summary_data$best_model_median), " (IQR ", fmt(summary_data$best_model_iqr), ")"),
+            paste0("MAE: ", fmt(summary_data$best_model_mae_median), " (IQR ", fmt(summary_data$best_model_mae_iqr), ")"),
+            paste0("RMSE: ", fmt(summary_data$best_model_rmse_median), " (IQR ", fmt(summary_data$best_model_rmse_iqr), ")"),
+            sep = "\n"
           )
         )
-      }
-    )
+      )
+    } else {
+      tags$div(
+        class = "ml-final-summary",
+        tags$strong("Best result"),
+        tags$pre(
+          style = "margin-top: 10px; margin-bottom: 0;",
+          paste(
+            best_model_title,
+            paste0("Min ", summary_data$metric_name, ": ", fmt(summary_data$best_model_min)),
+            paste0("Max ", summary_data$metric_name, ": ", fmt(summary_data$best_model_max)),
+            paste0("Range ", summary_data$metric_name, ": ", fmt(summary_data$best_model_range)),
+            "Medians:",
+            paste0(summary_data$metric_name, ": ", fmt(summary_data$best_model_median), " (IQR ", fmt(summary_data$best_model_iqr), ")"),
+            sep = "\n"
+          )
+        )
+      )
+    }
   })
 
   observeEvent(input$ml_toggle_seeds, {
@@ -2140,6 +2134,8 @@ server <- function(input, output, session) {
         worst_result <- Inf
         worst_model <- "-"
         model_metric_values <- list()
+        model_mae_values <- list()
+        model_rmse_values <- list()
         invalid_runs <- 0
         invalid_models <- character(0)
         model_invalid_runs <- list()
@@ -2408,6 +2404,8 @@ server <- function(input, output, session) {
                     "Imputation scope" = imputation_scope)
                   ml_table_results(rbind(ml_table_results(), model_results))
                   model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], rsq_value)
+                  model_mae_values[[model_name]] <- c(model_mae_values[[model_name]], mae_value)
+                  model_rmse_values[[model_name]] <- c(model_rmse_values[[model_name]], rmse_value)
                   if (rsq_value >= 0.6) {
                     temp_models_list[[model_name]] <- model
                   }
@@ -2470,6 +2468,10 @@ server <- function(input, output, session) {
         }
         best_model_metrics <- model_metric_values[[best_model_name]]
         best_model_metrics <- best_model_metrics[is.finite(best_model_metrics)]
+        best_model_mae <- model_mae_values[[best_model_name]]
+        best_model_mae <- best_model_mae[is.finite(best_model_mae)]
+        best_model_rmse <- model_rmse_values[[best_model_name]]
+        best_model_rmse <- best_model_rmse[is.finite(best_model_rmse)]
         ml_final_summary(list(
           best_model = best_model_name,
           dataset_seed = dataset_seed_label,
@@ -2480,6 +2482,12 @@ server <- function(input, output, session) {
           best_model_max = if (length(best_model_metrics) > 0) round(max(best_model_metrics), 4) else "N/A",
           best_model_mean = if (length(best_model_metrics) > 0) round(mean(best_model_metrics), 4) else "N/A",
           best_model_median = if (length(best_model_metrics) > 0) round(median(best_model_metrics), 4) else "N/A",
+          best_model_iqr = if (length(best_model_metrics) > 1) round(IQR(best_model_metrics), 4) else "N/A",
+          best_model_range = if (length(best_model_metrics) > 1) round(diff(range(best_model_metrics)), 4) else "N/A",
+          best_model_mae_median = if (length(best_model_mae) > 0) round(median(best_model_mae), 4) else "N/A",
+          best_model_mae_iqr = if (length(best_model_mae) > 1) round(IQR(best_model_mae), 4) else "N/A",
+          best_model_rmse_median = if (length(best_model_rmse) > 0) round(median(best_model_rmse), 4) else "N/A",
+          best_model_rmse_iqr = if (length(best_model_rmse) > 1) round(IQR(best_model_rmse), 4) else "N/A",
           mae = if (identical(metric_name, "R2")) best_mae else NA_real_,
           rmse = if (identical(metric_name, "R2")) best_rmse else NA_real_,
           model_robust_stats = robust_stats
