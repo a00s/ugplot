@@ -16,6 +16,10 @@ This is the easiest and most reliable way to run ugPlot with all dependencies al
 podman pull ghcr.io/a00s/ugplot:latest
 podman run --name ugplot -p 3838:3838 ghcr.io/a00s/ugplot:latest
 podman start -a ugplot
+
+---- you are using mac you need to run this first ----
+podman machine init
+podman machine start
 ```
 
 Then open in your browser:
