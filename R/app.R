@@ -1961,8 +1961,9 @@ server <- function(input, output, session) {
   selected_2d_plot_code <- reactiveVal(NULL)
 
   observe({
-    cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
-    candidate_columns <- setdiff(input$column_checkbox_group, cols_to_convert)
+    selected_columns <- intersect(input$column_checkbox_group, colnames(changed_table))
+    cols_to_convert <- intersect(input$checkbox_group_categories, selected_columns)
+    candidate_columns <- setdiff(selected_columns, cols_to_convert)
     current_choice <- isolate(input$plot2d_column_filter)
     valid_choice <- if (!is.null(current_choice) && nzchar(current_choice) && current_choice %in% candidate_columns) current_choice else ""
     updateSelectInput(
@@ -1983,11 +1984,14 @@ server <- function(input, output, session) {
   correlations_2d_results <- reactive({
     req(selected_2d_plot_code())
 
-    cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
-    numeric_columns <- setdiff(input$column_checkbox_group, cols_to_convert)
+    selected_rows <- intersect(input$row_checkbox_group, rownames(changed_table))
+    selected_columns <- intersect(input$column_checkbox_group, colnames(changed_table))
+    cols_to_convert <- intersect(input$checkbox_group_categories, selected_columns)
+    numeric_columns <- setdiff(selected_columns, cols_to_convert)
+    shiny::validate(shiny::need(length(selected_rows) > 0, "Select at least one row to render correlations."))
     shiny::validate(shiny::need(length(numeric_columns) >= 2, "Select at least two numeric columns to render correlations."))
 
-    numeric_table <- data.frame(changed_table[input$row_checkbox_group, numeric_columns, drop = FALSE])
+    numeric_table <- data.frame(changed_table[selected_rows, numeric_columns, drop = FALSE])
     X <- data.frame(lapply(numeric_table, as.numeric), check.names = FALSE)
     shiny::validate(shiny::need(ncol(X) >= 2, "Select at least two numeric columns to render correlations."))
 
