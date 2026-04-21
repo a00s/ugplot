@@ -317,6 +317,12 @@ ui <- fluidPage(
           class = "sidebar-panel-custom2d",
           div(
             class = "rowplotlist",
+            selectInput(
+              inputId = "plot2d_column_filter",
+              label = "Filter correlations by column",
+              choices = c("All columns" = ""),
+              selected = ""
+            ),
             selectInput(inputId = "correlation", label = NULL, choices = c("pearson", "spearman", "kendall")),
             sliderInput(inputId = "correlation_threshhold", label = "Spearman Correlation >= x", min = 0, max = 1, value = 0.7, step = 0.01),
             sliderInput(inputId = "correlation_threshhold_negative", label = "Negative correlation <= x", min = -1, max = 0, value = -0.7, step = 0.01),
@@ -333,6 +339,7 @@ ui <- fluidPage(
         mainPanel(
           br(),
           uiOutput("plotLoadingIndicator"),
+          div(style = "width: 100%; overflow-x: auto; margin-bottom: 20px;", DT::DTOutput("plot2d_results_table")),
           uiOutput("plots")
         )
       )
@@ -1951,50 +1958,131 @@ server <- function(input, output, session) {
   })
 
   ####################### TAB 4) 2D PLOT
+  selected_2d_plot_code <- reactiveVal(NULL)
+
+  observe({
+    cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
+    candidate_columns <- setdiff(input$column_checkbox_group, cols_to_convert)
+    current_choice <- isolate(input$plot2d_column_filter)
+    valid_choice <- if (!is.null(current_choice) && nzchar(current_choice) && current_choice %in% candidate_columns) current_choice else ""
+    updateSelectInput(
+      session,
+      inputId = "plot2d_column_filter",
+      choices = c("All columns" = "", candidate_columns),
+      selected = valid_choice
+    )
+  })
+
   lapply(1:nrow(plotlist2d), function(i) {
     bname <- paste0("buttonplot2d", i)
     observeEvent(input[[bname]], {
-      output$plots <- renderUI({
-        comandtorun <- plotlist2d$code[i]
-        cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
-        numeric_table <- data.frame(changed_table[input$row_checkbox_group, input$column_checkbox_group])
-        numeric_table <- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
-        numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
-        X <- numeric_table
-        cor_matrix <- cor(X, method = input$correlation)
-        num_cols <- ncol(X)
-        plots_list <- list()
-        for (i in 1:num_cols) {
-          for (j in i:num_cols) {
-            if (j != i &&
-                (cor_matrix[i, j] >= input$correlation_threshhold ||
-                    cor_matrix[i, j] <= input$correlation_threshhold_negative)) {
-              print(paste(rownames(cor_matrix)[i], colnames(cor_matrix)[j], cor_matrix[i, j]))
-              comandtorun <- gsub("\\{\\{X\\}\\}", "X[, colnames(X)[i]]", comandtorun)
-              comandtorun <- gsub("\\{\\{Y\\}\\}", "X[, colnames(X)[j]]", comandtorun)
-              comandtorun <- gsub("\\{\\{X_NAME\\}\\}", "colnames(X)[i]", comandtorun)
-              comandtorun <- gsub("\\{\\{Y_NAME\\}\\}", "colnames(X)[j]", comandtorun)
-              comandtorun <- gsub("\\{\\{CORRELATION\\}\\}", "cor_matrix[i, j]", comandtorun)
-              p <- eval(parse(text = comandtorun))
-              plots_list[[length(plots_list) + 1]] <- p
-            }
-          }
-        }
-        texthtml <- paste(length(plots_list), " correlations found within those parameters")
-        output$plotLoadingIndicator <- renderUI({
-          h4(texthtml, style = "text-align: center;", br(), br())
-        })
-        plots_with_spacers <- list()
-        for (index in 1:length(plots_list)) {
-          plots_with_spacers[[length(plots_with_spacers) + 1]] <- plots_list[[index]]
-          if (index != length(plots_list)) {
-            spacer <- div(style = "margin-top: 40px;")
-            plots_with_spacers[[length(plots_with_spacers) + 1]] <- spacer
-          }
-        }
-        do.call(tagList, plots_with_spacers)
-      })
+      selected_2d_plot_code(plotlist2d$code[i])
     })
+  })
+
+  correlations_2d_results <- reactive({
+    req(selected_2d_plot_code())
+
+    cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
+    numeric_columns <- setdiff(input$column_checkbox_group, cols_to_convert)
+    shiny::validate(shiny::need(length(numeric_columns) >= 2, "Select at least two numeric columns to render correlations."))
+
+    numeric_table <- data.frame(changed_table[input$row_checkbox_group, numeric_columns, drop = FALSE])
+    X <- data.frame(lapply(numeric_table, as.numeric), check.names = FALSE)
+    shiny::validate(shiny::need(ncol(X) >= 2, "Select at least two numeric columns to render correlations."))
+
+    cor_matrix <- suppressWarnings(cor(X, method = input$correlation, use = "pairwise.complete.obs"))
+    num_cols <- ncol(X)
+    result_rows <- list()
+    for (col_i in seq_len(num_cols)) {
+      for (col_j in seq(col_i + 1, num_cols)) {
+        correlation_value <- cor_matrix[col_i, col_j]
+        if (is.na(correlation_value)) {
+          next
+        }
+        if (correlation_value >= input$correlation_threshhold ||
+            correlation_value <= input$correlation_threshhold_negative) {
+          x_name <- colnames(X)[col_i]
+          y_name <- colnames(X)[col_j]
+          if (nzchar(input$plot2d_column_filter) &&
+              !identical(input$plot2d_column_filter, x_name) &&
+              !identical(input$plot2d_column_filter, y_name)) {
+            next
+          }
+          result_rows[[length(result_rows) + 1]] <- data.frame(
+            Column_X = x_name,
+            Column_Y = y_name,
+            Correlation = correlation_value,
+            AbsCorrelation = abs(correlation_value),
+            stringsAsFactors = FALSE
+          )
+        }
+      }
+    }
+
+    if (length(result_rows) == 0) {
+      return(list(results_table = data.frame(), plots_list = list()))
+    }
+
+    results_table <- do.call(rbind, result_rows)
+    results_table <- results_table[order(-results_table$AbsCorrelation, -results_table$Correlation), , drop = FALSE]
+
+    plots_list <- lapply(seq_len(nrow(results_table)), function(row_idx) {
+      comandtorun <- selected_2d_plot_code()
+      x_col <- results_table$Column_X[row_idx]
+      y_col <- results_table$Column_Y[row_idx]
+      correlation_value <- results_table$Correlation[row_idx]
+      comandtorun <- gsub("\\{\\{X\\}\\}", sprintf("X[[%s]]", deparse(x_col)), comandtorun)
+      comandtorun <- gsub("\\{\\{Y\\}\\}", sprintf("X[[%s]]", deparse(y_col)), comandtorun)
+      comandtorun <- gsub("\\{\\{X_NAME\\}\\}", deparse(x_col), comandtorun)
+      comandtorun <- gsub("\\{\\{Y_NAME\\}\\}", deparse(y_col), comandtorun)
+      comandtorun <- gsub("\\{\\{CORRELATION\\}\\}", as.character(correlation_value), comandtorun)
+      eval(parse(text = comandtorun))
+    })
+
+    list(
+      results_table = results_table[, c("Column_X", "Column_Y", "Correlation"), drop = FALSE],
+      plots_list = plots_list
+    )
+  })
+
+  output$plot2d_results_table <- DT::renderDT({
+    req(selected_2d_plot_code())
+    results <- correlations_2d_results()$results_table
+    shiny::validate(shiny::need(nrow(results) > 0, "No correlations found for these parameters."))
+    DT::datatable(
+      results,
+      rownames = FALSE,
+      options = list(
+        paging = FALSE,
+        searching = FALSE,
+        info = FALSE,
+        ordering = FALSE,
+        dom = "t",
+        autoWidth = TRUE
+      ),
+      class = "compact stripe hover"
+    )
+  })
+
+  output$plots <- renderUI({
+    req(selected_2d_plot_code())
+    results <- correlations_2d_results()
+    texthtml <- paste(nrow(results$results_table), " correlations found within those parameters")
+    output$plotLoadingIndicator <- renderUI({
+      h4(texthtml, style = "text-align: center;", br(), br())
+    })
+    if (length(results$plots_list) == 0) {
+      return(tagList())
+    }
+    plots_with_spacers <- list()
+    for (index in seq_along(results$plots_list)) {
+      plots_with_spacers[[length(plots_with_spacers) + 1]] <- results$plots_list[[index]]
+      if (index != length(results$plots_list)) {
+        plots_with_spacers[[length(plots_with_spacers) + 1]] <- div(style = "margin-top: 40px;")
+      }
+    }
+    do.call(tagList, plots_with_spacers)
   })
 
   ####### TAB 5) MACHINE LEARNING
