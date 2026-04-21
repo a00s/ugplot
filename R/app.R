@@ -1998,7 +1998,7 @@ server <- function(input, output, session) {
     cor_matrix <- suppressWarnings(cor(X, method = input$correlation, use = "pairwise.complete.obs"))
     num_cols <- ncol(X)
     result_rows <- list()
-    for (col_i in seq_len(num_cols)) {
+    for (col_i in seq_len(num_cols - 1)) {
       for (col_j in seq(col_i + 1, num_cols)) {
         correlation_value <- cor_matrix[col_i, col_j]
         if (is.na(correlation_value)) {
