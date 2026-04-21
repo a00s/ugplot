@@ -1985,11 +1985,11 @@ server <- function(input, output, session) {
 
     cols_to_convert <- intersect(input$checkbox_group_categories, input$column_checkbox_group)
     numeric_columns <- setdiff(input$column_checkbox_group, cols_to_convert)
-    validate(need(length(numeric_columns) >= 2, "Select at least two numeric columns to render correlations."))
+    shiny::validate(shiny::need(length(numeric_columns) >= 2, "Select at least two numeric columns to render correlations."))
 
     numeric_table <- data.frame(changed_table[input$row_checkbox_group, numeric_columns, drop = FALSE])
     X <- data.frame(lapply(numeric_table, as.numeric), check.names = FALSE)
-    validate(need(ncol(X) >= 2, "Select at least two numeric columns to render correlations."))
+    shiny::validate(shiny::need(ncol(X) >= 2, "Select at least two numeric columns to render correlations."))
 
     cor_matrix <- suppressWarnings(cor(X, method = input$correlation, use = "pairwise.complete.obs"))
     num_cols <- ncol(X)
@@ -2049,7 +2049,7 @@ server <- function(input, output, session) {
   output$plot2d_results_table <- DT::renderDT({
     req(selected_2d_plot_code())
     results <- correlations_2d_results()$results_table
-    validate(need(nrow(results) > 0, "No correlations found for these parameters."))
+    shiny::validate(shiny::need(nrow(results) > 0, "No correlations found for these parameters."))
     DT::datatable(
       results,
       rownames = FALSE,
