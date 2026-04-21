@@ -241,10 +241,19 @@ button.ml-section-toggle:focus,
   padding: 10px;
   margin: 8px 0;
   background: #fafafa;
+  display: inline-block;
+  width: auto;
+  min-width: 260px;
+  max-width: 460px;
 }
 
 .ml-final-summary-list {
   margin: 8px 0 0 18px;
+}
+
+.ml-final-summary-content {
+  margin-top: 8px;
+  line-height: 1.45;
 }
 
 .ml-robust-summary {

@@ -1328,36 +1328,30 @@ server <- function(input, output, session) {
       tags$div(
         class = "ml-final-summary",
         tags$strong("Best result"),
-        tags$pre(
-          style = "margin-top: 10px; margin-bottom: 0;",
-          paste(
-            best_model_title,
-            paste0("Min R²: ", fmt(summary_data$best_model_min)),
-            paste0("Max R²: ", fmt(summary_data$best_model_max)),
-            paste0("Range R²: ", fmt(summary_data$best_model_range)),
-            "Medians:",
-            paste0("R²: ", fmt(summary_data$best_model_median), " (IQR ", fmt(summary_data$best_model_iqr), ")"),
-            paste0("MAE: ", fmt(summary_data$best_model_mae_median), " (IQR ", fmt(summary_data$best_model_mae_iqr), ")"),
-            paste0("RMSE: ", fmt(summary_data$best_model_rmse_median), " (IQR ", fmt(summary_data$best_model_rmse_iqr), ")"),
-            sep = "\n"
-          )
+        tags$div(
+          class = "ml-final-summary-content",
+          tags$div(best_model_title),
+          tags$div(paste0("Min R²: ", fmt(summary_data$best_model_min))),
+          tags$div(paste0("Max R²: ", fmt(summary_data$best_model_max))),
+          tags$div(paste0("Range R²: ", fmt(summary_data$best_model_range))),
+          tags$strong("Medians:"),
+          tags$div(paste0("R²: ", fmt(summary_data$best_model_median), " (IQR ", fmt(summary_data$best_model_iqr), ")")),
+          tags$div(paste0("MAE: ", fmt(summary_data$best_model_mae_median), " (IQR ", fmt(summary_data$best_model_mae_iqr), ")")),
+          tags$div(paste0("RMSE: ", fmt(summary_data$best_model_rmse_median), " (IQR ", fmt(summary_data$best_model_rmse_iqr), ")"))
         )
       )
     } else {
       tags$div(
         class = "ml-final-summary",
         tags$strong("Best result"),
-        tags$pre(
-          style = "margin-top: 10px; margin-bottom: 0;",
-          paste(
-            best_model_title,
-            paste0("Min ", summary_data$metric_name, ": ", fmt(summary_data$best_model_min)),
-            paste0("Max ", summary_data$metric_name, ": ", fmt(summary_data$best_model_max)),
-            paste0("Range ", summary_data$metric_name, ": ", fmt(summary_data$best_model_range)),
-            "Medians:",
-            paste0(summary_data$metric_name, ": ", fmt(summary_data$best_model_median), " (IQR ", fmt(summary_data$best_model_iqr), ")"),
-            sep = "\n"
-          )
+        tags$div(
+          class = "ml-final-summary-content",
+          tags$div(best_model_title),
+          tags$div(paste0("Min ", summary_data$metric_name, ": ", fmt(summary_data$best_model_min))),
+          tags$div(paste0("Max ", summary_data$metric_name, ": ", fmt(summary_data$best_model_max))),
+          tags$div(paste0("Range ", summary_data$metric_name, ": ", fmt(summary_data$best_model_range))),
+          tags$strong("Medians:"),
+          tags$div(paste0(summary_data$metric_name, ": ", fmt(summary_data$best_model_median), " (IQR ", fmt(summary_data$best_model_iqr), ")"))
         )
       )
     }
