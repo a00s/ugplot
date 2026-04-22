@@ -371,6 +371,30 @@ ui <- fluidPage(
           div(
             class = "ml-threshold-input",
             numericInput("ml_timeout", "Timeout (s):", step = 1, value = 1200)
+          ),
+          selectInput(
+            "ml_performance_mode",
+            "Training effort profile",
+            choices = c(
+              "System default (faster)" = "default",
+              "High effort (slower, can improve results)" = "high_effort",
+              "Custom" = "custom"
+            ),
+            selected = "default"
+          ),
+          conditionalPanel(
+            condition = "input.ml_performance_mode == 'custom'",
+            fluidRow(
+              column(4, selectInput(
+                "ml_cv_method",
+                "CV method",
+                choices = c("Cross-validation" = "cv", "Repeated cross-validation" = "repeatedcv"),
+                selected = "cv"
+              )),
+              column(4, numericInput("ml_cv_folds", "CV folds", value = 10, min = 2, step = 1)),
+              column(4, numericInput("ml_cv_repeats", "CV repeats", value = 1, min = 1, step = 1))
+            ),
+            numericInput("ml_tune_length", "Hyperparameter search depth (tuneLength)", value = 3, min = 1, step = 1)
           )
         ),
         conditionalPanel(
@@ -2374,7 +2398,25 @@ server <- function(input, output, session) {
             }, error = function(e) {
               print(paste("Failed to load", model_name))
             })
-            ctrl <- trainControl(method = "cv", number = 10)
+            safe_num <- function(value, fallback) {
+              parsed <- suppressWarnings(as.numeric(value))
+              if (is.na(parsed)) fallback else parsed
+            }
+            cv_settings <- switch(input$ml_performance_mode,
+              "high_effort" = list(method = "repeatedcv", number = 10, repeats = 3, tune_length = 10),
+              "custom" = list(
+                method = input$ml_cv_method,
+                number = max(2, safe_num(input$ml_cv_folds, 10)),
+                repeats = max(1, safe_num(input$ml_cv_repeats, 1)),
+                tune_length = max(1, safe_num(input$ml_tune_length, 3))
+              ),
+              list(method = "cv", number = 10, repeats = 1, tune_length = 3)
+            )
+            ctrl <- if (identical(cv_settings$method, "repeatedcv")) {
+              trainControl(method = "repeatedcv", number = cv_settings$number, repeats = cv_settings$repeats)
+            } else {
+              trainControl(method = "cv", number = cv_settings$number)
+            }
             model_types <- model_info$type
             print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
             for (loop_seed in loop_seedi:loop_seedf) {
@@ -2399,7 +2441,13 @@ server <- function(input, output, session) {
                 model <- NULL
                 result <- tryCatch({
                   withTimeout({
-                    model <- caret::train(formula, data = trainSet, method = model_name, trControl = ctrl)
+                    model <- caret::train(
+                      formula,
+                      data = trainSet,
+                      method = model_name,
+                      trControl = ctrl,
+                      tuneLength = cv_settings$tune_length
+                    )
                     model
                   }, timeout = input$ml_timeout, onTimeout = "error")
                 }, TimeoutException = function(ex) {
