@@ -26,7 +26,40 @@ library(R.utils)
 library(ConsensusClusterPlus)
 library(gam)
 
-sink("ugplot.log", split = TRUE)
+log_file_path <- "ugplot.log"
+
+write_checkpoint_log <- function(last_model = "-", results_table = NULL, max_rows = 20) {
+  timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+  header_lines <- c(
+    paste0("ugplot checkpoint log (last update: ", timestamp, ")"),
+    paste0("Last model analyzed: ", last_model),
+    ""
+  )
+
+  if (is.null(results_table) || !is.data.frame(results_table) || nrow(results_table) == 0) {
+    body_lines <- "No results recorded yet."
+  } else {
+    metric_col <- if ("Accuracy" %in% names(results_table)) {
+      "Accuracy"
+    } else if ("R2" %in% names(results_table)) {
+      "R2"
+    } else {
+      NULL
+    }
+    ordered_results <- results_table
+    if (!is.null(metric_col)) {
+      ordered_idx <- order(-as.numeric(as.character(ordered_results[[metric_col]])))
+      ordered_results <- ordered_results[ordered_idx, , drop = FALSE]
+    }
+    ordered_results <- utils::head(ordered_results, max_rows)
+    body_lines <- c(
+      paste0("Latest results (top ", nrow(ordered_results), "):"),
+      capture.output(print(ordered_results, row.names = FALSE))
+    )
+  }
+
+  writeLines(c(header_lines, body_lines), con = log_file_path, useBytes = TRUE)
+}
 # Optional: set maximum number of threads
 # Sys.setenv(OMP_NUM_THREADS = 2)
 # Sys.setenv(MKL_NUM_THREADS = 2)
@@ -2281,6 +2314,7 @@ server <- function(input, output, session) {
         X_base <- X
         Y_base <- Y
         ml_table_results(data.frame())
+        write_checkpoint_log(last_model = "-", results_table = ml_table_results())
         do_dataset_seed <- 0
         loop_dataset_seedi <- as.numeric(input$ml_dataset_seedi)
         loop_dataset_seedf <- as.numeric(input$ml_dataset_seedf)
@@ -2439,6 +2473,7 @@ server <- function(input, output, session) {
                   ))
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
+                write_checkpoint_log(last_model = model_name, results_table = ml_table_results())
                 result <- tryCatch({
                   withTimeout({
                     model <- caret::train(
@@ -2563,6 +2598,7 @@ server <- function(input, output, session) {
                 } else {
                   print(current_results)
                 }
+                write_checkpoint_log(last_model = model_name, results_table = current_results)
               }, error = function(e) {
                 invalid_runs <- invalid_runs + 1
                 invalid_models <- union(invalid_models, model_name)
