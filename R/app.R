@@ -405,6 +405,21 @@ ui <- fluidPage(
             class = "ml-threshold-input",
             numericInput("ml_timeout", "Timeout (s):", step = 1, value = 1200)
           ),
+          div(
+            class = "ml-skip-controls",
+            div(
+              class = "ml-skip-checkbox",
+              checkboxInput(
+                "ml_auto_skip_bad_models",
+                "Auto-skip models in next rounds (timeout or low R²)",
+                value = FALSE
+              )
+            ),
+            div(
+              class = "ml-threshold-input ml-skip-threshold",
+              numericInput("ml_min_r2_skip", "Min R² (0-1)", value = 0, min = 0, max = 1, step = 0.01)
+            )
+          ),
           selectInput(
             "ml_performance_mode",
             "Training effort profile",
@@ -2319,6 +2334,26 @@ server <- function(input, output, session) {
         loop_dataset_seedi <- as.numeric(input$ml_dataset_seedi)
         loop_dataset_seedf <- as.numeric(input$ml_dataset_seedf)
         all_models <- input$ml_checkbox_group
+        active_models <- all_models
+        skipped_models <- character(0)
+        auto_skip_enabled <- isTRUE(input$ml_auto_skip_bad_models)
+        min_r2_threshold <- suppressWarnings(as.numeric(input$ml_min_r2_skip))
+        if (is.na(min_r2_threshold)) {
+          min_r2_threshold <- 0
+        }
+        min_r2_threshold <- max(0, min(1, min_r2_threshold))
+        mark_model_skipped <- function(model_name, reason) {
+          if (!auto_skip_enabled || !(model_name %in% active_models)) {
+            return(invisible(NULL))
+          }
+          active_models <<- setdiff(active_models, model_name)
+          skipped_models <<- union(skipped_models, model_name)
+          ml_error_message_text(paste(
+            ml_error_message_text(),
+            " ", "AUTO-SKIP:", model_name, "-", reason, "(next rounds)/"
+          ))
+          invisible(NULL)
+        }
         loop_seedi <- as.numeric(input$ml_seedi)
         loop_seedf <- as.numeric(input$ml_seedf)
         total_seed_runs <- if (!is.na(loop_seedi) && !is.na(loop_seedf)) {
@@ -2407,9 +2442,9 @@ server <- function(input, output, session) {
           }
           if (nrow(trainSet) < 5 || ncol(trainSet) < 2) {
             ml_error_message_text(paste(ml_error_message_text(), " ", "Not enough data after missing strategy for seed", loop_dataset_seed, "/"))
-            invalid_runs <- invalid_runs + (length(all_models) * total_seed_runs)
-            invalid_models <- union(invalid_models, all_models)
-            for (model_name in all_models) {
+            invalid_runs <- invalid_runs + (length(active_models) * total_seed_runs)
+            invalid_models <- union(invalid_models, active_models)
+            for (model_name in active_models) {
               current_invalid <- if (!is.null(model_invalid_runs[[model_name]])) model_invalid_runs[[model_name]] else 0
               model_invalid_runs[[model_name]] <- current_invalid + total_seed_runs
             }
@@ -2421,6 +2456,9 @@ server <- function(input, output, session) {
             do_seed <- 1
           }
           for (model_name in all_models) {
+            if (!(model_name %in% active_models)) {
+              next
+            }
             count_model <- count_model + 1
             tryCatch({
               model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
@@ -2464,7 +2502,7 @@ server <- function(input, output, session) {
                     "Current model: ", model_name, "\n",
                     "Dataset/Train seed: ", loop_dataset_seed, "/", loop_seed, "\n",
                     "Threshold scope / Missing strategy / Imputation scope: ", threshold_scope, " / ", missing_strategy, " / ", imputation_scope, "\n",
-                    "Model progress: ", count_model, "/", length(input$ml_checkbox_group),
+                    "Model progress: ", count_model, "/", max(1, length(active_models)),
                     " | Seed progress: ", seed_position, "/", total_seed_runs, "\n",
                     "Worst ", metric_label, ": ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A",
                     " (", worst_model, ")\n",
@@ -2488,6 +2526,7 @@ server <- function(input, output, session) {
                 }, TimeoutException = function(ex) {
                   ml_error_message_text(paste(ml_error_message_text(), " ", "TIMEOUT:", model_name, "/"))
                   print(paste("Training timed out for model:", model_name))
+                  mark_model_skipped(model_name, "timeout")
                   return(NULL)
                 }, error = function(e) {
                   print(paste("Error training model", model_name, ":", conditionMessage(e)))
@@ -2580,6 +2619,12 @@ server <- function(input, output, session) {
                   model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], rsq_value)
                   model_mae_values[[model_name]] <- c(model_mae_values[[model_name]], mae_value)
                   model_rmse_values[[model_name]] <- c(model_rmse_values[[model_name]], rmse_value)
+                  if (auto_skip_enabled && rsq_value < min_r2_threshold) {
+                    mark_model_skipped(
+                      model_name,
+                      paste0("R2 ", round(rsq_value, 4), " < ", round(min_r2_threshold, 4))
+                    )
+                  }
                   if (rsq_value >= 0.6) {
                     temp_models_list[[model_name]] <- model
                   }
@@ -2667,6 +2712,13 @@ server <- function(input, output, session) {
           rmse = if (identical(metric_name, "R2")) best_rmse else NA_real_,
           model_robust_stats = robust_stats
         ))
+        if (auto_skip_enabled && length(skipped_models) > 0) {
+          updateCheckboxGroupInput(
+            session,
+            inputId = "ml_checkbox_group",
+            selected = setdiff(input$ml_checkbox_group, skipped_models)
+          )
+        }
       })
     }, error = function(e) {
       print(e)
