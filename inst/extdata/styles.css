@@ -184,6 +184,41 @@ button.ml-section-toggle:focus,
   width: 110px;
 }
 
+.ml-skip-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.ml-skip-checkbox {
+  margin-bottom: 0;
+  min-width: 320px;
+}
+
+.ml-skip-checkbox .form-group {
+  margin-bottom: 0;
+}
+
+.ml-skip-checkbox .checkbox {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.ml-skip-threshold {
+  width: 140px;
+}
+
+.ml-skip-threshold .form-group {
+  margin-bottom: 0;
+}
+
+.ml-skip-threshold label {
+  margin-bottom: 4px;
+  white-space: nowrap;
+}
+
 .ml-summary-table {
   width: 100%;
   max-width: 760px;

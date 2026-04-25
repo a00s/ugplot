@@ -405,21 +405,19 @@ ui <- fluidPage(
             class = "ml-threshold-input",
             numericInput("ml_timeout", "Timeout (s):", step = 1, value = 1200)
           ),
-          fluidRow(
-            column(
-              6,
+          div(
+            class = "ml-skip-controls",
+            div(
+              class = "ml-skip-checkbox",
               checkboxInput(
                 "ml_auto_skip_bad_models",
                 "Auto-skip models in next rounds (timeout or low R²)",
                 value = FALSE
               )
             ),
-            column(
-              6,
-              div(
-                class = "ml-threshold-input",
-                numericInput("ml_min_r2_skip", "Minimum R² to keep model (0-1):", value = 0, min = 0, max = 1, step = 0.01)
-              )
+            div(
+              class = "ml-threshold-input ml-skip-threshold",
+              numericInput("ml_min_r2_skip", "Min R² (0-1)", value = 0, min = 0, max = 1, step = 0.01)
             )
           ),
           selectInput(
