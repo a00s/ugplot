@@ -1171,6 +1171,7 @@ server <- function(input, output, session) {
   original_dataset_filename <- reactiveVal("model_analysis_results")
   model_analysis_results_data <- reactiveVal(data.frame())
   heatmap_recorded_plot <- reactiveVal(NULL)
+  model_analysis_recorded_plot <- reactiveVal(NULL)
 
   output$downloadData <- downloadHandler(
     filename = function() {
