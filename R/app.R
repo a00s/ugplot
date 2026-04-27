@@ -634,13 +634,14 @@ ui <- fluidPage(
             sliderInput("dl_dropout_1", "Dropout layer 1:", min = 0, max = 0.6, value = 0.15, step = 0.05),
             sliderInput("dl_dropout_2", "Dropout layer 2:", min = 0, max = 0.6, value = 0.10, step = 0.05),
             checkboxInput("dl_scale_target", "Scale numeric target (regression)", value = TRUE),
+            checkboxInput("dl_auto_arch", "Auto adjust hidden layer sizes", value = TRUE),
             actionButton("dl_run_training", "Train Deep Learning model")
           ),
           column(
             8,
             tags$div(class = "dl-status-box", verbatimTextOutput("dl_training_log")),
-            tags$div(class = "dl-panel", plotOutput("dl_loss_plot", height = "260px")),
-            tags$div(class = "dl-panel", plotOutput("dl_metric_plot", height = "260px")),
+            uiOutput("dl_loss_panel"),
+            uiOutput("dl_metric_panel"),
             uiOutput("dl_tuning_tips"),
             tags$div(
               class = "dl-panel",
@@ -3195,6 +3196,20 @@ observeEvent(input$model_file, {
   dl_top_paths <- reactiveVal(data.frame())
   dl_model_shape <- reactiveVal("Train the model to visualize layers and weights.")
 
+  update_dl_views <- function(model_obj, predictor_names, build_views_fn, epoch = NULL, epochs = NULL) {
+    weight_views <- build_views_fn(model_obj, predictor_names)
+    shape_txt <- weight_views$shape_text
+    if (!is.null(epoch) && !is.null(epochs)) {
+      shape_txt <- paste0(shape_txt, " | Epoch ", epoch, "/", epochs)
+    }
+    dl_model_shape(shape_txt)
+    dl_weight_summary(weight_views$summary_df)
+    dl_weight_heatmap(weight_views$heatmap_df)
+    dl_path_edges(weight_views$path_edges_df)
+    dl_path_nodes(weight_views$path_nodes_df)
+    dl_top_paths(weight_views$top_paths_df)
+  }
+
   observeEvent(
     list(input$tabs, input$column_checkbox_group, input$file1, input$load_sample),
     {
@@ -3328,14 +3343,27 @@ observeEvent(input$model_file, {
     x_test <- torch::torch_tensor(test_matrix, dtype = torch::torch_float())
 
     input_size <- ncol(design_matrix)
-    hidden_size <- max(4, as.integer(input$dl_hidden_units))
-    hidden_size_2 <- max(0, as.integer(input$dl_hidden_units_2))
+    base_hidden_size <- max(4, as.integer(input$dl_hidden_units))
+    base_hidden_size_2 <- max(0, as.integer(input$dl_hidden_units_2))
     epochs <- max(1, as.integer(input$dl_epochs))
     batch_size <- max(1, as.integer(input$dl_batch_size))
     learning_rate <- as.numeric(input$dl_learning_rate)
     weight_decay <- max(0, as.numeric(input$dl_weight_decay))
     dropout_1 <- min(0.8, max(0, as.numeric(input$dl_dropout_1)))
     dropout_2 <- min(0.8, max(0, as.numeric(input$dl_dropout_2)))
+    auto_arch <- isTRUE(input$dl_auto_arch)
+    hidden_size <- base_hidden_size
+    hidden_size_2 <- base_hidden_size_2
+    if (auto_arch) {
+      heuristic_h1 <- round(sqrt(nrow(design_matrix) * input_size) * 1.1)
+      hidden_size <- max(base_hidden_size, min(256, heuristic_h1))
+      hidden_size_2 <- if (base_hidden_size_2 > 0) max(16, min(128, round(hidden_size * 0.5))) else 0
+      dl_log(paste0(
+        "Auto architecture enabled: using Hidden1=", hidden_size,
+        " and Hidden2=", hidden_size_2,
+        " based on data size (", nrow(design_matrix), " rows, ", input_size, " inputs)."
+      ))
+    }
 
     history_df <- data.frame(epoch = integer(), train_loss = numeric(), test_loss = numeric(), metric = numeric())
     predictions_df <- data.frame()
@@ -3421,7 +3449,8 @@ observeEvent(input$model_file, {
       path_edges_df <- data.frame()
 
       fc1_abs_flat <- abs(fc1_w)
-      top_fc1_idx <- order(fc1_abs_flat, decreasing = TRUE)[seq_len(min(30, length(fc1_abs_flat)))]
+      edge_cap_fc1 <- min(length(fc1_abs_flat), max(30, round(length(fc1_abs_flat) * 0.06)))
+      top_fc1_idx <- order(fc1_abs_flat, decreasing = TRUE)[seq_len(edge_cap_fc1)]
       fc1_rc <- arrayInd(top_fc1_idx, dim(fc1_abs_flat))
       fc1_edges <- data.frame(
         from = input_labels[fc1_rc[, 2]],
@@ -3439,7 +3468,8 @@ observeEvent(input$model_file, {
           stringsAsFactors = FALSE
         ))
         fc2_abs_flat <- abs(fc2_w)
-        top_fc2_idx <- order(fc2_abs_flat, decreasing = TRUE)[seq_len(min(30, length(fc2_abs_flat)))]
+        edge_cap_fc2 <- min(length(fc2_abs_flat), max(30, round(length(fc2_abs_flat) * 0.10)))
+        top_fc2_idx <- order(fc2_abs_flat, decreasing = TRUE)[seq_len(edge_cap_fc2)]
         fc2_rc <- arrayInd(top_fc2_idx, dim(fc2_abs_flat))
         fc2_edges <- data.frame(
           from = hidden1_labels[fc2_rc[, 2]],
@@ -3461,7 +3491,8 @@ observeEvent(input$model_file, {
         stringsAsFactors = FALSE
       ))
       out_abs_flat <- abs(out_w)
-      top_out_idx <- order(out_abs_flat, decreasing = TRUE)[seq_len(min(15, length(out_abs_flat)))]
+      edge_cap_out <- min(length(out_abs_flat), max(15, round(length(out_abs_flat) * 0.25)))
+      top_out_idx <- order(out_abs_flat, decreasing = TRUE)[seq_len(edge_cap_out)]
       out_rc <- arrayInd(top_out_idx, dim(out_abs_flat))
       out_edges <- data.frame(
         from = out_source[out_rc[, 2]],
@@ -3515,7 +3546,7 @@ observeEvent(input$model_file, {
         )
       }
       top_paths_df <- top_paths_df[order(top_paths_df$PathScore, decreasing = TRUE), , drop = FALSE]
-      top_paths_df <- utils::head(top_paths_df, 20)
+      top_paths_df <- utils::head(top_paths_df, 40)
       top_paths_df$PathScore <- round(top_paths_df$PathScore, 6)
       top_paths_df$SignedEffect <- round(top_paths_df$SignedEffect, 6)
       if (nrow(top_paths_df) > 0) {
@@ -3623,6 +3654,9 @@ observeEvent(input$model_file, {
               best_state <<- clone_state_dict(model$state_dict())
             }
           })
+          if (epoch == 1 || epoch == epochs || epoch %% max(1, floor(epochs / 8)) == 0) {
+            update_dl_views(model, predictor_names, build_dl_weight_views, epoch, epochs)
+          }
           incProgress(1 / epochs, detail = paste("Epoch", epoch, "of", epochs))
         }
       })
@@ -3766,6 +3800,9 @@ observeEvent(input$model_file, {
               best_state <<- clone_state_dict(model$state_dict())
             }
           })
+          if (epoch == 1 || epoch == epochs || epoch %% max(1, floor(epochs / 8)) == 0) {
+            update_dl_views(model, predictor_names, build_dl_weight_views, epoch, epochs)
+          }
           incProgress(1 / epochs, detail = paste("Epoch", epoch, "of", epochs))
         }
       })
@@ -3817,6 +3854,19 @@ observeEvent(input$model_file, {
   output$dl_training_log <- renderText({
     dl_log()
   })
+
+  output$dl_loss_panel <- renderUI({
+    req(nrow(dl_history()) > 0)
+    tags$div(class = "dl-panel", plotOutput("dl_loss_plot", height = "260px"))
+  })
+
+  output$dl_metric_panel <- renderUI({
+    req(nrow(dl_history()) > 0)
+    tags$div(class = "dl-panel", plotOutput("dl_metric_plot", height = "260px"))
+  })
+
+  outputOptions(output, "dl_loss_panel", suspendWhenHidden = FALSE)
+  outputOptions(output, "dl_metric_panel", suspendWhenHidden = FALSE)
 
   output$dl_loss_plot <- renderPlot({
     history_df <- dl_history()
