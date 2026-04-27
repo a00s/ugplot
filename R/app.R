@@ -3930,6 +3930,8 @@ observeEvent(input$model_file, {
 
   outputOptions(output, "dl_loss_panel", suspendWhenHidden = FALSE)
   outputOptions(output, "dl_metric_panel", suspendWhenHidden = FALSE)
+  outputOptions(output, "dl_path_plot", suspendWhenHidden = FALSE)
+  outputOptions(output, "dl_model_shape", suspendWhenHidden = FALSE)
 
   output$dl_loss_plot <- renderPlot({
     history_df <- dl_history()
