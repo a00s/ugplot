@@ -627,7 +627,7 @@ ui <- fluidPage(
             numericInput("dl_seed", "Random seed:", value = 42, min = 1, step = 1),
             numericInput("dl_epochs", "Epochs:", value = 50, min = 5, step = 5),
             numericInput("dl_batch_size", "Batch size:", value = 32, min = 4, step = 4),
-            numericInput("dl_hidden_layers", "Number of hidden layers:", value = 2, min = 1, max = 6, step = 1),
+            numericInput("dl_hidden_layers", "Number of hidden layers:", value = 2, min = 1, step = 1),
             uiOutput("dl_hidden_units_ui"),
             numericInput("dl_learning_rate", "Learning rate:", value = 0.001, min = 0.0001, step = 0.0001),
             numericInput("dl_weight_decay", "Weight decay (L2):", value = 0.0001, min = 0, step = 0.0001),
@@ -3245,7 +3245,7 @@ observeEvent(input$model_file, {
   )
 
   output$dl_hidden_units_ui <- renderUI({
-    layer_count <- min(6, max(1, as.integer(input$dl_hidden_layers %||% 2)))
+    layer_count <- max(1, as.integer(input$dl_hidden_layers %||% 2))
     tagList(lapply(seq_len(layer_count), function(i) {
       default_value <- if (i == 1) 64 else max(8, round(64 / i))
       numericInput(
@@ -3259,7 +3259,7 @@ observeEvent(input$model_file, {
   })
 
   output$dl_dropout_ui <- renderUI({
-    layer_count <- min(6, max(1, as.integer(input$dl_hidden_layers %||% 2)))
+    layer_count <- max(1, as.integer(input$dl_hidden_layers %||% 2))
     tagList(lapply(seq_len(layer_count), function(i) {
       sliderInput(
         inputId = paste0("dl_dropout_", i),
@@ -3369,7 +3369,7 @@ observeEvent(input$model_file, {
     x_test <- torch::torch_tensor(test_matrix, dtype = torch::torch_float())
 
     input_size <- ncol(design_matrix)
-    hidden_layers <- min(6, max(1, as.integer(input$dl_hidden_layers %||% 2)))
+    hidden_layers <- max(1, as.integer(input$dl_hidden_layers %||% 2))
     base_hidden_sizes <- vapply(seq_len(hidden_layers), function(i) {
       max(4, as.integer(input[[paste0("dl_hidden_units_", i)]] %||% if (i == 1) 64 else max(8, round(64 / i))))
     }, numeric(1))
@@ -3418,12 +3418,11 @@ observeEvent(input$model_file, {
       }
 
       hidden_weights <- list()
-      for (i in seq_len(6)) {
-        w <- get_weight(paste0("hidden_layers.", i - 1, ".weight"))
-        if (is.null(w)) {
-          break
-        }
-        hidden_weights[[length(hidden_weights) + 1]] <- w
+      hidden_weight_names <- grep("^hidden_layers\\.[0-9]+\\.weight$", state_names, value = TRUE)
+      if (length(hidden_weight_names) > 0) {
+        hidden_idx <- as.integer(sub("^hidden_layers\\.([0-9]+)\\.weight$", "\\1", hidden_weight_names))
+        hidden_weight_names <- hidden_weight_names[order(hidden_idx)]
+        hidden_weights <- lapply(hidden_weight_names, get_weight)
       }
       if (length(hidden_weights) == 0) {
         fc1_w <- get_weight("fc1.weight")
@@ -3489,19 +3488,26 @@ observeEvent(input$model_file, {
       }
 
       shape_text <- paste("Architecture:", paste(arch_layers, collapse = " -> "))
+      effective_out_w <- out_w
       if (length(hidden_weights) > 2) {
-        shape_text <- paste0(
-          shape_text,
-          " | Path view currently summarizes up to 2 hidden layers."
-        )
-        return(list(
-          shape_text = shape_text,
-          summary_df = summary_df,
-          heatmap_df = heatmap_df,
-          path_edges_df = data.frame(),
-          path_nodes_df = data.frame(),
-          top_paths_df = data.frame()
-        ))
+        downstream_weights <- hidden_weights[3:length(hidden_weights)]
+        for (w in rev(downstream_weights)) {
+          if (ncol(effective_out_w) != nrow(w)) {
+            shape_text <- paste0(
+              shape_text,
+              " | Path compression skipped due to incompatible layer dimensions."
+            )
+            effective_out_w <- out_w
+            break
+          }
+          effective_out_w <- effective_out_w %*% w
+        }
+        if (!grepl("Path compression skipped", shape_text, fixed = TRUE)) {
+          shape_text <- paste0(
+            shape_text,
+            " | Path view is compressed after Hidden2 to keep the graph readable."
+          )
+        }
       }
 
       hidden1_labels <- paste0("H1_", seq_len(nrow(fc1_w)))
@@ -3548,6 +3554,20 @@ observeEvent(input$model_file, {
         fc2_edges <- data.frame()
         out_source <- hidden1_labels
       }
+      if (ncol(effective_out_w) != length(out_source)) {
+        shape_text <- paste0(
+          shape_text,
+          " | Path view unavailable due to incompatible projection dimensions."
+        )
+        return(list(
+          shape_text = shape_text,
+          summary_df = summary_df,
+          heatmap_df = heatmap_df,
+          path_edges_df = data.frame(),
+          path_nodes_df = data.frame(),
+          top_paths_df = data.frame()
+        ))
+      }
 
       out_labels <- paste0("O_", seq_len(nrow(out_w)))
       path_nodes_df <- rbind(path_nodes_df, data.frame(
@@ -3556,14 +3576,14 @@ observeEvent(input$model_file, {
         idx = seq_along(out_labels),
         stringsAsFactors = FALSE
       ))
-      out_abs_flat <- abs(out_w)
+      out_abs_flat <- abs(effective_out_w)
       edge_cap_out <- min(length(out_abs_flat), max(15, round(length(out_abs_flat) * 0.25)))
       top_out_idx <- order(out_abs_flat, decreasing = TRUE)[seq_len(edge_cap_out)]
       out_rc <- arrayInd(top_out_idx, dim(out_abs_flat))
       out_edges <- data.frame(
         from = out_source[out_rc[, 2]],
         to = out_labels[out_rc[, 1]],
-        weight = as.numeric(out_w[top_out_idx]),
+        weight = as.numeric(effective_out_w[top_out_idx]),
         stringsAsFactors = FALSE
       )
       path_edges_df <- rbind(fc1_edges, fc2_edges, out_edges)
@@ -3579,7 +3599,7 @@ observeEvent(input$model_file, {
         combos <- expand.grid(i = top_inputs, h1 = top_h1, h2 = top_h2, o = seq_len(nrow(out_w)))
         w1 <- fc1_w[cbind(combos$h1, combos$i)]
         w2 <- fc2_w[cbind(combos$h2, combos$h1)]
-        w3 <- out_w[cbind(combos$o, combos$h2)]
+        w3 <- effective_out_w[cbind(combos$o, combos$h2)]
         path_score <- abs(w1) * abs(w2) * abs(w3)
         signed_effect <- sign(w1 * w2 * w3) * path_score
         top_paths_df <- data.frame(
@@ -3957,34 +3977,34 @@ observeEvent(input$model_file, {
       final_acc <- suppressWarnings(as.numeric(metrics_df$Value[metrics_df$Metric == "Final accuracy"][1]))
       best_acc <- suppressWarnings(as.numeric(metrics_df$Value[metrics_df$Metric == "Best epoch accuracy"][1]))
       tips <- c(
-        "Se a acurácia estiver baixa, aumente Epochs para 100-200 e reduza Learning rate para 0.0005.",
-        "Se o treino oscilar muito, suba Batch size para 64 e mantenha Weight decay entre 0.0001 e 0.001.",
-        "Se houver overfitting (Best muito maior que Final), aumente Dropout para 0.20-0.35."
+        "If accuracy is low, increase epochs to 100-200 and reduce learning rate to 0.0005.",
+        "If training is unstable, increase batch size to 64 and keep weight decay between 0.0001 and 0.001.",
+        "If overfitting appears (best epoch much higher than final), increase dropout to 0.20-0.35."
       )
       if (is.finite(final_acc) && final_acc < 0.70) {
         tips <- c(
-          paste0("Acurácia final ainda baixa (", round(final_acc, 3), "). Priorize mais épocas e ajuste de regularização."),
+          paste0("Final accuracy is still low (", round(final_acc, 3), "). Prioritize more epochs and regularization tuning."),
           tips
         )
       }
       if (is.finite(best_acc) && is.finite(final_acc) && (best_acc - final_acc) > 0.05) {
-        tips <- c(tips, "Há gap entre melhor época e final: tente early stopping manual observando o gráfico por época.")
+        tips <- c(tips, "There is a gap between the best and final epoch: try manual early stopping using the epoch chart.")
       }
     } else {
       rmse <- suppressWarnings(as.numeric(metrics_df$Value[metrics_df$Metric == "RMSE"][1]))
       best_rmse <- suppressWarnings(as.numeric(metrics_df$Value[metrics_df$Metric == "Best epoch RMSE"][1]))
       tips <- c(
-        "Para regressão, mantenha Scale numeric target ligado e aumente Epochs para 120+.",
-        "Se o RMSE não cair, aumente gradualmente unidades e/ou o número de hidden layers.",
-        "Se houver overfitting, aumente Dropout (0.20-0.35) ou Weight decay (0.0005-0.002)."
+        "For regression, keep Scale numeric target enabled and increase epochs to 120+.",
+        "If RMSE does not improve, gradually increase units and/or the number of hidden layers.",
+        "If overfitting appears, increase dropout (0.20-0.35) or weight decay (0.0005-0.002)."
       )
       if (is.finite(rmse) && is.finite(best_rmse) && (rmse - best_rmse) > 0.05 * max(1, abs(best_rmse))) {
-        tips <- c(tips, "O modelo piorou após a melhor época: use menos épocas ou learning rate menor (0.0003-0.0007).")
+        tips <- c(tips, "The model degraded after the best epoch: use fewer epochs or a smaller learning rate (0.0003-0.0007).")
       }
     }
     tags$div(
       class = "dl-panel",
-      tags$h4("Sugestões de ajuste"),
+      tags$h4("Tuning suggestions"),
       tags$ul(lapply(tips, tags$li))
     )
   })
