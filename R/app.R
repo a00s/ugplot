@@ -4090,9 +4090,6 @@ observeEvent(input$model_file, {
     ggplotly(p, tooltip = "text") %>%
       config(displaylogo = FALSE)
   })
-  outputOptions(output, "dl_path_plot", suspendWhenHidden = FALSE)
-  outputOptions(output, "dl_model_shape", suspendWhenHidden = FALSE)
-
   output$dl_path_table <- DT::renderDT({
     path_df <- dl_top_paths()
     req(nrow(path_df) > 0)
