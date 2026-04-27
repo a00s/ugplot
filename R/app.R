@@ -3622,7 +3622,29 @@ observeEvent(input$model_file, {
           if (top_paths_df$Hidden2[1] != "-") paste0(top_paths_df$Hidden2[1], " -> ") else "",
           top_paths_df$Output[1]
         )
-        shape_text <- paste0(shape_text, " | Strongest path: ", top_path_label)
+        shape_text <- paste0(
+          shape_text,
+          " | Strongest path: ",
+          top_path_label,
+          " (score=",
+          format(top_paths_df$PathScore[1], nsmall = 4),
+          ")"
+        )
+        if (nrow(top_paths_df) > 1) {
+          alt_path_label <- paste(
+            top_paths_df$Input[2], "->", top_paths_df$Hidden1[2], "->",
+            if (top_paths_df$Hidden2[2] != "-") paste0(top_paths_df$Hidden2[2], " -> ") else "",
+            top_paths_df$Output[2]
+          )
+          shape_text <- paste0(
+            shape_text,
+            " | Alternative path: ",
+            alt_path_label,
+            " (score=",
+            format(top_paths_df$PathScore[2], nsmall = 4),
+            ")"
+          )
+        }
       }
       list(
         shape_text = shape_text,
@@ -3684,7 +3706,6 @@ observeEvent(input$model_file, {
       best_state <- clone_state_dict(model$state_dict())
 
       withProgress(message = "Training torch classification model", value = 0, {
-        snapshot_interval <- max(1, floor(epochs / 12))
         for (epoch in seq_len(epochs)) {
           model$train()
           train_order <- sample.int(length(train_idx))
@@ -3719,9 +3740,7 @@ observeEvent(input$model_file, {
               best_state <<- clone_state_dict(model$state_dict())
             }
           })
-          if (epoch == 1 || epoch == epochs || epoch %% snapshot_interval == 0) {
-            update_dl_views(model, predictor_names, build_dl_weight_views, epoch, epochs)
-          }
+          update_dl_views(model, predictor_names, build_dl_weight_views, epoch, epochs)
           incProgress(1 / epochs, detail = paste("Epoch", epoch, "of", epochs))
         }
       })
@@ -3828,7 +3847,6 @@ observeEvent(input$model_file, {
       best_state <- clone_state_dict(model$state_dict())
 
       withProgress(message = "Training torch regression model", value = 0, {
-        snapshot_interval <- max(1, floor(epochs / 12))
         for (epoch in seq_len(epochs)) {
           model$train()
           train_order <- sample.int(length(train_idx))
@@ -3863,9 +3881,7 @@ observeEvent(input$model_file, {
               best_state <<- clone_state_dict(model$state_dict())
             }
           })
-          if (epoch == 1 || epoch == epochs || epoch %% snapshot_interval == 0) {
-            update_dl_views(model, predictor_names, build_dl_weight_views, epoch, epochs)
-          }
+          update_dl_views(model, predictor_names, build_dl_weight_views, epoch, epochs)
           incProgress(1 / epochs, detail = paste("Epoch", epoch, "of", epochs))
         }
       })
@@ -4044,18 +4060,55 @@ observeEvent(input$model_file, {
     edge_plot$from_x <- as.numeric(factor(edge_plot$from_layer, levels = layer_order))
     edge_plot$to_x <- as.numeric(factor(edge_plot$to_layer, levels = layer_order))
     edge_plot$abs_weight <- abs(edge_plot$weight)
+    edge_plot$abs_weight_fmt <- format(round(edge_plot$abs_weight, 5), nsmall = 5)
     edge_plot$hover <- paste0(
       "From: ", edge_plot$from,
       "<br>To: ", edge_plot$to,
-      "<br>Weight: ", round(edge_plot$weight, 5)
+      "<br>Weight: ", round(edge_plot$weight, 5),
+      "<br>|Weight|: ", edge_plot$abs_weight_fmt
     )
 
     node_plot <- nodes
     node_plot$x <- as.numeric(factor(node_plot$layer, levels = layer_order))
+    incoming_count <- table(edges$to)
+    outgoing_count <- table(edges$from)
+    incoming_strength <- tapply(abs(edges$weight), edges$to, max)
+    outgoing_strength <- tapply(abs(edges$weight), edges$from, max)
+
+    strongest_from <- edges[order(abs(edges$weight), decreasing = TRUE), c("to", "from", "weight"), drop = FALSE]
+    strongest_from <- strongest_from[!duplicated(strongest_from$to), , drop = FALSE]
+    names(strongest_from) <- c("node", "strongest_input_node", "strongest_input_weight")
+
+    strongest_to <- edges[order(abs(edges$weight), decreasing = TRUE), c("from", "to", "weight"), drop = FALSE]
+    strongest_to <- strongest_to[!duplicated(strongest_to$from), , drop = FALSE]
+    names(strongest_to) <- c("node", "strongest_output_node", "strongest_output_weight")
+
+    node_plot$incoming_n <- as.integer(incoming_count[node_plot$node])
+    node_plot$outgoing_n <- as.integer(outgoing_count[node_plot$node])
+    node_plot$incoming_max <- as.numeric(incoming_strength[node_plot$node])
+    node_plot$outgoing_max <- as.numeric(outgoing_strength[node_plot$node])
+    node_plot$incoming_n[is.na(node_plot$incoming_n)] <- 0L
+    node_plot$outgoing_n[is.na(node_plot$outgoing_n)] <- 0L
+    node_plot$incoming_max[is.na(node_plot$incoming_max)] <- 0
+    node_plot$outgoing_max[is.na(node_plot$outgoing_max)] <- 0
+    node_plot <- merge(node_plot, strongest_from, by = "node", all.x = TRUE)
+    node_plot <- merge(node_plot, strongest_to, by = "node", all.x = TRUE)
+    node_plot$strongest_input_node[is.na(node_plot$strongest_input_node)] <- "-"
+    node_plot$strongest_output_node[is.na(node_plot$strongest_output_node)] <- "-"
+    node_plot$strongest_input_weight[is.na(node_plot$strongest_input_weight)] <- 0
+    node_plot$strongest_output_weight[is.na(node_plot$strongest_output_weight)] <- 0
     node_plot$hover <- paste0(
       "Node: ", node_plot$node,
       "<br>Layer: ", node_plot$layer,
-      "<br>Position: ", node_plot$idx
+      "<br>Position: ", node_plot$idx,
+      "<br>Incoming edges: ", node_plot$incoming_n,
+      "<br>Outgoing edges: ", node_plot$outgoing_n,
+      "<br>Strongest incoming: ", node_plot$strongest_input_node,
+      " (", round(node_plot$strongest_input_weight, 5), ")",
+      "<br>Strongest outgoing: ", node_plot$strongest_output_node,
+      " (", round(node_plot$strongest_output_weight, 5), ")",
+      "<br>Max |incoming|: ", round(node_plot$incoming_max, 5),
+      "<br>Max |outgoing|: ", round(node_plot$outgoing_max, 5)
     )
 
     p <- ggplot() +
@@ -4064,10 +4117,11 @@ observeEvent(input$model_file, {
         aes(
           x = from_x, y = from_y,
           xend = to_x, yend = to_y,
-          color = weight, linewidth = abs_weight,
+          color = weight,
           text = hover
         ),
-        alpha = 0.75
+        linewidth = 0.35,
+        alpha = 0.65
       ) +
       geom_point(
         data = node_plot,
@@ -4084,7 +4138,6 @@ observeEvent(input$model_file, {
         limits = c(0.8, length(layer_order) + 0.2)
       ) +
       scale_color_gradient2(low = "#2c7bb6", mid = "#f0f0f0", high = "#d7191c", midpoint = 0) +
-      scale_linewidth(range = c(0.2, 1.8), guide = "none") +
       labs(
         x = "Layer",
         y = "Nodes (full layer span)",
