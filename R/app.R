@@ -627,12 +627,11 @@ ui <- fluidPage(
             numericInput("dl_seed", "Random seed:", value = 42, min = 1, step = 1),
             numericInput("dl_epochs", "Epochs:", value = 50, min = 5, step = 5),
             numericInput("dl_batch_size", "Batch size:", value = 32, min = 4, step = 4),
-            numericInput("dl_hidden_units", "Hidden units (layer 1):", value = 64, min = 4, step = 4),
-            numericInput("dl_hidden_units_2", "Hidden units (layer 2):", value = 32, min = 0, step = 4),
+            numericInput("dl_hidden_layers", "Number of hidden layers:", value = 2, min = 1, max = 6, step = 1),
+            uiOutput("dl_hidden_units_ui"),
             numericInput("dl_learning_rate", "Learning rate:", value = 0.001, min = 0.0001, step = 0.0001),
             numericInput("dl_weight_decay", "Weight decay (L2):", value = 0.0001, min = 0, step = 0.0001),
-            sliderInput("dl_dropout_1", "Dropout layer 1:", min = 0, max = 0.6, value = 0.15, step = 0.05),
-            sliderInput("dl_dropout_2", "Dropout layer 2:", min = 0, max = 0.6, value = 0.10, step = 0.05),
+            uiOutput("dl_dropout_ui"),
             checkboxInput("dl_scale_target", "Scale numeric target (regression)", value = TRUE),
             checkboxInput("dl_auto_arch", "Auto adjust hidden layer sizes", value = TRUE),
             actionButton("dl_run_training", "Train Deep Learning model")
@@ -649,8 +648,7 @@ ui <- fluidPage(
               tags$div(class = "dl-model-shape", textOutput("dl_model_shape")),
               plotOutput("dl_path_plot", height = "360px"),
               tags$div(class = "dl-path-table-wrap", DT::DTOutput("dl_path_table")),
-              plotOutput("dl_weight_plot", height = "250px"),
-              plotOutput("dl_layer_plot", height = "300px")
+              plotOutput("dl_weight_plot", height = "250px")
             ),
             DT::DTOutput("dl_metrics_table"),
             DT::DTOutput("dl_predictions_table")
@@ -3246,6 +3244,34 @@ observeEvent(input$model_file, {
     ignoreNULL = FALSE
   )
 
+  output$dl_hidden_units_ui <- renderUI({
+    layer_count <- min(6, max(1, as.integer(input$dl_hidden_layers %||% 2)))
+    tagList(lapply(seq_len(layer_count), function(i) {
+      default_value <- if (i == 1) 64 else max(8, round(64 / i))
+      numericInput(
+        inputId = paste0("dl_hidden_units_", i),
+        label = paste0("Hidden units (layer ", i, "):"),
+        value = default_value,
+        min = 4,
+        step = 4
+      )
+    }))
+  })
+
+  output$dl_dropout_ui <- renderUI({
+    layer_count <- min(6, max(1, as.integer(input$dl_hidden_layers %||% 2)))
+    tagList(lapply(seq_len(layer_count), function(i) {
+      sliderInput(
+        inputId = paste0("dl_dropout_", i),
+        label = paste0("Dropout layer ", i, ":"),
+        min = 0,
+        max = 0.6,
+        value = if (i == 1) 0.15 else 0.10,
+        step = 0.05
+      )
+    }))
+  })
+
   observeEvent(input$dl_run_training, {
     req(changed_table)
     dl_weight_summary(data.frame())
@@ -3343,24 +3369,30 @@ observeEvent(input$model_file, {
     x_test <- torch::torch_tensor(test_matrix, dtype = torch::torch_float())
 
     input_size <- ncol(design_matrix)
-    base_hidden_size <- max(4, as.integer(input$dl_hidden_units))
-    base_hidden_size_2 <- max(0, as.integer(input$dl_hidden_units_2))
+    hidden_layers <- min(6, max(1, as.integer(input$dl_hidden_layers %||% 2)))
+    base_hidden_sizes <- vapply(seq_len(hidden_layers), function(i) {
+      max(4, as.integer(input[[paste0("dl_hidden_units_", i)]] %||% if (i == 1) 64 else max(8, round(64 / i))))
+    }, numeric(1))
     epochs <- max(1, as.integer(input$dl_epochs))
     batch_size <- max(1, as.integer(input$dl_batch_size))
     learning_rate <- as.numeric(input$dl_learning_rate)
     weight_decay <- max(0, as.numeric(input$dl_weight_decay))
-    dropout_1 <- min(0.8, max(0, as.numeric(input$dl_dropout_1)))
-    dropout_2 <- min(0.8, max(0, as.numeric(input$dl_dropout_2)))
+    dropout_rates <- vapply(seq_len(hidden_layers), function(i) {
+      min(0.8, max(0, as.numeric(input[[paste0("dl_dropout_", i)]] %||% if (i == 1) 0.15 else 0.10)))
+    }, numeric(1))
     auto_arch <- isTRUE(input$dl_auto_arch)
-    hidden_size <- base_hidden_size
-    hidden_size_2 <- base_hidden_size_2
+    hidden_sizes <- base_hidden_sizes
     if (auto_arch) {
       heuristic_h1 <- round(sqrt(nrow(design_matrix) * input_size) * 1.1)
-      hidden_size <- max(base_hidden_size, min(256, heuristic_h1))
-      hidden_size_2 <- if (base_hidden_size_2 > 0) max(16, min(128, round(hidden_size * 0.5))) else 0
+      hidden_sizes[1] <- max(base_hidden_sizes[1], min(256, heuristic_h1))
+      if (hidden_layers > 1) {
+        for (i in 2:hidden_layers) {
+          hidden_sizes[i] <- max(base_hidden_sizes[i], min(160, round(hidden_sizes[i - 1] * 0.65)))
+        }
+      }
       dl_log(paste0(
-        "Auto architecture enabled: using Hidden1=", hidden_size,
-        " and Hidden2=", hidden_size_2,
+        "Auto architecture enabled: using hidden layers = ",
+        paste(hidden_sizes, collapse = " -> "),
         " based on data size (", nrow(design_matrix), " rows, ", input_size, " inputs)."
       ))
     }
@@ -3385,8 +3417,26 @@ observeEvent(input$model_file, {
         }
       }
 
-      fc1_w <- get_weight("fc1.weight")
-      fc2_w <- get_weight("fc2.weight")
+      hidden_weights <- list()
+      for (i in seq_len(6)) {
+        w <- get_weight(paste0("hidden_layers.", i - 1, ".weight"))
+        if (is.null(w)) {
+          break
+        }
+        hidden_weights[[length(hidden_weights) + 1]] <- w
+      }
+      if (length(hidden_weights) == 0) {
+        fc1_w <- get_weight("fc1.weight")
+        fc2_w <- get_weight("fc2.weight")
+        if (!is.null(fc1_w)) {
+          hidden_weights[[1]] <- fc1_w
+        }
+        if (!is.null(fc2_w)) {
+          hidden_weights[[2]] <- fc2_w
+        }
+      }
+      fc1_w <- if (length(hidden_weights) >= 1) hidden_weights[[1]] else NULL
+      fc2_w <- if (length(hidden_weights) >= 2) hidden_weights[[2]] else NULL
       out_w <- get_weight("out.weight")
       if (is.null(out_w)) {
         out_w <- get_weight("fc2.weight")
@@ -3425,18 +3475,34 @@ observeEvent(input$model_file, {
         stringsAsFactors = FALSE
       )
 
-      arch_layers <- c(
-        paste0("Input(", ncol(fc1_w), ")"),
-        paste0("Hidden1(", nrow(fc1_w), ")")
-      )
-      if (!is.null(fc2_w)) {
-        arch_layers <- c(arch_layers, paste0("Hidden2(", nrow(fc2_w), ")"))
+      arch_layers <- c(paste0("Input(", ncol(fc1_w), ")"))
+      if (length(hidden_weights) > 0) {
+        arch_layers <- c(
+          arch_layers,
+          vapply(seq_along(hidden_weights), function(i) {
+            paste0("Hidden", i, "(", nrow(hidden_weights[[i]]), ")")
+          }, character(1))
+        )
       }
       if (!is.null(out_w)) {
         arch_layers <- c(arch_layers, paste0("Output(", nrow(out_w), ")"))
       }
 
       shape_text <- paste("Architecture:", paste(arch_layers, collapse = " -> "))
+      if (length(hidden_weights) > 2) {
+        shape_text <- paste0(
+          shape_text,
+          " | Path view currently summarizes up to 2 hidden layers."
+        )
+        return(list(
+          shape_text = shape_text,
+          summary_df = summary_df,
+          heatmap_df = heatmap_df,
+          path_edges_df = data.frame(),
+          path_nodes_df = data.frame(),
+          top_paths_df = data.frame()
+        ))
+      }
 
       hidden1_labels <- paste0("H1_", seq_len(nrow(fc1_w)))
       input_labels <- feature_names
@@ -3580,34 +3646,31 @@ observeEvent(input$model_file, {
       output_size <- nlevels(y_factor)
 
       model <- torch::nn_module(
-        initialize = function(in_features, hidden, hidden2, out_features) {
-          self$fc1 <- torch::nn_linear(in_features, hidden)
-          self$bn1 <- torch::nn_batch_norm1d(hidden)
-          self$drop1 <- torch::nn_dropout(p = dropout_1)
-          self$use_second <- hidden2 > 0
-          if (self$use_second) {
-            self$fc2 <- torch::nn_linear(hidden, hidden2)
-            self$bn2 <- torch::nn_batch_norm1d(hidden2)
-            self$drop2 <- torch::nn_dropout(p = dropout_2)
-            self$out <- torch::nn_linear(hidden2, out_features)
-          } else {
-            self$out <- torch::nn_linear(hidden, out_features)
+        initialize = function(in_features, hidden_sizes, out_features, dropout_rates) {
+          self$hidden_layers <- torch::nn_module_list()
+          self$bn_layers <- torch::nn_module_list()
+          self$drop_layers <- torch::nn_module_list()
+          prev_features <- in_features
+          for (i in seq_along(hidden_sizes)) {
+            hidden_i <- as.integer(hidden_sizes[i])
+            self$hidden_layers$append(torch::nn_linear(prev_features, hidden_i))
+            self$bn_layers$append(torch::nn_batch_norm1d(hidden_i))
+            self$drop_layers$append(torch::nn_dropout(p = as.numeric(dropout_rates[i])))
+            prev_features <- hidden_i
           }
+          self$out <- torch::nn_linear(prev_features, out_features)
         },
         forward = function(x) {
-          x <- self$fc1(x)
-          x <- self$bn1(x)
-          x <- torch::nnf_relu(x)
-          x <- self$drop1(x)
-          if (self$use_second) {
-            x <- self$fc2(x)
-            x <- self$bn2(x)
+          layer_count <- length(self$hidden_layers)
+          for (i in seq_len(layer_count)) {
+            x <- self$hidden_layers[[i]](x)
+            x <- self$bn_layers[[i]](x)
             x <- torch::nnf_relu(x)
-            x <- self$drop2(x)
+            x <- self$drop_layers[[i]](x)
           }
           self$out(x)
         }
-      )(input_size, hidden_size, hidden_size_2, output_size)
+      )(input_size, hidden_sizes, output_size, dropout_rates)
 
       optimizer <- torch::optim_adam(model$parameters, lr = learning_rate, weight_decay = weight_decay)
       criterion <- torch::nn_cross_entropy_loss()
@@ -3726,34 +3789,31 @@ observeEvent(input$model_file, {
       y_test <- torch::torch_tensor(y_test_scaled, dtype = torch::torch_float())
 
       model <- torch::nn_module(
-        initialize = function(in_features, hidden, hidden2) {
-          self$fc1 <- torch::nn_linear(in_features, hidden)
-          self$bn1 <- torch::nn_batch_norm1d(hidden)
-          self$drop1 <- torch::nn_dropout(p = dropout_1)
-          self$use_second <- hidden2 > 0
-          if (self$use_second) {
-            self$fc2 <- torch::nn_linear(hidden, hidden2)
-            self$bn2 <- torch::nn_batch_norm1d(hidden2)
-            self$drop2 <- torch::nn_dropout(p = dropout_2)
-            self$out <- torch::nn_linear(hidden2, 1)
-          } else {
-            self$out <- torch::nn_linear(hidden, 1)
+        initialize = function(in_features, hidden_sizes, dropout_rates) {
+          self$hidden_layers <- torch::nn_module_list()
+          self$bn_layers <- torch::nn_module_list()
+          self$drop_layers <- torch::nn_module_list()
+          prev_features <- in_features
+          for (i in seq_along(hidden_sizes)) {
+            hidden_i <- as.integer(hidden_sizes[i])
+            self$hidden_layers$append(torch::nn_linear(prev_features, hidden_i))
+            self$bn_layers$append(torch::nn_batch_norm1d(hidden_i))
+            self$drop_layers$append(torch::nn_dropout(p = as.numeric(dropout_rates[i])))
+            prev_features <- hidden_i
           }
+          self$out <- torch::nn_linear(prev_features, 1)
         },
         forward = function(x) {
-          x <- self$fc1(x)
-          x <- self$bn1(x)
-          x <- torch::nnf_relu(x)
-          x <- self$drop1(x)
-          if (self$use_second) {
-            x <- self$fc2(x)
-            x <- self$bn2(x)
+          layer_count <- length(self$hidden_layers)
+          for (i in seq_len(layer_count)) {
+            x <- self$hidden_layers[[i]](x)
+            x <- self$bn_layers[[i]](x)
             x <- torch::nnf_relu(x)
-            x <- self$drop2(x)
+            x <- self$drop_layers[[i]](x)
           }
           self$out(x)
         }
-      )(input_size, hidden_size, hidden_size_2)
+      )(input_size, hidden_sizes, dropout_rates)
 
       optimizer <- torch::optim_adam(model$parameters, lr = learning_rate, weight_decay = weight_decay)
       criterion <- torch::nn_smooth_l1_loss()
@@ -3915,7 +3975,7 @@ observeEvent(input$model_file, {
       best_rmse <- suppressWarnings(as.numeric(metrics_df$Value[metrics_df$Metric == "Best epoch RMSE"][1]))
       tips <- c(
         "Para regressão, mantenha Scale numeric target ligado e aumente Epochs para 120+.",
-        "Se o RMSE não cair, teste Hidden layer 1 entre 96-192 e Hidden layer 2 entre 32-96.",
+        "Se o RMSE não cair, aumente gradualmente unidades e/ou o número de hidden layers.",
         "Se houver overfitting, aumente Dropout (0.20-0.35) ou Weight decay (0.0005-0.002)."
       )
       if (is.finite(rmse) && is.finite(best_rmse) && (rmse - best_rmse) > 0.05 * max(1, abs(best_rmse))) {
@@ -4026,26 +4086,6 @@ observeEvent(input$model_file, {
       ) +
       theme_minimal(base_size = 12)
   })
-
-  output$dl_layer_plot <- renderPlot({
-    heat_df <- dl_weight_heatmap()
-    req(nrow(heat_df) > 0)
-    ggplot(heat_df, aes(x = Feature, y = factor(HiddenUnit), fill = Weight)) +
-      geom_tile(color = "white", linewidth = 0.2) +
-      scale_fill_gradient2(low = "#2c7bb6", mid = "#f7f7f7", high = "#d7191c", midpoint = 0) +
-      labs(
-        x = "Top features",
-        y = "Hidden unit (layer 1)",
-        fill = "Weight",
-        title = "Layer weight map (input -> hidden1)"
-      ) +
-      theme_minimal(base_size = 11) +
-      theme(
-        axis.text.x = element_text(angle = 45, hjust = 1),
-        panel.grid = element_blank()
-      )
-  })
-
 
   session$onSessionEnded(function() {
     objects_to_remove <- c("dff", "changed_table", "ml_available", "ml_not_available", "ml_prediction", "df_pre")
