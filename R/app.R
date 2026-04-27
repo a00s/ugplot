@@ -3928,8 +3928,17 @@ observeEvent(input$model_file, {
     tags$div(class = "dl-panel", plotOutput("dl_metric_plot", height = "260px"))
   })
 
-  outputOptions(output, "dl_loss_panel", suspendWhenHidden = FALSE)
-  outputOptions(output, "dl_metric_panel", suspendWhenHidden = FALSE)
+  set_output_option_if_registered <- function(output_id, suspend_when_hidden = FALSE) {
+    tryCatch({
+      if (output_id %in% names(output)) {
+        outputOptions(output, output_id, suspendWhenHidden = suspend_when_hidden)
+      }
+    }, error = function(e) {
+      NULL
+    })
+  }
+  set_output_option_if_registered("dl_loss_panel", FALSE)
+  set_output_option_if_registered("dl_metric_panel", FALSE)
 
   output$dl_loss_plot <- renderPlot({
     history_df <- dl_history()
