@@ -627,15 +627,24 @@ ui <- fluidPage(
             numericInput("dl_seed", "Random seed:", value = 42, min = 1, step = 1),
             numericInput("dl_epochs", "Epochs:", value = 50, min = 5, step = 5),
             numericInput("dl_batch_size", "Batch size:", value = 32, min = 4, step = 4),
-            numericInput("dl_hidden_units", "Hidden units:", value = 32, min = 4, step = 4),
+            numericInput("dl_hidden_units", "Hidden units (layer 1):", value = 64, min = 4, step = 4),
+            numericInput("dl_hidden_units_2", "Hidden units (layer 2):", value = 32, min = 0, step = 4),
             numericInput("dl_learning_rate", "Learning rate:", value = 0.001, min = 0.0001, step = 0.0001),
+            checkboxInput("dl_scale_target", "Scale numeric target (regression)", value = TRUE),
             actionButton("dl_run_training", "Train Deep Learning model")
           ),
           column(
             8,
-            verbatimTextOutput("dl_training_log"),
-            plotOutput("dl_loss_plot", height = "260px"),
-            plotOutput("dl_metric_plot", height = "260px"),
+            tags$div(class = "dl-status-box", verbatimTextOutput("dl_training_log")),
+            tags$div(class = "dl-panel", plotOutput("dl_loss_plot", height = "260px")),
+            tags$div(class = "dl-panel", plotOutput("dl_metric_plot", height = "260px")),
+            tags$div(
+              class = "dl-panel",
+              tags$h4("Network view"),
+              textOutput("dl_model_shape"),
+              plotOutput("dl_weight_plot", height = "250px"),
+              plotOutput("dl_layer_plot", height = "300px")
+            ),
             DT::DTOutput("dl_metrics_table"),
             DT::DTOutput("dl_predictions_table")
           )
@@ -3173,6 +3182,9 @@ observeEvent(input$model_file, {
   dl_predictions <- reactiveVal(data.frame())
   dl_log <- reactiveVal("Deep Learning idle. Load data and click train.")
   dl_task_used <- reactiveVal("classification")
+  dl_weight_summary <- reactiveVal(data.frame())
+  dl_weight_heatmap <- reactiveVal(data.frame())
+  dl_model_shape <- reactiveVal("Train the model to visualize layers and weights.")
 
   observeEvent(
     list(input$tabs, input$column_checkbox_group, input$file1, input$load_sample),
@@ -3212,6 +3224,10 @@ observeEvent(input$model_file, {
 
   observeEvent(input$dl_run_training, {
     req(changed_table)
+    dl_weight_summary(data.frame())
+    dl_weight_heatmap(data.frame())
+    dl_model_shape("Training in progress...")
+
     if (!requireNamespace("torch", quietly = TRUE)) {
       dl_log("Package 'torch' is not installed. Install it with install.packages('torch') and torch::install_torch().")
       return()
@@ -3263,7 +3279,6 @@ observeEvent(input$model_file, {
       if (is.character(col)) as.factor(col) else col
     })
     design_matrix <- model.matrix(~ . - 1, data = predictors_raw)
-    design_matrix <- scale(design_matrix)
     design_matrix[is.na(design_matrix)] <- 0
 
     valid_rows <- complete.cases(design_matrix) & !is.na(target_raw)
@@ -3286,11 +3301,23 @@ observeEvent(input$model_file, {
       return()
     }
 
-    x_train <- torch::torch_tensor(design_matrix[train_idx, , drop = FALSE], dtype = torch::torch_float())
-    x_test <- torch::torch_tensor(design_matrix[test_idx, , drop = FALSE], dtype = torch::torch_float())
+    train_matrix_raw <- design_matrix[train_idx, , drop = FALSE]
+    test_matrix_raw <- design_matrix[test_idx, , drop = FALSE]
+    train_means <- colMeans(train_matrix_raw)
+    train_sds <- apply(train_matrix_raw, 2, stats::sd)
+    train_sds[!is.finite(train_sds) | train_sds == 0] <- 1
+
+    train_matrix <- scale(train_matrix_raw, center = train_means, scale = train_sds)
+    test_matrix <- scale(test_matrix_raw, center = train_means, scale = train_sds)
+    train_matrix[is.na(train_matrix)] <- 0
+    test_matrix[is.na(test_matrix)] <- 0
+
+    x_train <- torch::torch_tensor(train_matrix, dtype = torch::torch_float())
+    x_test <- torch::torch_tensor(test_matrix, dtype = torch::torch_float())
 
     input_size <- ncol(design_matrix)
     hidden_size <- max(4, as.integer(input$dl_hidden_units))
+    hidden_size_2 <- max(0, as.integer(input$dl_hidden_units_2))
     epochs <- max(1, as.integer(input$dl_epochs))
     batch_size <- max(1, as.integer(input$dl_batch_size))
     learning_rate <- as.numeric(input$dl_learning_rate)
@@ -3298,6 +3325,75 @@ observeEvent(input$model_file, {
     history_df <- data.frame(epoch = integer(), train_loss = numeric(), test_loss = numeric(), metric = numeric())
     predictions_df <- data.frame()
     metrics_df <- data.frame()
+    predictor_names <- colnames(design_matrix)
+
+    build_dl_weight_views <- function(model_obj, predictor_labels) {
+      state <- model_obj$state_dict()
+      state_names <- names(state)
+      get_weight <- function(name) {
+        if (!(name %in% state_names)) {
+          return(NULL)
+        }
+        arr <- as.array(state[[name]]$to(device = "cpu"))
+        if (length(dim(arr)) == 1) {
+          matrix(arr, nrow = 1)
+        } else {
+          arr
+        }
+      }
+
+      fc1_w <- get_weight("fc1.weight")
+      fc2_w <- get_weight("fc2.weight")
+      out_w <- get_weight("out.weight")
+      if (is.null(out_w)) {
+        out_w <- get_weight("fc2.weight")
+      }
+      if (is.null(fc1_w)) {
+        return(list(
+          shape_text = "Unable to extract layer weights from the trained model.",
+          summary_df = data.frame(),
+          heatmap_df = data.frame()
+        ))
+      }
+
+      fc1_abs <- colMeans(abs(fc1_w))
+      feature_names <- predictor_labels %||% paste0("X", seq_len(ncol(fc1_w)))
+      summary_df <- data.frame(
+        Feature = feature_names,
+        MeanAbsWeight = as.numeric(fc1_abs),
+        stringsAsFactors = FALSE
+      )
+      summary_df <- summary_df[order(summary_df$MeanAbsWeight, decreasing = TRUE), , drop = FALSE]
+      summary_df <- utils::head(summary_df, 20)
+
+      feature_idx <- match(summary_df$Feature, feature_names)
+      feature_idx <- feature_idx[!is.na(feature_idx)]
+      selected_fc1 <- fc1_w[, feature_idx, drop = FALSE]
+      heatmap_df <- data.frame(
+        HiddenUnit = rep(seq_len(nrow(selected_fc1)), times = ncol(selected_fc1)),
+        Feature = rep(feature_names[feature_idx], each = nrow(selected_fc1)),
+        Weight = as.numeric(selected_fc1),
+        stringsAsFactors = FALSE
+      )
+
+      arch_layers <- c(
+        paste0("Input(", ncol(fc1_w), ")"),
+        paste0("Hidden1(", nrow(fc1_w), ")")
+      )
+      if (!is.null(fc2_w)) {
+        arch_layers <- c(arch_layers, paste0("Hidden2(", nrow(fc2_w), ")"))
+      }
+      if (!is.null(out_w)) {
+        arch_layers <- c(arch_layers, paste0("Output(", nrow(out_w), ")"))
+      }
+
+      shape_text <- paste("Architecture:", paste(arch_layers, collapse = " -> "))
+      list(
+        shape_text = shape_text,
+        summary_df = summary_df,
+        heatmap_df = heatmap_df
+      )
+    }
 
     if (task == "classification") {
       y_factor <- as.factor(target_raw)
@@ -3312,21 +3408,44 @@ observeEvent(input$model_file, {
       output_size <- nlevels(y_factor)
 
       model <- torch::nn_module(
-        initialize = function(in_features, hidden, out_features) {
+        initialize = function(in_features, hidden, hidden2, out_features) {
           self$fc1 <- torch::nn_linear(in_features, hidden)
-          self$drop <- torch::nn_dropout(p = 0.2)
-          self$fc2 <- torch::nn_linear(hidden, out_features)
+          self$bn1 <- torch::nn_batch_norm1d(hidden)
+          self$drop1 <- torch::nn_dropout(p = 0.15)
+          self$use_second <- hidden2 > 0
+          if (self$use_second) {
+            self$fc2 <- torch::nn_linear(hidden, hidden2)
+            self$bn2 <- torch::nn_batch_norm1d(hidden2)
+            self$drop2 <- torch::nn_dropout(p = 0.10)
+            self$out <- torch::nn_linear(hidden2, out_features)
+          } else {
+            self$out <- torch::nn_linear(hidden, out_features)
+          }
         },
         forward = function(x) {
           x <- self$fc1(x)
+          x <- self$bn1(x)
           x <- torch::nnf_relu(x)
-          x <- self$drop(x)
-          self$fc2(x)
+          x <- self$drop1(x)
+          if (self$use_second) {
+            x <- self$fc2(x)
+            x <- self$bn2(x)
+            x <- torch::nnf_relu(x)
+            x <- self$drop2(x)
+          }
+          self$out(x)
         }
-      )(input_size, hidden_size, output_size)
+      )(input_size, hidden_size, hidden_size_2, output_size)
 
       optimizer <- torch::optim_adam(model$parameters, lr = learning_rate)
       criterion <- torch::nn_cross_entropy_loss()
+      clone_state_dict <- function(state_dict) {
+        cloned <- lapply(state_dict, function(value) value$clone())
+        names(cloned) <- names(state_dict)
+        cloned
+      }
+      best_metric <- -Inf
+      best_state <- clone_state_dict(model$state_dict())
 
       withProgress(message = "Training torch classification model", value = 0, {
         for (epoch in seq_len(epochs)) {
@@ -3358,11 +3477,16 @@ observeEvent(input$model_file, {
               test_loss = as.numeric(loss_test$item()),
               metric = acc
             ))
+            if (is.finite(acc) && acc > best_metric) {
+              best_metric <<- acc
+              best_state <<- clone_state_dict(model$state_dict())
+            }
           })
           incProgress(1 / epochs, detail = paste("Epoch", epoch, "of", epochs))
         }
       })
 
+      model$load_state_dict(best_state)
       model$eval()
       torch::with_no_grad({
         logits_test <- model(x_test)
@@ -3377,11 +3501,16 @@ observeEvent(input$model_file, {
       )
       final_acc <- mean(predictions_df$Truth == predictions_df$Predicted)
       metrics_df <- data.frame(
-        Metric = c("Task", "Classes", "Train samples", "Test samples", "Final accuracy"),
-        Value = c("classification", output_size, length(train_idx), length(test_idx), round(final_acc, 4)),
+        Metric = c("Task", "Classes", "Train samples", "Test samples", "Final accuracy", "Best epoch accuracy"),
+        Value = c("classification", output_size, length(train_idx), length(test_idx), round(final_acc, 4), round(best_metric, 4)),
         stringsAsFactors = FALSE
       )
-      dl_log(paste0("Deep Learning (classification) finished. Accuracy: ", round(final_acc, 4)))
+      dl_log(paste0(
+        "Deep Learning (classification) finished. Accuracy: ",
+        round(final_acc, 4),
+        " | Best epoch accuracy: ",
+        round(best_metric, 4)
+      ))
     } else {
       y_numeric <- suppressWarnings(as.numeric(target_raw))
       valid_target <- !is.na(y_numeric)
@@ -3390,29 +3519,76 @@ observeEvent(input$model_file, {
         y_numeric <- y_numeric[valid_target]
         train_idx <- sample(seq_len(nrow(design_matrix)), size = floor(split_fraction * nrow(design_matrix)))
         test_idx <- setdiff(seq_len(nrow(design_matrix)), train_idx)
-        x_train <- torch::torch_tensor(design_matrix[train_idx, , drop = FALSE], dtype = torch::torch_float())
-        x_test <- torch::torch_tensor(design_matrix[test_idx, , drop = FALSE], dtype = torch::torch_float())
+        train_matrix_raw <- design_matrix[train_idx, , drop = FALSE]
+        test_matrix_raw <- design_matrix[test_idx, , drop = FALSE]
+        train_means <- colMeans(train_matrix_raw)
+        train_sds <- apply(train_matrix_raw, 2, stats::sd)
+        train_sds[!is.finite(train_sds) | train_sds == 0] <- 1
+        train_matrix <- scale(train_matrix_raw, center = train_means, scale = train_sds)
+        test_matrix <- scale(test_matrix_raw, center = train_means, scale = train_sds)
+        train_matrix[is.na(train_matrix)] <- 0
+        test_matrix[is.na(test_matrix)] <- 0
+        x_train <- torch::torch_tensor(train_matrix, dtype = torch::torch_float())
+        x_test <- torch::torch_tensor(test_matrix, dtype = torch::torch_float())
       }
 
-      y_train <- torch::torch_tensor(matrix(y_numeric[train_idx], ncol = 1), dtype = torch::torch_float())
-      y_test <- torch::torch_tensor(matrix(y_numeric[test_idx], ncol = 1), dtype = torch::torch_float())
+      y_train_raw <- matrix(y_numeric[train_idx], ncol = 1)
+      y_test_raw <- matrix(y_numeric[test_idx], ncol = 1)
+      y_center <- 0
+      y_scale <- 1
+      if (isTRUE(input$dl_scale_target)) {
+        y_center <- mean(y_train_raw)
+        y_scale <- stats::sd(y_train_raw)
+        if (!is.finite(y_scale) || y_scale == 0) {
+          y_scale <- 1
+        }
+      }
+
+      y_train_scaled <- (y_train_raw - y_center) / y_scale
+      y_test_scaled <- (y_test_raw - y_center) / y_scale
+
+      y_train <- torch::torch_tensor(y_train_scaled, dtype = torch::torch_float())
+      y_test <- torch::torch_tensor(y_test_scaled, dtype = torch::torch_float())
 
       model <- torch::nn_module(
-        initialize = function(in_features, hidden) {
+        initialize = function(in_features, hidden, hidden2) {
           self$fc1 <- torch::nn_linear(in_features, hidden)
-          self$drop <- torch::nn_dropout(p = 0.2)
-          self$fc2 <- torch::nn_linear(hidden, 1)
+          self$bn1 <- torch::nn_batch_norm1d(hidden)
+          self$drop1 <- torch::nn_dropout(p = 0.15)
+          self$use_second <- hidden2 > 0
+          if (self$use_second) {
+            self$fc2 <- torch::nn_linear(hidden, hidden2)
+            self$bn2 <- torch::nn_batch_norm1d(hidden2)
+            self$drop2 <- torch::nn_dropout(p = 0.10)
+            self$out <- torch::nn_linear(hidden2, 1)
+          } else {
+            self$out <- torch::nn_linear(hidden, 1)
+          }
         },
         forward = function(x) {
           x <- self$fc1(x)
+          x <- self$bn1(x)
           x <- torch::nnf_relu(x)
-          x <- self$drop(x)
-          self$fc2(x)
+          x <- self$drop1(x)
+          if (self$use_second) {
+            x <- self$fc2(x)
+            x <- self$bn2(x)
+            x <- torch::nnf_relu(x)
+            x <- self$drop2(x)
+          }
+          self$out(x)
         }
-      )(input_size, hidden_size)
+      )(input_size, hidden_size, hidden_size_2)
 
       optimizer <- torch::optim_adam(model$parameters, lr = learning_rate)
-      criterion <- torch::nn_mse_loss()
+      criterion <- torch::nn_huber_loss(delta = 1)
+      clone_state_dict <- function(state_dict) {
+        cloned <- lapply(state_dict, function(value) value$clone())
+        names(cloned) <- names(state_dict)
+        cloned
+      }
+      best_metric <- Inf
+      best_state <- clone_state_dict(model$state_dict())
 
       withProgress(message = "Training torch regression model", value = 0, {
         for (epoch in seq_len(epochs)) {
@@ -3435,8 +3611,8 @@ observeEvent(input$model_file, {
           torch::with_no_grad({
             pred_test <- model(x_test)
             loss_test <- criterion(pred_test, y_test)
-            pred_test_num <- as.numeric(pred_test$to(device = "cpu"))
-            y_test_num <- as.numeric(y_test$to(device = "cpu"))
+            pred_test_num <- as.numeric(pred_test$to(device = "cpu")) * y_scale + y_center
+            y_test_num <- as.numeric(y_test$to(device = "cpu")) * y_scale + y_center
             rmse <- sqrt(mean((pred_test_num - y_test_num)^2))
             history_df <<- rbind(history_df, data.frame(
               epoch = epoch,
@@ -3444,15 +3620,20 @@ observeEvent(input$model_file, {
               test_loss = as.numeric(loss_test$item()),
               metric = rmse
             ))
+            if (is.finite(rmse) && rmse < best_metric) {
+              best_metric <<- rmse
+              best_state <<- clone_state_dict(model$state_dict())
+            }
           })
           incProgress(1 / epochs, detail = paste("Epoch", epoch, "of", epochs))
         }
       })
 
+      model$load_state_dict(best_state)
       model$eval()
       torch::with_no_grad({
         pred_test <- model(x_test)
-        pred_test_num <- as.numeric(pred_test$to(device = "cpu"))
+        pred_test_num <- as.numeric(pred_test$to(device = "cpu")) * y_scale + y_center
       })
       truth_num <- y_numeric[test_idx]
       mae <- mean(abs(pred_test_num - truth_num))
@@ -3466,16 +3647,27 @@ observeEvent(input$model_file, {
         stringsAsFactors = FALSE
       )
       metrics_df <- data.frame(
-        Metric = c("Task", "Train samples", "Test samples", "MAE", "RMSE", "R2"),
-        Value = c("regression", length(train_idx), length(test_idx), round(mae, 4), round(rmse, 4), round(r2, 4)),
+        Metric = c("Task", "Train samples", "Test samples", "MAE", "RMSE", "R2", "Best epoch RMSE"),
+        Value = c("regression", length(train_idx), length(test_idx), round(mae, 4), round(rmse, 4), round(r2, 4), round(best_metric, 4)),
         stringsAsFactors = FALSE
       )
-      dl_log(paste0("Deep Learning (regression) finished. RMSE: ", round(rmse, 4), " | R2: ", round(r2, 4)))
+      dl_log(paste0(
+        "Deep Learning (regression) finished. RMSE: ",
+        round(rmse, 4),
+        " | R2: ",
+        round(r2, 4),
+        " | Best epoch RMSE: ",
+        round(best_metric, 4)
+      ))
     }
 
     dl_history(history_df)
     dl_metrics(metrics_df)
     dl_predictions(predictions_df)
+    weight_views <- build_dl_weight_views(model, predictor_names)
+    dl_model_shape(weight_views$shape_text)
+    dl_weight_summary(weight_views$summary_df)
+    dl_weight_heatmap(weight_views$heatmap_df)
   })
 
   output$dl_training_log <- renderText({
@@ -3489,7 +3681,8 @@ observeEvent(input$model_file, {
       geom_line(aes(y = train_loss, color = "Train loss"), linewidth = 1) +
       geom_line(aes(y = test_loss, color = "Test loss"), linewidth = 1) +
       scale_color_manual(values = c("Train loss" = "#1f77b4", "Test loss" = "#d62728")) +
-      labs(x = "Epoch", y = "Loss", color = "", title = "Training/Test Loss")
+      labs(x = "Epoch", y = "Loss", color = "", title = "Training/Test Loss") +
+      theme_minimal(base_size = 13)
   })
 
   output$dl_metric_plot <- renderPlot({
@@ -3498,7 +3691,8 @@ observeEvent(input$model_file, {
     metric_label <- if (identical(dl_task_used(), "regression")) "RMSE (test)" else "Accuracy (test)"
     ggplot(history_df, aes(x = epoch, y = metric)) +
       geom_line(color = "#2ca02c", linewidth = 1) +
-      labs(x = "Epoch", y = metric_label, title = "Model Performance by Epoch")
+      labs(x = "Epoch", y = metric_label, title = "Model Performance by Epoch") +
+      theme_minimal(base_size = 13)
   })
 
   output$dl_metrics_table <- DT::renderDT({
@@ -3509,6 +3703,43 @@ observeEvent(input$model_file, {
   output$dl_predictions_table <- DT::renderDT({
     req(nrow(dl_predictions()) > 0)
     DT::datatable(dl_predictions(), options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  })
+
+  output$dl_model_shape <- renderText({
+    dl_model_shape()
+  })
+
+  output$dl_weight_plot <- renderPlot({
+    weight_df <- dl_weight_summary()
+    req(nrow(weight_df) > 0)
+    ggplot(weight_df, aes(x = reorder(Feature, MeanAbsWeight), y = MeanAbsWeight)) +
+      geom_col(fill = "#1f77b4", alpha = 0.85) +
+      coord_flip() +
+      labs(
+        x = "Input feature",
+        y = "Mean |weight| (input -> hidden1)",
+        title = "Top weighted input features"
+      ) +
+      theme_minimal(base_size = 12)
+  })
+
+  output$dl_layer_plot <- renderPlot({
+    heat_df <- dl_weight_heatmap()
+    req(nrow(heat_df) > 0)
+    ggplot(heat_df, aes(x = Feature, y = factor(HiddenUnit), fill = Weight)) +
+      geom_tile(color = "white", linewidth = 0.2) +
+      scale_fill_gradient2(low = "#2c7bb6", mid = "#f7f7f7", high = "#d7191c", midpoint = 0) +
+      labs(
+        x = "Top features",
+        y = "Hidden unit (layer 1)",
+        fill = "Weight",
+        title = "Layer weight map (input -> hidden1)"
+      ) +
+      theme_minimal(base_size = 11) +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank()
+      )
   })
 
 

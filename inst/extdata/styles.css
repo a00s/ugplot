@@ -258,6 +258,38 @@ button.ml-section-toggle:focus,
   min-width: 130px;
 }
 
+.dl-status-box {
+  padding: 12px 14px;
+  background: #f5f8fc;
+  border: 1px solid #d8e2f0;
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+
+.dl-status-box pre {
+  margin: 0;
+  background: transparent;
+  border: none;
+  padding: 0;
+  white-space: pre-wrap;
+  color: #2f3b46;
+  font-size: 15px;
+}
+
+.dl-panel {
+  background: #ffffff;
+  border: 1px solid #e3e7ed;
+  border-radius: 10px;
+  padding: 8px;
+  margin-bottom: 12px;
+}
+
+.dl-panel h4 {
+  margin-top: 4px;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
 .ml-summary-table tbody tr:nth-child(even) td {
   background: #fbfcfd;
 }
