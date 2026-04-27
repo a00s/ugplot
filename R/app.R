@@ -3174,19 +3174,41 @@ observeEvent(input$model_file, {
   dl_log <- reactiveVal("Deep Learning idle. Load data and click train.")
   dl_task_used <- reactiveVal("classification")
 
-  observe({
-    if (!(is.data.frame(changed_table) || is.matrix(changed_table))) {
-      updateSelectInput(session, "dl_target", choices = character(0), selected = character(0))
-      return()
-    }
-    available_columns <- intersect(colnames(changed_table), input$column_checkbox_group %||% character(0))
-    if (length(available_columns) == 0) {
-      available_columns <- colnames(changed_table)
-    }
-    current_target <- input$dl_target
-    selected_target <- if (!is.null(current_target) && current_target %in% available_columns) current_target else available_columns[1]
-    updateSelectInput(session, "dl_target", choices = available_columns, selected = selected_target)
-  })
+  observeEvent(
+    list(input$tabs, input$column_checkbox_group, input$file1, input$load_sample),
+    {
+      if (!(is.data.frame(changed_table) || is.matrix(changed_table))) {
+        updateSelectInput(session, "dl_target", choices = character(0), selected = character(0))
+        return()
+      }
+
+      all_columns <- colnames(changed_table)
+      if (is.null(all_columns) || length(all_columns) == 0) {
+        updateSelectInput(session, "dl_target", choices = character(0), selected = character(0))
+        return()
+      }
+
+      selected_columns <- input$column_checkbox_group %||% character(0)
+      available_columns <- if (length(selected_columns) > 0) {
+        intersect(all_columns, selected_columns)
+      } else {
+        all_columns
+      }
+      if (length(available_columns) == 0) {
+        available_columns <- all_columns
+      }
+
+      current_target <- input$dl_target
+      selected_target <- if (!is.null(current_target) && current_target %in% available_columns) {
+        current_target
+      } else {
+        available_columns[1]
+      }
+
+      updateSelectInput(session, "dl_target", choices = available_columns, selected = selected_target)
+    },
+    ignoreNULL = FALSE
+  )
 
   observeEvent(input$dl_run_training, {
     req(changed_table)
