@@ -646,7 +646,7 @@ ui <- fluidPage(
               class = "dl-panel",
               tags$h4("Network view"),
               tags$div(class = "dl-model-shape", textOutput("dl_model_shape")),
-              plotOutput("dl_path_plot", height = "360px"),
+              plotlyOutput("dl_path_plot", height = "420px"),
               tags$div(class = "dl-path-table-wrap", DT::DTOutput("dl_path_table")),
               plotOutput("dl_weight_plot", height = "250px")
             ),
@@ -3684,6 +3684,7 @@ observeEvent(input$model_file, {
       best_state <- clone_state_dict(model$state_dict())
 
       withProgress(message = "Training torch classification model", value = 0, {
+        snapshot_interval <- max(1, floor(epochs / 12))
         for (epoch in seq_len(epochs)) {
           model$train()
           train_order <- sample.int(length(train_idx))
@@ -3718,7 +3719,7 @@ observeEvent(input$model_file, {
               best_state <<- clone_state_dict(model$state_dict())
             }
           })
-          if (epoch == 1 || epoch == epochs || epoch %% max(1, floor(epochs / 8)) == 0) {
+          if (epoch == 1 || epoch == epochs || epoch %% snapshot_interval == 0) {
             update_dl_views(model, predictor_names, build_dl_weight_views, epoch, epochs)
           }
           incProgress(1 / epochs, detail = paste("Epoch", epoch, "of", epochs))
@@ -3827,6 +3828,7 @@ observeEvent(input$model_file, {
       best_state <- clone_state_dict(model$state_dict())
 
       withProgress(message = "Training torch regression model", value = 0, {
+        snapshot_interval <- max(1, floor(epochs / 12))
         for (epoch in seq_len(epochs)) {
           model$train()
           train_order <- sample.int(length(train_idx))
@@ -3861,7 +3863,7 @@ observeEvent(input$model_file, {
               best_state <<- clone_state_dict(model$state_dict())
             }
           })
-          if (epoch == 1 || epoch == epochs || epoch %% max(1, floor(epochs / 8)) == 0) {
+          if (epoch == 1 || epoch == epochs || epoch %% snapshot_interval == 0) {
             update_dl_views(model, predictor_names, build_dl_weight_views, epoch, epochs)
           }
           incProgress(1 / epochs, detail = paste("Epoch", epoch, "of", epochs))
@@ -3926,8 +3928,17 @@ observeEvent(input$model_file, {
     tags$div(class = "dl-panel", plotOutput("dl_metric_plot", height = "260px"))
   })
 
-  outputOptions(output, "dl_loss_panel", suspendWhenHidden = FALSE)
-  outputOptions(output, "dl_metric_panel", suspendWhenHidden = FALSE)
+  set_output_option_if_registered <- function(output_id, suspend_when_hidden = FALSE) {
+    tryCatch({
+      if (output_id %in% names(output)) {
+        outputOptions(output, output_id, suspendWhenHidden = suspend_when_hidden)
+      }
+    }, error = function(e) {
+      NULL
+    })
+  }
+  set_output_option_if_registered("dl_loss_panel", FALSE)
+  set_output_option_if_registered("dl_metric_panel", FALSE)
 
   output$dl_loss_plot <- renderPlot({
     history_df <- dl_history()
@@ -4004,7 +4015,7 @@ observeEvent(input$model_file, {
     dl_model_shape()
   })
 
-  output$dl_path_plot <- renderPlot({
+  output$dl_path_plot <- plotly::renderPlotly({
     edges <- dl_path_edges()
     nodes <- dl_path_nodes()
     req(nrow(edges) > 0, nrow(nodes) > 0)
@@ -4014,7 +4025,14 @@ observeEvent(input$model_file, {
     layer_order <- c("Input", hidden_levels, "Output")
     nodes$layer <- factor(nodes$layer, levels = layer_order)
     nodes <- nodes[order(nodes$layer, nodes$idx), , drop = FALSE]
-    nodes$y <- ave(nodes$idx, nodes$layer, FUN = function(x) seq_along(x))
+    max_nodes_layer <- max(as.numeric(table(nodes$layer)))
+    nodes$y <- ave(nodes$idx, nodes$layer, FUN = function(x) {
+      n_layer <- length(x)
+      if (n_layer <= 1) {
+        return((max_nodes_layer + 1) / 2)
+      }
+      seq(1, max_nodes_layer, length.out = n_layer)
+    })
 
     edge_plot <- merge(edges, nodes[, c("node", "layer", "y")], by.x = "from", by.y = "node", all.x = TRUE)
     names(edge_plot)[names(edge_plot) == "layer"] <- "from_layer"
@@ -4026,23 +4044,34 @@ observeEvent(input$model_file, {
     edge_plot$from_x <- as.numeric(factor(edge_plot$from_layer, levels = layer_order))
     edge_plot$to_x <- as.numeric(factor(edge_plot$to_layer, levels = layer_order))
     edge_plot$abs_weight <- abs(edge_plot$weight)
+    edge_plot$hover <- paste0(
+      "From: ", edge_plot$from,
+      "<br>To: ", edge_plot$to,
+      "<br>Weight: ", round(edge_plot$weight, 5)
+    )
 
     node_plot <- nodes
     node_plot$x <- as.numeric(factor(node_plot$layer, levels = layer_order))
+    node_plot$hover <- paste0(
+      "Node: ", node_plot$node,
+      "<br>Layer: ", node_plot$layer,
+      "<br>Position: ", node_plot$idx
+    )
 
-    ggplot() +
+    p <- ggplot() +
       geom_segment(
         data = edge_plot,
         aes(
           x = from_x, y = from_y,
           xend = to_x, yend = to_y,
-          color = weight, linewidth = abs_weight
+          color = weight, linewidth = abs_weight,
+          text = hover
         ),
         alpha = 0.75
       ) +
       geom_point(
         data = node_plot,
-        aes(x = x, y = y),
+        aes(x = x, y = y, text = hover),
         color = "#111111",
         fill = "#fefefe",
         size = 2.4,
@@ -4058,13 +4087,18 @@ observeEvent(input$model_file, {
       scale_linewidth(range = c(0.2, 1.8), guide = "none") +
       labs(
         x = "Layer",
-        y = "Top nodes",
+        y = "Nodes (full layer span)",
         color = "Weight",
         title = "Top weighted paths across layers"
       ) +
       theme_minimal(base_size = 12) +
       theme(panel.grid.minor = element_blank())
+
+    ggplotly(p, tooltip = "text") %>%
+      config(displaylogo = FALSE)
   })
+  set_output_option_if_registered("dl_path_plot", FALSE)
+  set_output_option_if_registered("dl_model_shape", FALSE)
 
   output$dl_path_table <- DT::renderDT({
     path_df <- dl_top_paths()
