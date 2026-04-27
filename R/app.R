@@ -608,6 +608,39 @@ ui <- fluidPage(
         br(), br(),
         DT::DTOutput("model_analysis_table")
       )
+    ),
+    tabPanel("7) DEEP LEARNING",
+      fluidPage(
+        tags$h4("Deep Learning (torch)"),
+        tags$p("Treine redes neurais simples usando o backend torch no R."),
+        fluidRow(
+          column(
+            4,
+            selectInput("dl_target", "Target column:", choices = NULL),
+            selectInput(
+              "dl_task",
+              "Task type:",
+              choices = c("Auto-detect" = "auto", "Classification" = "classification", "Regression" = "regression"),
+              selected = "auto"
+            ),
+            sliderInput("dl_test_split", "Test split (%):", min = 10, max = 40, value = 20, step = 5),
+            numericInput("dl_seed", "Random seed:", value = 42, min = 1, step = 1),
+            numericInput("dl_epochs", "Epochs:", value = 50, min = 5, step = 5),
+            numericInput("dl_batch_size", "Batch size:", value = 32, min = 4, step = 4),
+            numericInput("dl_hidden_units", "Hidden units:", value = 32, min = 4, step = 4),
+            numericInput("dl_learning_rate", "Learning rate:", value = 0.001, min = 0.0001, step = 0.0001),
+            actionButton("dl_run_training", "Train Deep Learning model")
+          ),
+          column(
+            8,
+            verbatimTextOutput("dl_training_log"),
+            plotOutput("dl_loss_plot", height = "260px"),
+            plotOutput("dl_metric_plot", height = "260px"),
+            DT::DTOutput("dl_metrics_table"),
+            DT::DTOutput("dl_predictions_table")
+          )
+        )
+      )
     )
   )
 )
@@ -663,6 +696,7 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   showTab(inputId = "tabs", target = "4) 2D PLOT")
   showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
   showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
+  showTab(inputId = "tabs", target = "7) DEEP LEARNING")
 }
 
 build_missing_mask <- function(df, missing_definition = c("empty", "na"), zero_exceptions = character(0)) {
@@ -1084,6 +1118,7 @@ load_dataset_into_table <- function(localsession) {
     showTab(inputId = "tabs", target = "4) 2D PLOT")
     showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
     showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
+    showTab(inputId = "tabs", target = "7) DEEP LEARNING")
   }
 }
 
@@ -1137,6 +1172,7 @@ server <- function(input, output, session) {
   hideTab(inputId = "tabs", target = "4) 2D PLOT")
   hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
   hideTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
+  hideTab(inputId = "tabs", target = "7) DEEP LEARNING")
 
   disable("merge_all_columns")
   disable("merge_all_rows")
@@ -3132,6 +3168,304 @@ observeEvent(input$model_file, {
     model_analysis_results_data(output_table)
   })
 
+  dl_history <- reactiveVal(data.frame())
+  dl_metrics <- reactiveVal(data.frame())
+  dl_predictions <- reactiveVal(data.frame())
+  dl_log <- reactiveVal("Deep Learning idle. Load data and click train.")
+  dl_task_used <- reactiveVal("classification")
+
+  observe({
+    if (!(is.data.frame(changed_table) || is.matrix(changed_table))) {
+      updateSelectInput(session, "dl_target", choices = character(0), selected = character(0))
+      return()
+    }
+    available_columns <- intersect(colnames(changed_table), input$column_checkbox_group %||% character(0))
+    if (length(available_columns) == 0) {
+      available_columns <- colnames(changed_table)
+    }
+    current_target <- input$dl_target
+    selected_target <- if (!is.null(current_target) && current_target %in% available_columns) current_target else available_columns[1]
+    updateSelectInput(session, "dl_target", choices = available_columns, selected = selected_target)
+  })
+
+  observeEvent(input$dl_run_training, {
+    req(changed_table)
+    if (!requireNamespace("torch", quietly = TRUE)) {
+      dl_log("Package 'torch' is not installed. Install it with install.packages('torch') and torch::install_torch().")
+      return()
+    }
+
+    selected_rows <- input$row_checkbox_group %||% rownames(changed_table)
+    selected_cols <- input$column_checkbox_group %||% colnames(changed_table)
+    local_df <- as.data.frame(changed_table[selected_rows, selected_cols, drop = FALSE], stringsAsFactors = FALSE)
+    target_col <- input$dl_target
+    if (is.null(target_col) || !(target_col %in% colnames(local_df))) {
+      dl_log("Please choose a valid target column.")
+      return()
+    }
+
+    set.seed(input$dl_seed)
+    torch::torch_manual_seed(input$dl_seed)
+
+    target_raw <- local_df[[target_col]]
+    predictors_raw <- local_df[, setdiff(colnames(local_df), target_col), drop = FALSE]
+
+    if (ncol(predictors_raw) == 0) {
+      dl_log("No predictor columns left after selecting target.")
+      return()
+    }
+
+    predictors_raw[] <- lapply(predictors_raw, function(col) {
+      if (is.character(col)) as.factor(col) else col
+    })
+    design_matrix <- model.matrix(~ . - 1, data = predictors_raw)
+    design_matrix <- scale(design_matrix)
+    design_matrix[is.na(design_matrix)] <- 0
+
+    valid_rows <- complete.cases(design_matrix) & !is.na(target_raw)
+    design_matrix <- design_matrix[valid_rows, , drop = FALSE]
+    target_raw <- target_raw[valid_rows]
+    if (nrow(design_matrix) < 20) {
+      dl_log("Not enough valid rows for deep learning (need at least 20 rows).")
+      return()
+    }
+
+    detected_task <- if (is.numeric(target_raw) && length(unique(target_raw)) > 10) "regression" else "classification"
+    task <- if (isTruthy(input$dl_task) && input$dl_task != "auto") input$dl_task else detected_task
+    dl_task_used(task)
+
+    split_fraction <- (100 - input$dl_test_split) / 100
+    train_idx <- sample(seq_len(nrow(design_matrix)), size = floor(split_fraction * nrow(design_matrix)))
+    test_idx <- setdiff(seq_len(nrow(design_matrix)), train_idx)
+    if (length(test_idx) < 2 || length(train_idx) < 5) {
+      dl_log("Train/test split produced too few samples. Adjust split or dataset size.")
+      return()
+    }
+
+    x_train <- torch::torch_tensor(design_matrix[train_idx, , drop = FALSE], dtype = torch::torch_float())
+    x_test <- torch::torch_tensor(design_matrix[test_idx, , drop = FALSE], dtype = torch::torch_float())
+
+    input_size <- ncol(design_matrix)
+    hidden_size <- max(4, as.integer(input$dl_hidden_units))
+    epochs <- max(1, as.integer(input$dl_epochs))
+    batch_size <- max(1, as.integer(input$dl_batch_size))
+    learning_rate <- as.numeric(input$dl_learning_rate)
+
+    history_df <- data.frame(epoch = integer(), train_loss = numeric(), test_loss = numeric(), metric = numeric())
+    predictions_df <- data.frame()
+    metrics_df <- data.frame()
+
+    if (task == "classification") {
+      y_factor <- as.factor(target_raw)
+      if (nlevels(y_factor) < 2) {
+        dl_log("Classification requires at least two classes in the target.")
+        return()
+      }
+
+      y_train <- torch::torch_tensor(as.integer(y_factor[train_idx]), dtype = torch::torch_long())
+      y_test <- torch::torch_tensor(as.integer(y_factor[test_idx]), dtype = torch::torch_long())
+      class_levels <- levels(y_factor)
+      output_size <- nlevels(y_factor)
+
+      model <- torch::nn_module(
+        initialize = function(in_features, hidden, out_features) {
+          self$fc1 <- torch::nn_linear(in_features, hidden)
+          self$drop <- torch::nn_dropout(p = 0.2)
+          self$fc2 <- torch::nn_linear(hidden, out_features)
+        },
+        forward = function(x) {
+          x <- self$fc1(x)
+          x <- torch::nnf_relu(x)
+          x <- self$drop(x)
+          self$fc2(x)
+        }
+      )(input_size, hidden_size, output_size)
+
+      optimizer <- torch::optim_adam(model$parameters, lr = learning_rate)
+      criterion <- torch::nn_cross_entropy_loss()
+
+      withProgress(message = "Training torch classification model", value = 0, {
+        for (epoch in seq_len(epochs)) {
+          model$train()
+          train_order <- sample.int(length(train_idx))
+          batch_list <- split(train_order, ceiling(seq_along(train_order) / batch_size))
+          batch_losses <- numeric(length(batch_list))
+          for (b in seq_along(batch_list)) {
+            batch_ids <- batch_list[[b]]
+            optimizer$zero_grad()
+            logits_train <- model(x_train[batch_ids, ])
+            loss_train <- criterion(logits_train, y_train[batch_ids])
+            loss_train$backward()
+            optimizer$step()
+            batch_losses[b] <- as.numeric(loss_train$item())
+          }
+          mean_train_loss <- mean(batch_losses)
+
+          model$eval()
+          torch::with_no_grad({
+            logits_test <- model(x_test)
+            loss_test <- criterion(logits_test, y_test)
+            pred_idx <- as.integer(torch::torch_argmax(logits_test, dim = 2)$to(device = "cpu"))
+            y_test_vec <- as.integer(y_test$to(device = "cpu"))
+            acc <- mean(pred_idx == y_test_vec)
+            history_df <<- rbind(history_df, data.frame(
+              epoch = epoch,
+              train_loss = mean_train_loss,
+              test_loss = as.numeric(loss_test$item()),
+              metric = acc
+            ))
+          })
+          incProgress(1 / epochs, detail = paste("Epoch", epoch, "of", epochs))
+        }
+      })
+
+      model$eval()
+      torch::with_no_grad({
+        logits_test <- model(x_test)
+        pred_idx <- as.integer(torch::torch_argmax(logits_test, dim = 2)$to(device = "cpu"))
+      })
+      truth_idx <- as.integer(y_factor[test_idx])
+      predictions_df <- data.frame(
+        Sample = rownames(local_df)[valid_rows][test_idx],
+        Truth = class_levels[truth_idx],
+        Predicted = class_levels[pred_idx],
+        stringsAsFactors = FALSE
+      )
+      final_acc <- mean(predictions_df$Truth == predictions_df$Predicted)
+      metrics_df <- data.frame(
+        Metric = c("Task", "Classes", "Train samples", "Test samples", "Final accuracy"),
+        Value = c("classification", output_size, length(train_idx), length(test_idx), round(final_acc, 4)),
+        stringsAsFactors = FALSE
+      )
+      dl_log(paste0("Deep Learning (classification) finished. Accuracy: ", round(final_acc, 4)))
+    } else {
+      y_numeric <- suppressWarnings(as.numeric(target_raw))
+      valid_target <- !is.na(y_numeric)
+      if (!all(valid_target)) {
+        design_matrix <- design_matrix[valid_target, , drop = FALSE]
+        y_numeric <- y_numeric[valid_target]
+        train_idx <- sample(seq_len(nrow(design_matrix)), size = floor(split_fraction * nrow(design_matrix)))
+        test_idx <- setdiff(seq_len(nrow(design_matrix)), train_idx)
+        x_train <- torch::torch_tensor(design_matrix[train_idx, , drop = FALSE], dtype = torch::torch_float())
+        x_test <- torch::torch_tensor(design_matrix[test_idx, , drop = FALSE], dtype = torch::torch_float())
+      }
+
+      y_train <- torch::torch_tensor(matrix(y_numeric[train_idx], ncol = 1), dtype = torch::torch_float())
+      y_test <- torch::torch_tensor(matrix(y_numeric[test_idx], ncol = 1), dtype = torch::torch_float())
+
+      model <- torch::nn_module(
+        initialize = function(in_features, hidden) {
+          self$fc1 <- torch::nn_linear(in_features, hidden)
+          self$drop <- torch::nn_dropout(p = 0.2)
+          self$fc2 <- torch::nn_linear(hidden, 1)
+        },
+        forward = function(x) {
+          x <- self$fc1(x)
+          x <- torch::nnf_relu(x)
+          x <- self$drop(x)
+          self$fc2(x)
+        }
+      )(input_size, hidden_size)
+
+      optimizer <- torch::optim_adam(model$parameters, lr = learning_rate)
+      criterion <- torch::nn_mse_loss()
+
+      withProgress(message = "Training torch regression model", value = 0, {
+        for (epoch in seq_len(epochs)) {
+          model$train()
+          train_order <- sample.int(length(train_idx))
+          batch_list <- split(train_order, ceiling(seq_along(train_order) / batch_size))
+          batch_losses <- numeric(length(batch_list))
+          for (b in seq_along(batch_list)) {
+            batch_ids <- batch_list[[b]]
+            optimizer$zero_grad()
+            pred_train <- model(x_train[batch_ids, ])
+            loss_train <- criterion(pred_train, y_train[batch_ids, ])
+            loss_train$backward()
+            optimizer$step()
+            batch_losses[b] <- as.numeric(loss_train$item())
+          }
+          mean_train_loss <- mean(batch_losses)
+
+          model$eval()
+          torch::with_no_grad({
+            pred_test <- model(x_test)
+            loss_test <- criterion(pred_test, y_test)
+            pred_test_num <- as.numeric(pred_test$to(device = "cpu"))
+            y_test_num <- as.numeric(y_test$to(device = "cpu"))
+            rmse <- sqrt(mean((pred_test_num - y_test_num)^2))
+            history_df <<- rbind(history_df, data.frame(
+              epoch = epoch,
+              train_loss = mean_train_loss,
+              test_loss = as.numeric(loss_test$item()),
+              metric = rmse
+            ))
+          })
+          incProgress(1 / epochs, detail = paste("Epoch", epoch, "of", epochs))
+        }
+      })
+
+      model$eval()
+      torch::with_no_grad({
+        pred_test <- model(x_test)
+        pred_test_num <- as.numeric(pred_test$to(device = "cpu"))
+      })
+      truth_num <- y_numeric[test_idx]
+      mae <- mean(abs(pred_test_num - truth_num))
+      rmse <- sqrt(mean((pred_test_num - truth_num)^2))
+      r2 <- if (stats::var(truth_num) > 0) 1 - sum((pred_test_num - truth_num)^2) / sum((truth_num - mean(truth_num))^2) else NA_real_
+      predictions_df <- data.frame(
+        Sample = rownames(local_df)[valid_rows][test_idx],
+        Truth = round(truth_num, 6),
+        Predicted = round(pred_test_num, 6),
+        Residual = round(pred_test_num - truth_num, 6),
+        stringsAsFactors = FALSE
+      )
+      metrics_df <- data.frame(
+        Metric = c("Task", "Train samples", "Test samples", "MAE", "RMSE", "R2"),
+        Value = c("regression", length(train_idx), length(test_idx), round(mae, 4), round(rmse, 4), round(r2, 4)),
+        stringsAsFactors = FALSE
+      )
+      dl_log(paste0("Deep Learning (regression) finished. RMSE: ", round(rmse, 4), " | R2: ", round(r2, 4)))
+    }
+
+    dl_history(history_df)
+    dl_metrics(metrics_df)
+    dl_predictions(predictions_df)
+  })
+
+  output$dl_training_log <- renderText({
+    dl_log()
+  })
+
+  output$dl_loss_plot <- renderPlot({
+    history_df <- dl_history()
+    req(nrow(history_df) > 0)
+    ggplot(history_df, aes(x = epoch)) +
+      geom_line(aes(y = train_loss, color = "Train loss"), linewidth = 1) +
+      geom_line(aes(y = test_loss, color = "Test loss"), linewidth = 1) +
+      scale_color_manual(values = c("Train loss" = "#1f77b4", "Test loss" = "#d62728")) +
+      labs(x = "Epoch", y = "Loss", color = "", title = "Training/Test Loss")
+  })
+
+  output$dl_metric_plot <- renderPlot({
+    history_df <- dl_history()
+    req(nrow(history_df) > 0)
+    metric_label <- if (identical(dl_task_used(), "regression")) "RMSE (test)" else "Accuracy (test)"
+    ggplot(history_df, aes(x = epoch, y = metric)) +
+      geom_line(color = "#2ca02c", linewidth = 1) +
+      labs(x = "Epoch", y = metric_label, title = "Model Performance by Epoch")
+  })
+
+  output$dl_metrics_table <- DT::renderDT({
+    req(nrow(dl_metrics()) > 0)
+    DT::datatable(dl_metrics(), options = list(dom = "t", paging = FALSE, scrollX = TRUE), rownames = FALSE)
+  })
+
+  output$dl_predictions_table <- DT::renderDT({
+    req(nrow(dl_predictions()) > 0)
+    DT::datatable(dl_predictions(), options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  })
 
 
   session$onSessionEnded(function() {
