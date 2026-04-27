@@ -3510,85 +3510,66 @@ observeEvent(input$model_file, {
         }
       }
 
-      hidden1_labels <- paste0("H1_", seq_len(nrow(fc1_w)))
       input_labels <- feature_names
-      path_nodes_df <- data.frame(
-        node = c(input_labels, hidden1_labels),
-        layer = c(rep("Input", length(input_labels)), rep("Hidden1", length(hidden1_labels))),
-        idx = c(seq_along(input_labels), seq_along(hidden1_labels)),
-        stringsAsFactors = FALSE
-      )
-      path_edges_df <- data.frame()
+      hidden_labels_list <- lapply(seq_along(hidden_weights), function(i) {
+        paste0("H", i, "_", seq_len(nrow(hidden_weights[[i]])))
+      })
 
-      fc1_abs_flat <- abs(fc1_w)
-      edge_cap_fc1 <- min(length(fc1_abs_flat), max(30, round(length(fc1_abs_flat) * 0.06)))
-      top_fc1_idx <- order(fc1_abs_flat, decreasing = TRUE)[seq_len(edge_cap_fc1)]
-      fc1_rc <- arrayInd(top_fc1_idx, dim(fc1_abs_flat))
-      fc1_edges <- data.frame(
-        from = input_labels[fc1_rc[, 2]],
-        to = hidden1_labels[fc1_rc[, 1]],
-        weight = as.numeric(fc1_w[top_fc1_idx]),
+      path_nodes_list <- list(data.frame(
+        node = input_labels,
+        layer = "Input",
+        idx = seq_along(input_labels),
         stringsAsFactors = FALSE
-      )
-
-      if (!is.null(fc2_w)) {
-        hidden2_labels <- paste0("H2_", seq_len(nrow(fc2_w)))
-        path_nodes_df <- rbind(path_nodes_df, data.frame(
-          node = hidden2_labels,
-          layer = "Hidden2",
-          idx = seq_along(hidden2_labels),
-          stringsAsFactors = FALSE
-        ))
-        fc2_abs_flat <- abs(fc2_w)
-        edge_cap_fc2 <- min(length(fc2_abs_flat), max(30, round(length(fc2_abs_flat) * 0.10)))
-        top_fc2_idx <- order(fc2_abs_flat, decreasing = TRUE)[seq_len(edge_cap_fc2)]
-        fc2_rc <- arrayInd(top_fc2_idx, dim(fc2_abs_flat))
-        fc2_edges <- data.frame(
-          from = hidden1_labels[fc2_rc[, 2]],
-          to = hidden2_labels[fc2_rc[, 1]],
-          weight = as.numeric(fc2_w[top_fc2_idx]),
+      ))
+      for (i in seq_along(hidden_labels_list)) {
+        path_nodes_list[[length(path_nodes_list) + 1]] <- data.frame(
+          node = hidden_labels_list[[i]],
+          layer = paste0("Hidden", i),
+          idx = seq_along(hidden_labels_list[[i]]),
           stringsAsFactors = FALSE
         )
-        out_source <- hidden2_labels
-      } else {
-        fc2_edges <- data.frame()
-        out_source <- hidden1_labels
       }
-      if (ncol(effective_out_w) != length(out_source)) {
-        shape_text <- paste0(
-          shape_text,
-          " | Path view unavailable due to incompatible projection dimensions."
-        )
-        return(list(
-          shape_text = shape_text,
-          summary_df = summary_df,
-          heatmap_df = heatmap_df,
-          path_edges_df = data.frame(),
-          path_nodes_df = data.frame(),
-          top_paths_df = data.frame()
-        ))
-      }
-
       out_labels <- paste0("O_", seq_len(nrow(out_w)))
-      path_nodes_df <- rbind(path_nodes_df, data.frame(
+      path_nodes_list[[length(path_nodes_list) + 1]] <- data.frame(
         node = out_labels,
         layer = "Output",
         idx = seq_along(out_labels),
         stringsAsFactors = FALSE
-      ))
-      out_abs_flat <- abs(effective_out_w)
-      edge_cap_out <- min(length(out_abs_flat), max(15, round(length(out_abs_flat) * 0.25)))
-      top_out_idx <- order(out_abs_flat, decreasing = TRUE)[seq_len(edge_cap_out)]
-      out_rc <- arrayInd(top_out_idx, dim(out_abs_flat))
-      out_edges <- data.frame(
-        from = out_source[out_rc[, 2]],
-        to = out_labels[out_rc[, 1]],
-        weight = as.numeric(effective_out_w[top_out_idx]),
-        stringsAsFactors = FALSE
       )
-      path_edges_df <- rbind(fc1_edges, fc2_edges, out_edges)
+      path_nodes_df <- do.call(rbind, path_nodes_list)
+
+      edge_from_weight <- function(weight_matrix, from_labels, to_labels, pct, min_edges) {
+        flat <- abs(weight_matrix)
+        edge_cap <- min(length(flat), max(min_edges, round(length(flat) * pct)))
+        top_idx <- order(flat, decreasing = TRUE)[seq_len(edge_cap)]
+        rc <- arrayInd(top_idx, dim(flat))
+        data.frame(
+          from = from_labels[rc[, 2]],
+          to = to_labels[rc[, 1]],
+          weight = as.numeric(weight_matrix[top_idx]),
+          stringsAsFactors = FALSE
+        )
+      }
+
+      path_edges_list <- list()
+      path_edges_list[[length(path_edges_list) + 1]] <- edge_from_weight(
+        hidden_weights[[1]], input_labels, hidden_labels_list[[1]], pct = 0.06, min_edges = 30
+      )
+      if (length(hidden_weights) > 1) {
+        for (i in 2:length(hidden_weights)) {
+          path_edges_list[[length(path_edges_list) + 1]] <- edge_from_weight(
+            hidden_weights[[i]], hidden_labels_list[[i - 1]], hidden_labels_list[[i]], pct = 0.10, min_edges = 30
+          )
+        }
+      }
+      path_edges_list[[length(path_edges_list) + 1]] <- edge_from_weight(
+        out_w, hidden_labels_list[[length(hidden_labels_list)]], out_labels, pct = 0.25, min_edges = 15
+      )
+      path_edges_df <- do.call(rbind, path_edges_list)
 
       top_paths_df <- data.frame()
+      hidden1_labels <- hidden_labels_list[[1]]
+      hidden2_labels <- if (length(hidden_labels_list) >= 2) hidden_labels_list[[2]] else NULL
       if (!is.null(fc2_w)) {
         limit_in <- min(8, ncol(fc1_w))
         limit_h1 <- min(12, nrow(fc1_w))
@@ -4028,7 +4009,9 @@ observeEvent(input$model_file, {
     nodes <- dl_path_nodes()
     req(nrow(edges) > 0, nrow(nodes) > 0)
 
-    layer_order <- c("Input", "Hidden1", "Hidden2", "Output")
+    hidden_levels <- sort(unique(nodes$layer[grepl("^Hidden[0-9]+$", nodes$layer)]))
+    hidden_levels <- hidden_levels[order(as.integer(sub("^Hidden", "", hidden_levels)))]
+    layer_order <- c("Input", hidden_levels, "Output")
     nodes$layer <- factor(nodes$layer, levels = layer_order)
     nodes <- nodes[order(nodes$layer, nodes$idx), , drop = FALSE]
     nodes$y <- ave(nodes$idx, nodes$layer, FUN = function(x) seq_along(x))
