@@ -3581,7 +3581,7 @@ observeEvent(input$model_file, {
       )(input_size, hidden_size, hidden_size_2)
 
       optimizer <- torch::optim_adam(model$parameters, lr = learning_rate)
-      criterion <- torch::nn_huber_loss(delta = 1)
+      criterion <- torch::nn_smooth_l1_loss(beta = 1)
       clone_state_dict <- function(state_dict) {
         cloned <- lapply(state_dict, function(value) value$clone())
         names(cloned) <- names(state_dict)
