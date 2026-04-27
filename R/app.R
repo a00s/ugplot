@@ -612,7 +612,7 @@ ui <- fluidPage(
     tabPanel("7) DEEP LEARNING",
       fluidPage(
         tags$h4("Deep Learning (torch)"),
-        tags$p("Treine redes neurais simples usando o backend torch no R."),
+        tags$p("Train simple neural networks using the torch backend in R."),
         fluidRow(
           column(
             4,
@@ -3217,6 +3217,15 @@ observeEvent(input$model_file, {
       return()
     }
 
+    torch_ready <- tryCatch(
+      isTRUE(torch::torch_is_installed()),
+      error = function(e) FALSE
+    )
+    if (!torch_ready) {
+      dl_log("Torch backend dependencies are missing. Run torch::install_torch() and restart the app.")
+      return()
+    }
+
     selected_rows <- input$row_checkbox_group %||% rownames(changed_table)
     selected_cols <- input$column_checkbox_group %||% colnames(changed_table)
     local_df <- as.data.frame(changed_table[selected_rows, selected_cols, drop = FALSE], stringsAsFactors = FALSE)
@@ -3227,7 +3236,20 @@ observeEvent(input$model_file, {
     }
 
     set.seed(input$dl_seed)
-    torch::torch_manual_seed(input$dl_seed)
+    seed_set <- tryCatch({
+      torch::torch_manual_seed(input$dl_seed)
+      TRUE
+    }, error = function(e) {
+      dl_log(paste0(
+        "Torch backend could not be initialized: ",
+        conditionMessage(e),
+        ". Run torch::install_torch() and restart the app."
+      ))
+      FALSE
+    })
+    if (!seed_set) {
+      return()
+    }
 
     target_raw <- local_df[[target_col]]
     predictors_raw <- local_df[, setdiff(colnames(local_df), target_col), drop = FALSE]
