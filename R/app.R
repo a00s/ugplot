@@ -3491,13 +3491,23 @@ observeEvent(input$model_file, {
       effective_out_w <- out_w
       if (length(hidden_weights) > 2) {
         downstream_weights <- hidden_weights[3:length(hidden_weights)]
-        for (w in downstream_weights) {
+        for (w in rev(downstream_weights)) {
+          if (ncol(effective_out_w) != nrow(w)) {
+            shape_text <- paste0(
+              shape_text,
+              " | Path compression skipped due to incompatible layer dimensions."
+            )
+            effective_out_w <- out_w
+            break
+          }
           effective_out_w <- effective_out_w %*% w
         }
-        shape_text <- paste0(
-          shape_text,
-          " | Path view is compressed after Hidden2 to keep the graph readable."
-        )
+        if (!grepl("Path compression skipped", shape_text, fixed = TRUE)) {
+          shape_text <- paste0(
+            shape_text,
+            " | Path view is compressed after Hidden2 to keep the graph readable."
+          )
+        }
       }
 
       hidden1_labels <- paste0("H1_", seq_len(nrow(fc1_w)))
@@ -3543,6 +3553,20 @@ observeEvent(input$model_file, {
       } else {
         fc2_edges <- data.frame()
         out_source <- hidden1_labels
+      }
+      if (ncol(effective_out_w) != length(out_source)) {
+        shape_text <- paste0(
+          shape_text,
+          " | Path view unavailable due to incompatible projection dimensions."
+        )
+        return(list(
+          shape_text = shape_text,
+          summary_df = summary_df,
+          heatmap_df = heatmap_df,
+          path_edges_df = data.frame(),
+          path_nodes_df = data.frame(),
+          top_paths_df = data.frame()
+        ))
       }
 
       out_labels <- paste0("O_", seq_len(nrow(out_w)))
