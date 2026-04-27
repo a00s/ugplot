@@ -630,6 +630,9 @@ ui <- fluidPage(
             numericInput("dl_hidden_units", "Hidden units (layer 1):", value = 64, min = 4, step = 4),
             numericInput("dl_hidden_units_2", "Hidden units (layer 2):", value = 32, min = 0, step = 4),
             numericInput("dl_learning_rate", "Learning rate:", value = 0.001, min = 0.0001, step = 0.0001),
+            numericInput("dl_weight_decay", "Weight decay (L2):", value = 0.0001, min = 0, step = 0.0001),
+            sliderInput("dl_dropout_1", "Dropout layer 1:", min = 0, max = 0.6, value = 0.15, step = 0.05),
+            sliderInput("dl_dropout_2", "Dropout layer 2:", min = 0, max = 0.6, value = 0.10, step = 0.05),
             checkboxInput("dl_scale_target", "Scale numeric target (regression)", value = TRUE),
             actionButton("dl_run_training", "Train Deep Learning model")
           ),
@@ -638,10 +641,13 @@ ui <- fluidPage(
             tags$div(class = "dl-status-box", verbatimTextOutput("dl_training_log")),
             tags$div(class = "dl-panel", plotOutput("dl_loss_plot", height = "260px")),
             tags$div(class = "dl-panel", plotOutput("dl_metric_plot", height = "260px")),
+            uiOutput("dl_tuning_tips"),
             tags$div(
               class = "dl-panel",
               tags$h4("Network view"),
-              textOutput("dl_model_shape"),
+              tags$div(class = "dl-model-shape", textOutput("dl_model_shape")),
+              plotOutput("dl_path_plot", height = "360px"),
+              tags$div(class = "dl-path-table-wrap", DT::DTOutput("dl_path_table")),
               plotOutput("dl_weight_plot", height = "250px"),
               plotOutput("dl_layer_plot", height = "300px")
             ),
@@ -3184,6 +3190,9 @@ observeEvent(input$model_file, {
   dl_task_used <- reactiveVal("classification")
   dl_weight_summary <- reactiveVal(data.frame())
   dl_weight_heatmap <- reactiveVal(data.frame())
+  dl_path_edges <- reactiveVal(data.frame())
+  dl_path_nodes <- reactiveVal(data.frame())
+  dl_top_paths <- reactiveVal(data.frame())
   dl_model_shape <- reactiveVal("Train the model to visualize layers and weights.")
 
   observeEvent(
@@ -3226,6 +3235,9 @@ observeEvent(input$model_file, {
     req(changed_table)
     dl_weight_summary(data.frame())
     dl_weight_heatmap(data.frame())
+    dl_path_edges(data.frame())
+    dl_path_nodes(data.frame())
+    dl_top_paths(data.frame())
     dl_model_shape("Training in progress...")
 
     if (!requireNamespace("torch", quietly = TRUE)) {
@@ -3321,6 +3333,9 @@ observeEvent(input$model_file, {
     epochs <- max(1, as.integer(input$dl_epochs))
     batch_size <- max(1, as.integer(input$dl_batch_size))
     learning_rate <- as.numeric(input$dl_learning_rate)
+    weight_decay <- max(0, as.numeric(input$dl_weight_decay))
+    dropout_1 <- min(0.8, max(0, as.numeric(input$dl_dropout_1)))
+    dropout_2 <- min(0.8, max(0, as.numeric(input$dl_dropout_2)))
 
     history_df <- data.frame(epoch = integer(), train_loss = numeric(), test_loss = numeric(), metric = numeric())
     predictions_df <- data.frame()
@@ -3352,8 +3367,14 @@ observeEvent(input$model_file, {
         return(list(
           shape_text = "Unable to extract layer weights from the trained model.",
           summary_df = data.frame(),
-          heatmap_df = data.frame()
+          heatmap_df = data.frame(),
+          path_edges_df = data.frame(),
+          path_nodes_df = data.frame(),
+          top_paths_df = data.frame()
         ))
+      }
+      if (is.null(out_w)) {
+        out_w <- matrix(0, nrow = 1, ncol = if (!is.null(fc2_w)) nrow(fc2_w) else nrow(fc1_w))
       }
 
       fc1_abs <- colMeans(abs(fc1_w))
@@ -3388,10 +3409,130 @@ observeEvent(input$model_file, {
       }
 
       shape_text <- paste("Architecture:", paste(arch_layers, collapse = " -> "))
+
+      hidden1_labels <- paste0("H1_", seq_len(nrow(fc1_w)))
+      input_labels <- feature_names
+      path_nodes_df <- data.frame(
+        node = c(input_labels, hidden1_labels),
+        layer = c(rep("Input", length(input_labels)), rep("Hidden1", length(hidden1_labels))),
+        idx = c(seq_along(input_labels), seq_along(hidden1_labels)),
+        stringsAsFactors = FALSE
+      )
+      path_edges_df <- data.frame()
+
+      fc1_abs_flat <- abs(fc1_w)
+      top_fc1_idx <- order(fc1_abs_flat, decreasing = TRUE)[seq_len(min(30, length(fc1_abs_flat)))]
+      fc1_rc <- arrayInd(top_fc1_idx, dim(fc1_abs_flat))
+      fc1_edges <- data.frame(
+        from = input_labels[fc1_rc[, 2]],
+        to = hidden1_labels[fc1_rc[, 1]],
+        weight = as.numeric(fc1_w[top_fc1_idx]),
+        stringsAsFactors = FALSE
+      )
+
+      if (!is.null(fc2_w)) {
+        hidden2_labels <- paste0("H2_", seq_len(nrow(fc2_w)))
+        path_nodes_df <- rbind(path_nodes_df, data.frame(
+          node = hidden2_labels,
+          layer = "Hidden2",
+          idx = seq_along(hidden2_labels),
+          stringsAsFactors = FALSE
+        ))
+        fc2_abs_flat <- abs(fc2_w)
+        top_fc2_idx <- order(fc2_abs_flat, decreasing = TRUE)[seq_len(min(30, length(fc2_abs_flat)))]
+        fc2_rc <- arrayInd(top_fc2_idx, dim(fc2_abs_flat))
+        fc2_edges <- data.frame(
+          from = hidden1_labels[fc2_rc[, 2]],
+          to = hidden2_labels[fc2_rc[, 1]],
+          weight = as.numeric(fc2_w[top_fc2_idx]),
+          stringsAsFactors = FALSE
+        )
+        out_source <- hidden2_labels
+      } else {
+        fc2_edges <- data.frame()
+        out_source <- hidden1_labels
+      }
+
+      out_labels <- paste0("O_", seq_len(nrow(out_w)))
+      path_nodes_df <- rbind(path_nodes_df, data.frame(
+        node = out_labels,
+        layer = "Output",
+        idx = seq_along(out_labels),
+        stringsAsFactors = FALSE
+      ))
+      out_abs_flat <- abs(out_w)
+      top_out_idx <- order(out_abs_flat, decreasing = TRUE)[seq_len(min(15, length(out_abs_flat)))]
+      out_rc <- arrayInd(top_out_idx, dim(out_abs_flat))
+      out_edges <- data.frame(
+        from = out_source[out_rc[, 2]],
+        to = out_labels[out_rc[, 1]],
+        weight = as.numeric(out_w[top_out_idx]),
+        stringsAsFactors = FALSE
+      )
+      path_edges_df <- rbind(fc1_edges, fc2_edges, out_edges)
+
+      top_paths_df <- data.frame()
+      if (!is.null(fc2_w)) {
+        limit_in <- min(8, ncol(fc1_w))
+        limit_h1 <- min(12, nrow(fc1_w))
+        limit_h2 <- min(12, nrow(fc2_w))
+        top_inputs <- order(colMeans(abs(fc1_w)), decreasing = TRUE)[seq_len(limit_in)]
+        top_h1 <- order(rowMeans(abs(fc1_w)), decreasing = TRUE)[seq_len(limit_h1)]
+        top_h2 <- order(rowMeans(abs(fc2_w)), decreasing = TRUE)[seq_len(limit_h2)]
+        combos <- expand.grid(i = top_inputs, h1 = top_h1, h2 = top_h2, o = seq_len(nrow(out_w)))
+        w1 <- fc1_w[cbind(combos$h1, combos$i)]
+        w2 <- fc2_w[cbind(combos$h2, combos$h1)]
+        w3 <- out_w[cbind(combos$o, combos$h2)]
+        path_score <- abs(w1) * abs(w2) * abs(w3)
+        signed_effect <- sign(w1 * w2 * w3) * path_score
+        top_paths_df <- data.frame(
+          Input = input_labels[combos$i],
+          Hidden1 = hidden1_labels[combos$h1],
+          Hidden2 = hidden2_labels[combos$h2],
+          Output = out_labels[combos$o],
+          PathScore = path_score,
+          SignedEffect = signed_effect,
+          stringsAsFactors = FALSE
+        )
+      } else {
+        limit_in <- min(10, ncol(fc1_w))
+        limit_h1 <- min(16, nrow(fc1_w))
+        top_inputs <- order(colMeans(abs(fc1_w)), decreasing = TRUE)[seq_len(limit_in)]
+        top_h1 <- order(rowMeans(abs(fc1_w)), decreasing = TRUE)[seq_len(limit_h1)]
+        combos <- expand.grid(i = top_inputs, h1 = top_h1, o = seq_len(nrow(out_w)))
+        w1 <- fc1_w[cbind(combos$h1, combos$i)]
+        w2 <- out_w[cbind(combos$o, combos$h1)]
+        path_score <- abs(w1) * abs(w2)
+        signed_effect <- sign(w1 * w2) * path_score
+        top_paths_df <- data.frame(
+          Input = input_labels[combos$i],
+          Hidden1 = hidden1_labels[combos$h1],
+          Hidden2 = "-",
+          Output = out_labels[combos$o],
+          PathScore = path_score,
+          SignedEffect = signed_effect,
+          stringsAsFactors = FALSE
+        )
+      }
+      top_paths_df <- top_paths_df[order(top_paths_df$PathScore, decreasing = TRUE), , drop = FALSE]
+      top_paths_df <- utils::head(top_paths_df, 20)
+      top_paths_df$PathScore <- round(top_paths_df$PathScore, 6)
+      top_paths_df$SignedEffect <- round(top_paths_df$SignedEffect, 6)
+      if (nrow(top_paths_df) > 0) {
+        top_path_label <- paste(
+          top_paths_df$Input[1], "->", top_paths_df$Hidden1[1], "->",
+          if (top_paths_df$Hidden2[1] != "-") paste0(top_paths_df$Hidden2[1], " -> ") else "",
+          top_paths_df$Output[1]
+        )
+        shape_text <- paste0(shape_text, " | Strongest path: ", top_path_label)
+      }
       list(
         shape_text = shape_text,
         summary_df = summary_df,
-        heatmap_df = heatmap_df
+        heatmap_df = heatmap_df,
+        path_edges_df = path_edges_df,
+        path_nodes_df = path_nodes_df,
+        top_paths_df = top_paths_df
       )
     }
 
@@ -3411,12 +3552,12 @@ observeEvent(input$model_file, {
         initialize = function(in_features, hidden, hidden2, out_features) {
           self$fc1 <- torch::nn_linear(in_features, hidden)
           self$bn1 <- torch::nn_batch_norm1d(hidden)
-          self$drop1 <- torch::nn_dropout(p = 0.15)
+          self$drop1 <- torch::nn_dropout(p = dropout_1)
           self$use_second <- hidden2 > 0
           if (self$use_second) {
             self$fc2 <- torch::nn_linear(hidden, hidden2)
             self$bn2 <- torch::nn_batch_norm1d(hidden2)
-            self$drop2 <- torch::nn_dropout(p = 0.10)
+            self$drop2 <- torch::nn_dropout(p = dropout_2)
             self$out <- torch::nn_linear(hidden2, out_features)
           } else {
             self$out <- torch::nn_linear(hidden, out_features)
@@ -3437,7 +3578,7 @@ observeEvent(input$model_file, {
         }
       )(input_size, hidden_size, hidden_size_2, output_size)
 
-      optimizer <- torch::optim_adam(model$parameters, lr = learning_rate)
+      optimizer <- torch::optim_adam(model$parameters, lr = learning_rate, weight_decay = weight_decay)
       criterion <- torch::nn_cross_entropy_loss()
       clone_state_dict <- function(state_dict) {
         cloned <- lapply(state_dict, function(value) value$clone())
@@ -3554,12 +3695,12 @@ observeEvent(input$model_file, {
         initialize = function(in_features, hidden, hidden2) {
           self$fc1 <- torch::nn_linear(in_features, hidden)
           self$bn1 <- torch::nn_batch_norm1d(hidden)
-          self$drop1 <- torch::nn_dropout(p = 0.15)
+          self$drop1 <- torch::nn_dropout(p = dropout_1)
           self$use_second <- hidden2 > 0
           if (self$use_second) {
             self$fc2 <- torch::nn_linear(hidden, hidden2)
             self$bn2 <- torch::nn_batch_norm1d(hidden2)
-            self$drop2 <- torch::nn_dropout(p = 0.10)
+            self$drop2 <- torch::nn_dropout(p = dropout_2)
             self$out <- torch::nn_linear(hidden2, 1)
           } else {
             self$out <- torch::nn_linear(hidden, 1)
@@ -3580,7 +3721,7 @@ observeEvent(input$model_file, {
         }
       )(input_size, hidden_size, hidden_size_2)
 
-      optimizer <- torch::optim_adam(model$parameters, lr = learning_rate)
+      optimizer <- torch::optim_adam(model$parameters, lr = learning_rate, weight_decay = weight_decay)
       criterion <- torch::nn_smooth_l1_loss()
       clone_state_dict <- function(state_dict) {
         cloned <- lapply(state_dict, function(value) value$clone())
@@ -3668,6 +3809,9 @@ observeEvent(input$model_file, {
     dl_model_shape(weight_views$shape_text)
     dl_weight_summary(weight_views$summary_df)
     dl_weight_heatmap(weight_views$heatmap_df)
+    dl_path_edges(weight_views$path_edges_df)
+    dl_path_nodes(weight_views$path_nodes_df)
+    dl_top_paths(weight_views$top_paths_df)
   })
 
   output$dl_training_log <- renderText({
@@ -3695,6 +3839,46 @@ observeEvent(input$model_file, {
       theme_minimal(base_size = 13)
   })
 
+  output$dl_tuning_tips <- renderUI({
+    metrics_df <- dl_metrics()
+    req(nrow(metrics_df) > 0)
+    task <- as.character(metrics_df$Value[metrics_df$Metric == "Task"][1])
+    if (identical(task, "classification")) {
+      final_acc <- suppressWarnings(as.numeric(metrics_df$Value[metrics_df$Metric == "Final accuracy"][1]))
+      best_acc <- suppressWarnings(as.numeric(metrics_df$Value[metrics_df$Metric == "Best epoch accuracy"][1]))
+      tips <- c(
+        "Se a acurácia estiver baixa, aumente Epochs para 100-200 e reduza Learning rate para 0.0005.",
+        "Se o treino oscilar muito, suba Batch size para 64 e mantenha Weight decay entre 0.0001 e 0.001.",
+        "Se houver overfitting (Best muito maior que Final), aumente Dropout para 0.20-0.35."
+      )
+      if (is.finite(final_acc) && final_acc < 0.70) {
+        tips <- c(
+          paste0("Acurácia final ainda baixa (", round(final_acc, 3), "). Priorize mais épocas e ajuste de regularização."),
+          tips
+        )
+      }
+      if (is.finite(best_acc) && is.finite(final_acc) && (best_acc - final_acc) > 0.05) {
+        tips <- c(tips, "Há gap entre melhor época e final: tente early stopping manual observando o gráfico por época.")
+      }
+    } else {
+      rmse <- suppressWarnings(as.numeric(metrics_df$Value[metrics_df$Metric == "RMSE"][1]))
+      best_rmse <- suppressWarnings(as.numeric(metrics_df$Value[metrics_df$Metric == "Best epoch RMSE"][1]))
+      tips <- c(
+        "Para regressão, mantenha Scale numeric target ligado e aumente Epochs para 120+.",
+        "Se o RMSE não cair, teste Hidden layer 1 entre 96-192 e Hidden layer 2 entre 32-96.",
+        "Se houver overfitting, aumente Dropout (0.20-0.35) ou Weight decay (0.0005-0.002)."
+      )
+      if (is.finite(rmse) && is.finite(best_rmse) && (rmse - best_rmse) > 0.05 * max(1, abs(best_rmse))) {
+        tips <- c(tips, "O modelo piorou após a melhor época: use menos épocas ou learning rate menor (0.0003-0.0007).")
+      }
+    }
+    tags$div(
+      class = "dl-panel",
+      tags$h4("Sugestões de ajuste"),
+      tags$ul(lapply(tips, tags$li))
+    )
+  })
+
   output$dl_metrics_table <- DT::renderDT({
     req(nrow(dl_metrics()) > 0)
     DT::datatable(dl_metrics(), options = list(dom = "t", paging = FALSE, scrollX = TRUE), rownames = FALSE)
@@ -3707,6 +3891,76 @@ observeEvent(input$model_file, {
 
   output$dl_model_shape <- renderText({
     dl_model_shape()
+  })
+
+  output$dl_path_plot <- renderPlot({
+    edges <- dl_path_edges()
+    nodes <- dl_path_nodes()
+    req(nrow(edges) > 0, nrow(nodes) > 0)
+
+    layer_order <- c("Input", "Hidden1", "Hidden2", "Output")
+    nodes$layer <- factor(nodes$layer, levels = layer_order)
+    nodes <- nodes[order(nodes$layer, nodes$idx), , drop = FALSE]
+    nodes$y <- ave(nodes$idx, nodes$layer, FUN = function(x) seq_along(x))
+
+    edge_plot <- merge(edges, nodes[, c("node", "layer", "y")], by.x = "from", by.y = "node", all.x = TRUE)
+    names(edge_plot)[names(edge_plot) == "layer"] <- "from_layer"
+    names(edge_plot)[names(edge_plot) == "y"] <- "from_y"
+    edge_plot <- merge(edge_plot, nodes[, c("node", "layer", "y")], by.x = "to", by.y = "node", all.x = TRUE)
+    names(edge_plot)[names(edge_plot) == "layer"] <- "to_layer"
+    names(edge_plot)[names(edge_plot) == "y"] <- "to_y"
+
+    edge_plot$from_x <- as.numeric(factor(edge_plot$from_layer, levels = layer_order))
+    edge_plot$to_x <- as.numeric(factor(edge_plot$to_layer, levels = layer_order))
+    edge_plot$abs_weight <- abs(edge_plot$weight)
+
+    node_plot <- nodes
+    node_plot$x <- as.numeric(factor(node_plot$layer, levels = layer_order))
+
+    ggplot() +
+      geom_segment(
+        data = edge_plot,
+        aes(
+          x = from_x, y = from_y,
+          xend = to_x, yend = to_y,
+          color = weight, linewidth = abs_weight
+        ),
+        alpha = 0.75
+      ) +
+      geom_point(
+        data = node_plot,
+        aes(x = x, y = y),
+        color = "#111111",
+        fill = "#fefefe",
+        size = 2.4,
+        shape = 21,
+        stroke = 0.4
+      ) +
+      scale_x_continuous(
+        breaks = seq_along(layer_order),
+        labels = layer_order,
+        limits = c(0.8, length(layer_order) + 0.2)
+      ) +
+      scale_color_gradient2(low = "#2c7bb6", mid = "#f0f0f0", high = "#d7191c", midpoint = 0) +
+      scale_linewidth(range = c(0.2, 1.8), guide = "none") +
+      labs(
+        x = "Layer",
+        y = "Top nodes",
+        color = "Weight",
+        title = "Top weighted paths across layers"
+      ) +
+      theme_minimal(base_size = 12) +
+      theme(panel.grid.minor = element_blank())
+  })
+
+  output$dl_path_table <- DT::renderDT({
+    path_df <- dl_top_paths()
+    req(nrow(path_df) > 0)
+    DT::datatable(
+      path_df,
+      options = list(pageLength = 10, scrollX = TRUE),
+      rownames = FALSE
+    )
   })
 
   output$dl_weight_plot <- renderPlot({

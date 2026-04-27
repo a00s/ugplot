@@ -290,6 +290,32 @@ button.ml-section-toggle:focus,
   font-weight: 600;
 }
 
+.dl-model-shape {
+  margin-bottom: 8px;
+  font-size: 14px;
+  color: #2f3b46;
+  line-height: 1.35;
+}
+
+.dl-path-table-wrap {
+  margin: 6px 0 10px 0;
+}
+
+.dl-path-table-wrap .dataTables_wrapper .dataTables_filter {
+  margin-bottom: 6px;
+}
+
+.dl-path-table-wrap table.dataTable tbody td {
+  font-size: 12px;
+  vertical-align: middle;
+}
+
+.dl-path-table-wrap table.dataTable thead th {
+  background: #f4f7fb;
+  color: #1f2d3d;
+  font-weight: 600;
+}
+
 .ml-summary-table tbody tr:nth-child(even) td {
   background: #fbfcfd;
 }
