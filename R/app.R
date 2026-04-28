@@ -612,7 +612,6 @@ ui <- fluidPage(
     tabPanel("7) DEEP LEARNING",
       fluidPage(
         tags$h4("Deep Learning (torch)"),
-        tags$p("Train simple neural networks using the torch backend in R."),
         fluidRow(
           column(
             4,

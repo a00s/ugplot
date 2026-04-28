@@ -73,6 +73,7 @@ The workflow is linear:
 4. **2D PLOT**
 5. **MACHINE LEARNING**
 6. **MODEL ANALYSIS**
+7. **DEEP LEARNING**
 
 A practical recommendation: always finish row/column cleanup in **TABLE** before training models.
 
@@ -292,6 +293,48 @@ Inspect:
 
 ---
 
+## 7) DEEP LEARNING — train neural networks with `torch`
+
+![doc16 - deep learning tab](man/img/doc16.png)
+
+Use this tab when you want a configurable neural network pipeline directly inside ugPlot.
+
+### 7.1 Training configuration (left panel)
+
+- **Target column**: variable to predict.
+- **Task type**:
+  - **Auto-detect** (recommended): ugPlot infers classification vs regression.
+  - **Classification** or **Regression**: force task mode manually.
+- **Test split (%)**: holdout size for evaluation.
+- **Random seed**: reproducibility for split/training.
+- **Epochs** and **Batch size**: training duration and update granularity.
+- **Number of hidden layers** + hidden units/dropout controls:
+  - define model depth/width,
+  - tune regularization to reduce overfitting.
+- **Learning rate** and **Weight decay (L2)**: optimizer stability + regularization.
+- **Scale numeric target (regression)**: stabilizes regression training for wide target ranges.
+- **Auto adjust hidden layer sizes**: quickly generates a reasonable architecture from feature count.
+- **Train Deep Learning model**: starts the full preprocessing + training + evaluation cycle.
+
+### 7.2 Outputs and diagnostics (right panel)
+
+After training, ugPlot shows:
+
+- **Training log** with preprocessing/training status messages.
+- **Loss curves** (train vs test) across epochs.
+- **Metric panel** with task-relevant performance indicators.
+- **Tuning tips** to help diagnose underfitting/overfitting.
+- **Network view**:
+  - model shape summary,
+  - path/connection visualization,
+  - path weight table,
+  - weight distribution plot.
+- **Metrics table** and **Predictions table** for per-run and per-sample inspection.
+
+Practical tip: start with auto architecture + moderate epochs, then tune hidden units/dropout and learning rate based on loss gap and prediction quality.
+
+---
+
 ## Suggested end-to-end workflow (quick checklist)
 
 1. Install with Podman image (recommended).
@@ -301,6 +344,6 @@ Inspect:
 5. Configure missing data strategy carefully.
 6. Install missing libraries (Check all → Install libraries).
 7. Train multiple models and compare metrics.
-8. Validate final `.rds` model in MODEL ANALYSIS.
-9. Export processed dataset and analysis tables.
-
+8. Optionally refine results with DEEP LEARNING (`torch`) and inspect network diagnostics.
+9. Validate final `.rds` model in MODEL ANALYSIS.
+10. Export processed dataset and analysis tables.
