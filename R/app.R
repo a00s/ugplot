@@ -666,6 +666,7 @@ ui <- fluidPage(
             sliderInput("gm_corr_threshold", "Edge threshold |correlation|:", min = 0.2, max = 0.95, value = 0.6, step = 0.05),
             numericInput("gm_min_degree", "Minimum degree to keep node:", value = 1, min = 0, step = 1),
             selectInput("gm_layout", "Layout:", choices = c("MDS (correlation distance)" = "mds", "Circular" = "circular"), selected = "mds"),
+            checkboxInput("gm_use_3d", "Render in 3D (plotly)", value = TRUE),
             actionButton("gm_build_graph", "Build graph"),
             tags$hr(),
             downloadButton("gm_download_nodes", "Download node metrics (CSV)"),
@@ -675,6 +676,7 @@ ui <- fluidPage(
             8,
             uiOutput("gm_summary"),
             plotOutput("gm_network_plot", height = "520px"),
+            plotlyOutput("gm_network_plot_3d", height = "560px"),
             plotOutput("gm_degree_plot", height = "240px"),
             DT::DTOutput("gm_nodes_table"),
             DT::DTOutput("gm_edges_table")
@@ -1634,10 +1636,11 @@ server <- function(input, output, session) {
     if (identical(input$gm_layout, "circular")) {
       n <- length(keep_nodes)
       theta <- seq(0, 2 * pi, length.out = n + 1)[-1]
-      coords <- data.frame(node = keep_nodes, x = cos(theta), y = sin(theta))
+      coords <- data.frame(node = keep_nodes, x = cos(theta), y = sin(theta), z = seq(-1, 1, length.out = n))
     } else {
-      fit <- cmdscale(as.dist(dist_mat), k = 2)
-      coords <- data.frame(node = rownames(fit), x = fit[, 1], y = fit[, 2])
+      fit2 <- cmdscale(as.dist(dist_mat), k = 2)
+      fit3 <- cmdscale(as.dist(dist_mat), k = 3)
+      coords <- data.frame(node = rownames(fit2), x = fit2[, 1], y = fit2[, 2], z = fit3[, 3])
     }
 
     nodes <- merge(nodes, coords, by = "node", all.x = TRUE)
@@ -1767,7 +1770,7 @@ server <- function(input, output, session) {
     nodes <- gm_nodes_metrics()
     edges <- gm_edges_metrics()
     if (nrow(nodes) == 0 || nrow(edges) == 0) {
-      return(tags$div(style = "color: #666;", "Build graph to view metrics and plots."))
+      return(tags$div(class = "gm-muted-text", "Build graph to view metrics and plots."))
     }
     tags$div(
       class = "ml-final-summary",
@@ -1809,6 +1812,36 @@ server <- function(input, output, session) {
       theme_minimal() +
       theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
       labs(title = "Node degree distribution", x = "Nodes", y = "Degree")
+  })
+
+  output$gm_network_plot_3d <- renderPlotly({
+    req(isTRUE(input$gm_use_3d))
+    nodes <- gm_nodes_metrics()
+    edges <- gm_edges_metrics()
+    req(nrow(nodes) > 1, nrow(edges) > 0)
+    seg <- merge(edges, nodes[, c("node", "x", "y", "z")], by.x = "source", by.y = "node")
+    seg <- merge(seg, nodes[, c("node", "x", "y", "z")], by.x = "target", by.y = "node", suffixes = c("_source", "_target"))
+    plot_ly(type = "scatter3d", mode = "markers") |>
+      add_trace(
+        data = seg,
+        x = ~x_source, y = ~y_source, z = ~z_source,
+        type = "scatter3d", mode = "lines",
+        line = list(width = 2, color = "#9aa3ad"),
+        hoverinfo = "none",
+        showlegend = FALSE
+      ) |>
+      add_trace(
+        data = nodes,
+        x = ~x, y = ~y, z = ~z,
+        type = "scatter3d", mode = "markers+text",
+        text = ~node,
+        textposition = "top center",
+        marker = list(size = ~pmax(4, degree + 2), color = "#2c7fb8", opacity = 0.9),
+        hovertemplate = "Node: %{text}<br>Degree: %{customdata}<extra></extra>",
+        customdata = ~degree,
+        showlegend = FALSE
+      ) |>
+      layout(title = "Feature graph (3D)")
   })
 
   output$gm_nodes_table <- DT::renderDT({
