@@ -654,6 +654,35 @@ ui <- fluidPage(
           )
         )
       )
+    ),
+    tabPanel("8) GRAPH MODELS",
+      fluidPage(
+        tags$h4("Graph Models"),
+        fluidRow(
+          column(
+            4,
+            selectInput("gm_target", "Target column (optional):", choices = NULL, selected = NULL),
+            sliderInput("gm_max_nodes", "Max nodes (top variable columns):", min = 10, max = 200, value = 60, step = 5),
+            sliderInput("gm_corr_threshold", "Edge threshold |correlation|:", min = 0.2, max = 0.95, value = 0.6, step = 0.05),
+            numericInput("gm_min_degree", "Minimum degree to keep node:", value = 1, min = 0, step = 1),
+            selectInput("gm_layout", "Layout:", choices = c("MDS (correlation distance)" = "mds", "Circular" = "circular"), selected = "mds"),
+            checkboxInput("gm_use_3d", "Render in 3D (plotly)", value = TRUE),
+            actionButton("gm_build_graph", "Build graph"),
+            tags$hr(),
+            downloadButton("gm_download_nodes", "Download node metrics (CSV)"),
+            downloadButton("gm_download_edges", "Download edges (CSV)")
+          ),
+          column(
+            8,
+            uiOutput("gm_summary"),
+            plotOutput("gm_network_plot", height = "520px"),
+            plotlyOutput("gm_network_plot_3d", height = "560px"),
+            plotOutput("gm_degree_plot", height = "240px"),
+            DT::DTOutput("gm_nodes_table"),
+            DT::DTOutput("gm_edges_table")
+          )
+        )
+      )
     )
   )
 )
@@ -710,6 +739,7 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
   showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
   showTab(inputId = "tabs", target = "7) DEEP LEARNING")
+  showTab(inputId = "tabs", target = "8) GRAPH MODELS")
 }
 
 build_missing_mask <- function(df, missing_definition = c("empty", "na"), zero_exceptions = character(0)) {
@@ -1132,6 +1162,7 @@ load_dataset_into_table <- function(localsession) {
     showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
     showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
     showTab(inputId = "tabs", target = "7) DEEP LEARNING")
+    showTab(inputId = "tabs", target = "8) GRAPH MODELS")
   }
 }
 
@@ -1221,6 +1252,8 @@ server <- function(input, output, session) {
   model_analysis_results_data <- reactiveVal(data.frame())
   heatmap_recorded_plot <- reactiveVal(NULL)
   model_analysis_recorded_plot <- reactiveVal(NULL)
+  gm_nodes_metrics <- reactiveVal(data.frame())
+  gm_edges_metrics <- reactiveVal(data.frame())
 
   output$downloadData <- downloadHandler(
     filename = function() {
@@ -1340,6 +1373,16 @@ server <- function(input, output, session) {
       table_to_download <- table_to_download[, has_content, drop = FALSE]
       utils::write.csv(table_to_download, file, row.names = FALSE)
     }
+  )
+
+  output$gm_download_nodes <- downloadHandler(
+    filename = function() paste0("graph_nodes_", Sys.Date(), ".csv"),
+    content = function(file) utils::write.csv(gm_nodes_metrics(), file, row.names = FALSE)
+  )
+
+  output$gm_download_edges <- downloadHandler(
+    filename = function() paste0("graph_edges_", Sys.Date(), ".csv"),
+    content = function(file) utils::write.csv(gm_edges_metrics(), file, row.names = FALSE)
   )
 
   output$downloadHeatmapPlotTiffTop <- downloadHandler(
@@ -1516,6 +1559,95 @@ server <- function(input, output, session) {
     )
   }, ignoreInit = FALSE)
 
+  observeEvent(input$column_checkbox_group, {
+    choices <- input$column_checkbox_group %||% character(0)
+    updateSelectInput(
+      session,
+      "gm_target",
+      choices = c("None" = "", choices),
+      selected = if (!is.null(input$gm_target) && input$gm_target %in% choices) input$gm_target else ""
+    )
+  }, ignoreInit = FALSE)
+
+  observeEvent(input$gm_build_graph, {
+    req(input$row_checkbox_group, input$column_checkbox_group)
+    subset_table <- changed_table[input$row_checkbox_group, input$column_checkbox_group, drop = FALSE]
+    req(nrow(subset_table) > 2, ncol(subset_table) > 1)
+
+    target <- input$gm_target %||% ""
+    if (nzchar(target) && target %in% colnames(subset_table)) {
+      subset_table <- subset_table[, setdiff(colnames(subset_table), target), drop = FALSE]
+    }
+
+    numeric_mask <- vapply(subset_table, function(x) {
+      suppressWarnings(any(!is.na(as.numeric(as.character(x)))))
+    }, logical(1))
+    numeric_df <- subset_table[, numeric_mask, drop = FALSE]
+    req(ncol(numeric_df) > 1)
+
+    numeric_df <- as.data.frame(lapply(numeric_df, function(x) suppressWarnings(as.numeric(as.character(x)))))
+    keep_variance <- vapply(numeric_df, function(x) stats::sd(x, na.rm = TRUE), numeric(1))
+    keep_variance[is.na(keep_variance)] <- 0
+    numeric_df <- numeric_df[, keep_variance > 0, drop = FALSE]
+    req(ncol(numeric_df) > 1)
+
+    ord <- order(keep_variance[colnames(numeric_df)], decreasing = TRUE)
+    numeric_df <- numeric_df[, ord, drop = FALSE]
+    max_nodes <- min(input$gm_max_nodes, ncol(numeric_df))
+    numeric_df <- numeric_df[, seq_len(max_nodes), drop = FALSE]
+
+    cor_mat <- suppressWarnings(stats::cor(numeric_df, use = "pairwise.complete.obs"))
+    cor_mat[is.na(cor_mat)] <- 0
+    diag(cor_mat) <- 0
+    idx <- which(abs(cor_mat) >= input$gm_corr_threshold, arr.ind = TRUE)
+    idx <- idx[idx[, 1] < idx[, 2], , drop = FALSE]
+
+    if (nrow(idx) == 0) {
+      gm_nodes_metrics(data.frame())
+      gm_edges_metrics(data.frame())
+      return()
+    }
+
+    edges <- data.frame(
+      source = colnames(cor_mat)[idx[, 1]],
+      target = colnames(cor_mat)[idx[, 2]],
+      weight = cor_mat[idx],
+      abs_weight = abs(cor_mat[idx]),
+      stringsAsFactors = FALSE
+    )
+
+    deg <- table(c(edges$source, edges$target))
+    nodes <- data.frame(
+      node = names(deg),
+      degree = as.integer(deg),
+      stringsAsFactors = FALSE
+    )
+    nodes <- nodes[nodes$degree >= input$gm_min_degree, , drop = FALSE]
+    req(nrow(nodes) > 1)
+    keep_nodes <- nodes$node
+    edges <- edges[edges$source %in% keep_nodes & edges$target %in% keep_nodes, , drop = FALSE]
+    req(nrow(edges) > 0)
+
+    adj <- abs(cor_mat[keep_nodes, keep_nodes, drop = FALSE])
+    dist_mat <- 1 - adj
+    diag(dist_mat) <- 0
+
+    if (identical(input$gm_layout, "circular")) {
+      n <- length(keep_nodes)
+      theta <- seq(0, 2 * pi, length.out = n + 1)[-1]
+      coords <- data.frame(node = keep_nodes, x = cos(theta), y = sin(theta), z = seq(-1, 1, length.out = n))
+    } else {
+      fit2 <- cmdscale(as.dist(dist_mat), k = 2)
+      fit3 <- cmdscale(as.dist(dist_mat), k = 3)
+      coords <- data.frame(node = rownames(fit2), x = fit2[, 1], y = fit2[, 2], z = fit3[, 3])
+    }
+
+    nodes <- merge(nodes, coords, by = "node", all.x = TRUE)
+    nodes <- nodes[order(-nodes$degree), , drop = FALSE]
+    gm_nodes_metrics(nodes)
+    gm_edges_metrics(edges[order(-edges$abs_weight), , drop = FALSE])
+  })
+
   missing_preview_data <- reactive({
     req(input$ml_target)
     req(input$row_checkbox_group, input$column_checkbox_group)
@@ -1632,6 +1764,94 @@ server <- function(input, output, session) {
 
   threshold_scan_results <- reactiveVal(NULL)
   threshold_scan_status <- reactiveVal("Status: idle (click the button to run exhaustive scan).")
+
+  output$gm_summary <- renderUI({
+    nodes <- gm_nodes_metrics()
+    edges <- gm_edges_metrics()
+    if (nrow(nodes) == 0 || nrow(edges) == 0) {
+      return(tags$div(style = "color: #666;", "Build graph to view metrics and plots."))
+    }
+    tags$div(
+      class = "ml-final-summary",
+      tags$strong("Graph summary"),
+      tags$div(class = "ml-final-summary-content",
+        tags$div(paste("Nodes:", nrow(nodes))),
+        tags$div(paste("Edges:", nrow(edges))),
+        tags$div(paste("Average degree:", round(mean(nodes$degree), 2))),
+        tags$div(paste("Max absolute correlation:", round(max(edges$abs_weight), 3)))
+      )
+    )
+  })
+
+  output$gm_network_plot <- renderPlot({
+    nodes <- gm_nodes_metrics()
+    edges <- gm_edges_metrics()
+    req(nrow(nodes) > 1, nrow(edges) > 0)
+    seg <- merge(edges, nodes[, c("node", "x", "y")], by.x = "source", by.y = "node")
+    seg <- merge(seg, nodes[, c("node", "x", "y")], by.x = "target", by.y = "node", suffixes = c("_source", "_target"))
+    ggplot() +
+      geom_segment(
+        data = seg,
+        aes(x = x_source, y = y_source, xend = x_target, yend = y_target, size = abs_weight, color = weight > 0),
+        alpha = 0.35
+      ) +
+      geom_point(data = nodes, aes(x = x, y = y, size = degree), color = "#2c7fb8") +
+      geom_text(data = nodes, aes(x = x, y = y, label = node), size = 3, vjust = -0.6) +
+      scale_color_manual(values = c("TRUE" = "#1a9850", "FALSE" = "#d73027"), guide = "none") +
+      scale_size_continuous(range = c(0.4, 6)) +
+      theme_minimal() +
+      labs(title = "Feature graph", x = NULL, y = NULL)
+  })
+
+  output$gm_degree_plot <- renderPlot({
+    nodes <- gm_nodes_metrics()
+    req(nrow(nodes) > 0)
+    ggplot(nodes, aes(x = reorder(node, -degree), y = degree)) +
+      geom_col(fill = "#225ea8") +
+      theme_minimal() +
+      theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+      labs(title = "Node degree distribution", x = "Nodes", y = "Degree")
+  })
+
+  output$gm_network_plot_3d <- renderPlotly({
+    req(isTRUE(input$gm_use_3d))
+    nodes <- gm_nodes_metrics()
+    edges <- gm_edges_metrics()
+    req(nrow(nodes) > 1, nrow(edges) > 0)
+    seg <- merge(edges, nodes[, c("node", "x", "y", "z")], by.x = "source", by.y = "node")
+    seg <- merge(seg, nodes[, c("node", "x", "y", "z")], by.x = "target", by.y = "node", suffixes = c("_source", "_target"))
+    plot_ly(type = "scatter3d", mode = "markers") |>
+      add_trace(
+        data = seg,
+        x = ~x_source, y = ~y_source, z = ~z_source,
+        type = "scatter3d", mode = "lines",
+        line = list(width = 2, color = "#9aa3ad"),
+        hoverinfo = "none",
+        showlegend = FALSE
+      ) |>
+      add_trace(
+        data = nodes,
+        x = ~x, y = ~y, z = ~z,
+        type = "scatter3d", mode = "markers+text",
+        text = ~node,
+        textposition = "top center",
+        marker = list(size = ~pmax(4, degree + 2), color = "#2c7fb8", opacity = 0.9),
+        hovertemplate = "Node: %{text}<br>Degree: %{customdata}<extra></extra>",
+        customdata = ~degree,
+        showlegend = FALSE
+      ) |>
+      layout(title = "Feature graph (3D)")
+  })
+
+  output$gm_nodes_table <- DT::renderDT({
+    req(nrow(gm_nodes_metrics()) > 0)
+    DT::datatable(gm_nodes_metrics(), options = list(pageLength = 10, scrollX = TRUE))
+  })
+
+  output$gm_edges_table <- DT::renderDT({
+    req(nrow(gm_edges_metrics()) > 0)
+    DT::datatable(gm_edges_metrics(), options = list(pageLength = 10, scrollX = TRUE))
+  })
 
   output$ml_threshold_scan_status <- renderText({
     threshold_scan_status()
