@@ -1160,6 +1160,7 @@ load_dataset_into_table <- function(localsession) {
     showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
     showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
     showTab(inputId = "tabs", target = "7) DEEP LEARNING")
+    showTab(inputId = "tabs", target = "8) GRAPH MODELS")
   }
 }
 
