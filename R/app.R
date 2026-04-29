@@ -675,8 +675,8 @@ ui <- fluidPage(
           column(
             8,
             uiOutput("gm_summary"),
-            plotOutput("gm_network_plot", height = "520px"),
             plotlyOutput("gm_network_plot_3d", height = "560px"),
+            plotOutput("gm_network_plot", height = "520px"),
             plotOutput("gm_degree_plot", height = "240px"),
             DT::DTOutput("gm_nodes_table"),
             DT::DTOutput("gm_edges_table")
@@ -1638,9 +1638,20 @@ server <- function(input, output, session) {
       theta <- seq(0, 2 * pi, length.out = n + 1)[-1]
       coords <- data.frame(node = keep_nodes, x = cos(theta), y = sin(theta), z = seq(-1, 1, length.out = n))
     } else {
-      fit2 <- cmdscale(as.dist(dist_mat), k = 2)
-      fit3 <- cmdscale(as.dist(dist_mat), k = 3)
-      coords <- data.frame(node = rownames(fit2), x = fit2[, 1], y = fit2[, 2], z = fit3[, 3])
+      n_nodes <- length(keep_nodes)
+      max_k <- max(1, n_nodes - 1)
+      k2 <- min(2, max_k)
+      k3 <- min(3, max_k)
+      fit2 <- cmdscale(as.dist(dist_mat), k = k2)
+      fit3 <- cmdscale(as.dist(dist_mat), k = k3)
+
+      fit2_mat <- as.matrix(fit2)
+      fit3_mat <- as.matrix(fit3)
+      x_vals <- fit2_mat[, 1]
+      y_vals <- if (ncol(fit2_mat) >= 2) fit2_mat[, 2] else rep(0, nrow(fit2_mat))
+      z_vals <- if (ncol(fit3_mat) >= 3) fit3_mat[, 3] else rep(0, nrow(fit3_mat))
+
+      coords <- data.frame(node = rownames(fit2_mat), x = x_vals, y = y_vals, z = z_vals)
     }
 
     nodes <- merge(nodes, coords, by = "node", all.x = TRUE)
@@ -1841,7 +1852,30 @@ server <- function(input, output, session) {
         customdata = ~degree,
         showlegend = FALSE
       ) |>
-      layout(title = "Feature graph (3D)")
+      layout(title = "Feature graph (3D)") |>
+      htmlwidgets::onRender(
+        "function(el, x) {
+          var gd = document.getElementById(el.id);
+          if (!gd) return;
+          if (gd._gmRotateId) cancelAnimationFrame(gd._gmRotateId);
+          var angle = 0;
+          function rotate() {
+            angle += 0.01;
+            Plotly.relayout(gd, {
+              'scene.camera.eye': {
+                x: 1.6 * Math.cos(angle),
+                y: 1.6 * Math.sin(angle),
+                z: 0.9
+              }
+            });
+            gd._gmRotateId = requestAnimationFrame(rotate);
+          }
+          gd.on('plotly_hover', function() { if (gd._gmRotateId) { cancelAnimationFrame(gd._gmRotateId); gd._gmRotateId = null; } });
+          gd.on('plotly_unhover', function() { if (!gd._gmRotateId) rotate(); });
+          gd.on('plotly_beforeplot', function() { if (gd._gmRotateId) { cancelAnimationFrame(gd._gmRotateId); gd._gmRotateId = null; } });
+          rotate();
+        }"
+      )
   })
 
   output$gm_nodes_table <- DT::renderDT({
