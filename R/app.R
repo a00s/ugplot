@@ -675,8 +675,8 @@ ui <- fluidPage(
           column(
             8,
             uiOutput("gm_summary"),
-            plotOutput("gm_network_plot", height = "520px"),
             plotlyOutput("gm_network_plot_3d", height = "560px"),
+            plotOutput("gm_network_plot", height = "520px"),
             plotOutput("gm_degree_plot", height = "240px"),
             DT::DTOutput("gm_nodes_table"),
             DT::DTOutput("gm_edges_table")
@@ -1852,7 +1852,30 @@ server <- function(input, output, session) {
         customdata = ~degree,
         showlegend = FALSE
       ) |>
-      layout(title = "Feature graph (3D)")
+      layout(title = "Feature graph (3D)") |>
+      htmlwidgets::onRender(
+        "function(el, x) {
+          var gd = document.getElementById(el.id);
+          if (!gd) return;
+          if (gd._gmRotateId) cancelAnimationFrame(gd._gmRotateId);
+          var angle = 0;
+          function rotate() {
+            angle += 0.01;
+            Plotly.relayout(gd, {
+              'scene.camera.eye': {
+                x: 1.6 * Math.cos(angle),
+                y: 1.6 * Math.sin(angle),
+                z: 0.9
+              }
+            });
+            gd._gmRotateId = requestAnimationFrame(rotate);
+          }
+          gd.on('plotly_hover', function() { if (gd._gmRotateId) { cancelAnimationFrame(gd._gmRotateId); gd._gmRotateId = null; } });
+          gd.on('plotly_unhover', function() { if (!gd._gmRotateId) rotate(); });
+          gd.on('plotly_beforeplot', function() { if (gd._gmRotateId) { cancelAnimationFrame(gd._gmRotateId); gd._gmRotateId = null; } });
+          rotate();
+        }"
+      )
   })
 
   output$gm_nodes_table <- DT::renderDT({
