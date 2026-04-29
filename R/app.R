@@ -1217,6 +1217,7 @@ server <- function(input, output, session) {
   hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
   hideTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
   hideTab(inputId = "tabs", target = "7) DEEP LEARNING")
+  hideTab(inputId = "tabs", target = "8) GRAPH MODELS")
 
   disable("merge_all_columns")
   disable("merge_all_rows")
