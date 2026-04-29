@@ -1860,7 +1860,7 @@ server <- function(input, output, session) {
           if (gd._gmRotateId) cancelAnimationFrame(gd._gmRotateId);
           var angle = 0;
           function rotate() {
-            angle += 0.01;
+            angle += 0.005;
             Plotly.relayout(gd, {
               'scene.camera.eye': {
                 x: 1.6 * Math.cos(angle),
@@ -1871,7 +1871,6 @@ server <- function(input, output, session) {
             gd._gmRotateId = requestAnimationFrame(rotate);
           }
           gd.on('plotly_hover', function() { if (gd._gmRotateId) { cancelAnimationFrame(gd._gmRotateId); gd._gmRotateId = null; } });
-          gd.on('plotly_unhover', function() { if (!gd._gmRotateId) rotate(); });
           gd.on('plotly_beforeplot', function() { if (gd._gmRotateId) { cancelAnimationFrame(gd._gmRotateId); gd._gmRotateId = null; } });
           rotate();
         }"
