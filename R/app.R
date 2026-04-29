@@ -1638,9 +1638,20 @@ server <- function(input, output, session) {
       theta <- seq(0, 2 * pi, length.out = n + 1)[-1]
       coords <- data.frame(node = keep_nodes, x = cos(theta), y = sin(theta), z = seq(-1, 1, length.out = n))
     } else {
-      fit2 <- cmdscale(as.dist(dist_mat), k = 2)
-      fit3 <- cmdscale(as.dist(dist_mat), k = 3)
-      coords <- data.frame(node = rownames(fit2), x = fit2[, 1], y = fit2[, 2], z = fit3[, 3])
+      n_nodes <- length(keep_nodes)
+      max_k <- max(1, n_nodes - 1)
+      k2 <- min(2, max_k)
+      k3 <- min(3, max_k)
+      fit2 <- cmdscale(as.dist(dist_mat), k = k2)
+      fit3 <- cmdscale(as.dist(dist_mat), k = k3)
+
+      fit2_mat <- as.matrix(fit2)
+      fit3_mat <- as.matrix(fit3)
+      x_vals <- fit2_mat[, 1]
+      y_vals <- if (ncol(fit2_mat) >= 2) fit2_mat[, 2] else rep(0, nrow(fit2_mat))
+      z_vals <- if (ncol(fit3_mat) >= 3) fit3_mat[, 3] else rep(0, nrow(fit3_mat))
+
+      coords <- data.frame(node = rownames(fit2_mat), x = x_vals, y = y_vals, z = z_vals)
     }
 
     nodes <- merge(nodes, coords, by = "node", all.x = TRUE)
