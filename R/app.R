@@ -1769,7 +1769,7 @@ server <- function(input, output, session) {
     nodes <- gm_nodes_metrics()
     edges <- gm_edges_metrics()
     if (nrow(nodes) == 0 || nrow(edges) == 0) {
-      return(tags$div(style = "color: #666;", "Build graph to view metrics and plots."))
+      return(tags$div(class = "gm-muted-text", "Build graph to view metrics and plots."))
     }
     tags$div(
       class = "ml-final-summary",
