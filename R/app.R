@@ -3193,9 +3193,9 @@ observeEvent(input$model_file, {
     }
 
     tags$div(
-      style = "margin: 8px 0 12px 0; padding: 10px 12px; border-left: 4px solid #b26a00; background: #fff7e6;",
-      tags$p(style = "margin: 0 0 6px 0;", tags$strong("Model columns not found in current table:")),
-      tags$p(style = "margin: 0; color: #6a4a00;", paste(missing_features, collapse = ", "))
+      class = "model-analysis-missing-features",
+      tags$p(class = "model-analysis-missing-features-title", tags$strong("Model columns not found in current table:")),
+      tags$p(class = "model-analysis-missing-features-list", paste(missing_features, collapse = ", "))
     )
   })
 
