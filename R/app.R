@@ -1255,6 +1255,7 @@ server <- function(input, output, session) {
   model_analysis_results_data <- reactiveVal(data.frame())
   heatmap_recorded_plot <- reactiveVal(NULL)
   model_analysis_recorded_plot <- reactiveVal(NULL)
+  model_analysis_metrics_report <- reactiveVal("")
   gm_nodes_metrics <- reactiveVal(data.frame())
   gm_edges_metrics <- reactiveVal(data.frame())
 
@@ -3280,6 +3281,7 @@ observeEvent(input$model_file, {
     req(loaded_model())
     req(changed_table)
     model_analysis_recorded_plot(NULL)
+    model_analysis_metrics_report("")
     model_container <- loaded_model()
     model_obj <- model_container$model
     preprocess_meta <- model_container$preprocess_meta
@@ -3318,7 +3320,9 @@ observeEvent(input$model_file, {
 
     if (nrow(analysis_data) == 0) {
       output$model_analysis_accuracy <- renderPrint({
-        cat("No samples left after missingness filtering.\n")
+        report_txt <- "No samples left after missingness filtering.\n"
+        model_analysis_metrics_report(report_txt)
+        cat(report_txt)
       })
       output$model_analysis_plot_metrics <- renderPrint({
         cat("No valid numeric pairs for plot metrics.\n")
@@ -3410,15 +3414,16 @@ observeEvent(input$model_file, {
         accuracy           <- if (count_reliable>0) correct_count/count_reliable else NA
 
         output$model_analysis_accuracy <- renderPrint({
-          cat(
+          report_txt <- paste0(
             "Total items: ",            total_items,        "\n",
             "Reliable: ",               count_reliable,     "\n",
             "Inconclusive: ",           count_inconclusive, "\n",
             "Correct (reliable): ",     correct_count,      "\n",
             "Wrong (reliable): ",       wrong_count,        "\n",
-            "Accuracy (reliable): ",    accuracy,           "\n",
-            sep = ""
+            "Accuracy (reliable): ",    accuracy,           "\n"
           )
+          model_analysis_metrics_report(report_txt)
+          cat(report_txt, sep = "")
         })
       } else {
         valid_reg <- which(!is.na(ground_truth) & !is.na(predicted_value))
@@ -3450,7 +3455,9 @@ observeEvent(input$model_file, {
       }
     } else {
       output$model_analysis_accuracy <- renderPrint({
-        cat("Ground truth não disponível.\n")
+        report_txt <- "Ground truth não disponível.\n"
+        model_analysis_metrics_report(report_txt)
+        cat(report_txt)
       })
     }
 
