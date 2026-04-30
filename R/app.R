@@ -600,6 +600,7 @@ ui <- fluidPage(
         uiOutput("model_analysis_missing_summary"),
         br(),
         verbatimTextOutput("model_analysis_accuracy"),
+        verbatimTextOutput("model_analysis_plot_metrics"),
         br(),
         plotOutput("model_analysis_correlation_plot", height = "520px", width = "520px"),
         br(),
@@ -1374,6 +1375,28 @@ server <- function(input, output, session) {
       }, logical(1))
       table_to_download <- table_to_download[, has_content, drop = FALSE]
       utils::write.csv(table_to_download, file, row.names = FALSE)
+    }
+  )
+
+  output$downloadModelAnalysisPlotTiff <- downloadHandler(
+    filename = function() {
+      source_name <- original_dataset_filename()
+      if (!is.null(input$file1$name) && nzchar(input$file1$name)) {
+        source_name <- input$file1$name
+      }
+      base_name <- tools::file_path_sans_ext(basename(source_name))
+      if (is.null(base_name) || !nzchar(base_name)) {
+        base_name <- "model_analysis_plot"
+      }
+      paste0(base_name, "_model_analysis.tiff")
+    },
+    contentType = "image/tiff",
+    content = function(file) {
+      recorded_plot <- model_analysis_recorded_plot()
+      req(!is.null(recorded_plot))
+      tiff(filename = file, width = 2000, height = 2000, res = 300, compression = "lzw")
+      replayPlot(recorded_plot)
+      dev.off()
     }
   )
 
@@ -3297,6 +3320,9 @@ observeEvent(input$model_file, {
       output$model_analysis_accuracy <- renderPrint({
         cat("No samples left after missingness filtering.\n")
       })
+      output$model_analysis_plot_metrics <- renderPrint({
+        cat("No valid numeric pairs for plot metrics.\n")
+      })
       output$model_analysis_correlation_plot <- renderPlot({
         plot.new()
         text(0.5, 0.5, "No samples left after missingness filtering.")
@@ -3395,8 +3421,31 @@ observeEvent(input$model_file, {
           )
         })
       } else {
+        valid_reg <- which(!is.na(ground_truth) & !is.na(predicted_value))
+        n_pairs <- length(valid_reg)
+        if (n_pairs > 0) {
+          gt_valid <- ground_truth[valid_reg]
+          pred_valid <- predicted_value[valid_reg]
+          pearson_r <- if (n_pairs >= 2) stats::cor(gt_valid, pred_valid, method = "pearson") else NA_real_
+          r2 <- if (!is.na(pearson_r)) pearson_r^2 else NA_real_
+          mae <- mean(abs(pred_valid - gt_valid))
+          rmse <- sqrt(mean((pred_valid - gt_valid)^2))
+          rmse <- sqrt(mean((pred_valid - gt_valid)^2))
+        } else {
+          pearson_r <- NA_real_
+          r2 <- NA_real_
+          mae <- NA_real_
+          rmse <- NA_real_
+        }
         output$model_analysis_accuracy <- renderPrint({
-          cat("Regressão: sem métricas de classificação.\n")
+          cat(
+            "n=", n_pairs, "\n",
+            "R^2=", format(round(r2, 2), nsmall = 2), "\n",
+            "Pearson=", format(round(pearson_r, 2), nsmall = 2), "\n",
+            "MAE=", format(round(mae, 2), nsmall = 2), "\n",
+            "RMSE=", format(round(rmse, 2), nsmall = 2), "\n",
+            sep = ""
+          )
         })
       }
     } else {
@@ -3404,6 +3453,35 @@ observeEvent(input$model_file, {
         cat("Ground truth não disponível.\n")
       })
     }
+
+    output$model_analysis_plot_metrics <- renderPrint({
+      if ("Ground_Truth" %in% colnames(output_table) && "Predicted" %in% colnames(output_table)) {
+        gt <- suppressWarnings(as.numeric(as.character(output_table$Ground_Truth)))
+        pred <- suppressWarnings(as.numeric(as.character(output_table$Predicted)))
+        valid <- which(!is.na(gt) & !is.na(pred))
+        n_pairs <- length(valid)
+        if (n_pairs > 0) {
+          gt_valid <- gt[valid]
+          pred_valid <- pred[valid]
+          pearson_r <- if (n_pairs >= 2) stats::cor(gt_valid, pred_valid, method = "pearson") else NA_real_
+          r2 <- if (!is.na(pearson_r)) pearson_r^2 else NA_real_
+          mae <- mean(abs(pred_valid - gt_valid))
+          rmse <- sqrt(mean((pred_valid - gt_valid)^2))
+          cat(
+            "n=", n_pairs, "\n",
+            "R^2=", format(round(r2, 6), nsmall = 6), "\n",
+            "Pearson=", format(round(pearson_r, 6), nsmall = 6), "\n",
+            "MAE=", format(round(mae, 6), nsmall = 6), "\n",
+            "RMSE=", format(round(rmse, 6), nsmall = 6), "\n",
+            sep = ""
+          )
+        } else {
+          cat("No valid numeric pairs for plot metrics.\n")
+        }
+      } else {
+        cat("Plot metrics unavailable for this model/output.\n")
+      }
+    })
 
     output$model_analysis_correlation_plot <- renderPlot({
       if ("Ground_Truth" %in% colnames(output_table) && "Predicted" %in% colnames(output_table)) {
@@ -3454,7 +3532,8 @@ observeEvent(input$model_file, {
               paste0("n: ", n_pairs),
               paste0("Pearson R: ", format(round(pearson_r, 6), nsmall = 6)),
               paste0("R^2: ", format(round(r2, 6), nsmall = 6)),
-              paste0("MAE: ", format(round(mae, 6), nsmall = 6))
+              paste0("MAE: ", format(round(mae, 6), nsmall = 6)),
+              paste0("RMSE: ", format(round(rmse, 6), nsmall = 6))
             ),
             bty = "n",
             cex = 0.8
