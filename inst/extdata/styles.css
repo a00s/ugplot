@@ -360,3 +360,19 @@ button.ml-section-toggle:focus,
 .ml-robust-summary-list {
   margin: 8px 0 0 18px;
 }
+
+.model-analysis-missing-features {
+  margin: 8px 0 12px 0;
+  padding: 10px 12px;
+  border-left: 4px solid #b26a00;
+  background: #fff7e6;
+}
+
+.model-analysis-missing-features-title {
+  margin: 0 0 6px 0;
+}
+
+.model-analysis-missing-features-list {
+  margin: 0;
+  color: #6a4a00;
+}
