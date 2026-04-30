@@ -1377,6 +1377,28 @@ server <- function(input, output, session) {
     }
   )
 
+  output$downloadModelAnalysisPlotTiff <- downloadHandler(
+    filename = function() {
+      source_name <- original_dataset_filename()
+      if (!is.null(input$file1$name) && nzchar(input$file1$name)) {
+        source_name <- input$file1$name
+      }
+      base_name <- tools::file_path_sans_ext(basename(source_name))
+      if (is.null(base_name) || !nzchar(base_name)) {
+        base_name <- "model_analysis_plot"
+      }
+      paste0(base_name, "_model_analysis.tiff")
+    },
+    contentType = "image/tiff",
+    content = function(file) {
+      recorded_plot <- model_analysis_recorded_plot()
+      req(!is.null(recorded_plot))
+      tiff(filename = file, width = 2000, height = 2000, res = 300, compression = "lzw")
+      replayPlot(recorded_plot)
+      dev.off()
+    }
+  )
+
   output$gm_download_nodes <- downloadHandler(
     filename = function() paste0("graph_nodes_", Sys.Date(), ".csv"),
     content = function(file) utils::write.csv(gm_nodes_metrics(), file, row.names = FALSE)
@@ -3395,8 +3417,30 @@ observeEvent(input$model_file, {
           )
         })
       } else {
+        valid_reg <- which(!is.na(ground_truth) & !is.na(predicted_value))
+        n_pairs <- length(valid_reg)
+        if (n_pairs > 0) {
+          gt_valid <- ground_truth[valid_reg]
+          pred_valid <- predicted_value[valid_reg]
+          pearson_r <- if (n_pairs >= 2) stats::cor(gt_valid, pred_valid, method = "pearson") else NA_real_
+          r2 <- if (!is.na(pearson_r)) pearson_r^2 else NA_real_
+          mae <- mean(abs(pred_valid - gt_valid))
+          rmse <- sqrt(mean((pred_valid - gt_valid)^2))
+        } else {
+          pearson_r <- NA_real_
+          r2 <- NA_real_
+          mae <- NA_real_
+          rmse <- NA_real_
+        }
         output$model_analysis_accuracy <- renderPrint({
-          cat("Regressão: sem métricas de classificação.\n")
+          cat(
+            "n=", n_pairs, "\n",
+            "R^2=", format(round(r2, 2), nsmall = 2), "\n",
+            "Pearson=", format(round(pearson_r, 2), nsmall = 2), "\n",
+            "MAE=", format(round(mae, 2), nsmall = 2), "\n",
+            "RMSE=", format(round(rmse, 2), nsmall = 2), "\n",
+            sep = ""
+          )
         })
       }
     } else {
