@@ -600,6 +600,7 @@ ui <- fluidPage(
         uiOutput("model_analysis_missing_summary"),
         br(),
         verbatimTextOutput("model_analysis_accuracy"),
+        downloadButton("downloadModelAnalysisMetricsTxt", "Download metrics report (TXT)"),
         br(),
         plotOutput("model_analysis_correlation_plot", height = "520px", width = "520px"),
         br(),
@@ -1254,6 +1255,7 @@ server <- function(input, output, session) {
   model_analysis_results_data <- reactiveVal(data.frame())
   heatmap_recorded_plot <- reactiveVal(NULL)
   model_analysis_recorded_plot <- reactiveVal(NULL)
+  model_analysis_metrics_report <- reactiveVal("")
   gm_nodes_metrics <- reactiveVal(data.frame())
   gm_edges_metrics <- reactiveVal(data.frame())
 
@@ -1374,6 +1376,48 @@ server <- function(input, output, session) {
       }, logical(1))
       table_to_download <- table_to_download[, has_content, drop = FALSE]
       utils::write.csv(table_to_download, file, row.names = FALSE)
+    }
+  )
+
+  output$downloadModelAnalysisMetricsTxt <- downloadHandler(
+    filename = function() {
+      source_name <- original_dataset_filename()
+      if (!is.null(input$file1$name) && nzchar(input$file1$name)) {
+        source_name <- input$file1$name
+      }
+      base_name <- tools::file_path_sans_ext(basename(source_name))
+      if (is.null(base_name) || !nzchar(base_name)) {
+        base_name <- "model_analysis_metrics"
+      }
+      paste0(base_name, "_metrics_report.txt")
+    },
+    contentType = "text/plain",
+    content = function(file) {
+      report_txt <- model_analysis_metrics_report()
+      req(nzchar(report_txt))
+      writeLines(report_txt, con = file, useBytes = TRUE)
+    }
+  )
+
+  output$downloadModelAnalysisPlotTiff <- downloadHandler(
+    filename = function() {
+      source_name <- original_dataset_filename()
+      if (!is.null(input$file1$name) && nzchar(input$file1$name)) {
+        source_name <- input$file1$name
+      }
+      base_name <- tools::file_path_sans_ext(basename(source_name))
+      if (is.null(base_name) || !nzchar(base_name)) {
+        base_name <- "model_analysis_plot"
+      }
+      paste0(base_name, "_model_analysis.tiff")
+    },
+    contentType = "image/tiff",
+    content = function(file) {
+      recorded_plot <- model_analysis_recorded_plot()
+      req(!is.null(recorded_plot))
+      tiff(filename = file, width = 2000, height = 2000, res = 300, compression = "lzw")
+      replayPlot(recorded_plot)
+      dev.off()
     }
   )
 
@@ -3257,6 +3301,7 @@ observeEvent(input$model_file, {
     req(loaded_model())
     req(changed_table)
     model_analysis_recorded_plot(NULL)
+    model_analysis_metrics_report("")
     model_container <- loaded_model()
     model_obj <- model_container$model
     preprocess_meta <- model_container$preprocess_meta
@@ -3295,7 +3340,9 @@ observeEvent(input$model_file, {
 
     if (nrow(analysis_data) == 0) {
       output$model_analysis_accuracy <- renderPrint({
-        cat("No samples left after missingness filtering.\n")
+        report_txt <- "No samples left after missingness filtering.\n"
+        model_analysis_metrics_report(report_txt)
+        cat(report_txt)
       })
       output$model_analysis_correlation_plot <- renderPlot({
         plot.new()
@@ -3384,24 +3431,50 @@ observeEvent(input$model_file, {
         accuracy           <- if (count_reliable>0) correct_count/count_reliable else NA
 
         output$model_analysis_accuracy <- renderPrint({
-          cat(
+          report_txt <- paste0(
             "Total items: ",            total_items,        "\n",
             "Reliable: ",               count_reliable,     "\n",
             "Inconclusive: ",           count_inconclusive, "\n",
             "Correct (reliable): ",     correct_count,      "\n",
             "Wrong (reliable): ",       wrong_count,        "\n",
-            "Accuracy (reliable): ",    accuracy,           "\n",
-            sep = ""
+            "Accuracy (reliable): ",    accuracy,           "\n"
           )
+          model_analysis_metrics_report(report_txt)
+          cat(report_txt, sep = "")
         })
       } else {
+        valid_reg <- which(!is.na(ground_truth) & !is.na(predicted_value))
+        n_pairs <- length(valid_reg)
+        if (n_pairs > 0) {
+          gt_valid <- ground_truth[valid_reg]
+          pred_valid <- predicted_value[valid_reg]
+          pearson_r <- if (n_pairs >= 2) stats::cor(gt_valid, pred_valid, method = "pearson") else NA_real_
+          r2 <- if (!is.na(pearson_r)) pearson_r^2 else NA_real_
+          mae <- mean(abs(pred_valid - gt_valid))
+          rmse <- sqrt(mean((pred_valid - gt_valid)^2))
+        } else {
+          pearson_r <- NA_real_
+          r2 <- NA_real_
+          mae <- NA_real_
+          rmse <- NA_real_
+        }
         output$model_analysis_accuracy <- renderPrint({
-          cat("Regressão: sem métricas de classificação.\n")
+          report_txt <- paste0(
+            "n=", n_pairs, "\n",
+            "R^2=", format(round(r2, 2), nsmall = 2), "\n",
+            "Pearson=", format(round(pearson_r, 2), nsmall = 2), "\n",
+            "MAE=", format(round(mae, 2), nsmall = 2), "\n",
+            "RMSE=", format(round(rmse, 2), nsmall = 2), "\n"
+          )
+          model_analysis_metrics_report(report_txt)
+          cat(report_txt, sep = "")
         })
       }
     } else {
       output$model_analysis_accuracy <- renderPrint({
-        cat("Ground truth não disponível.\n")
+        report_txt <- "Ground truth não disponível.\n"
+        model_analysis_metrics_report(report_txt)
+        cat(report_txt)
       })
     }
 
