@@ -3065,8 +3065,12 @@ observeEvent(input$model_file, {
       }
     })
 
-    # 3) Prepara vetor de colunas do dataset
-    cols_dataset <- colnames(changed_table)
+    # 3) Prepara vetor de colunas ativas do dataset (seleção da aba TABLE)
+    active_cols <- input$column_checkbox_group %||% character(0)
+    cols_dataset <- intersect(active_cols, colnames(changed_table))
+    if (length(cols_dataset) == 0) {
+      cols_dataset <- colnames(changed_table)
+    }
 
     # 4) Detecta variável‑alvo em várias etapas
     model_target <- ""
@@ -3091,10 +3095,16 @@ observeEvent(input$model_file, {
       }
     }
 
-    # 4.4) Se ainda vazio ou não estiver no dataset, usar o que o usuário selecionou
+    # 4.4) Se ainda vazio ou não estiver nas colunas ativas, usar o que o usuário selecionou
     selected_manual <- input$dataset_response_col
     if (!(model_target %in% cols_dataset)) {
-      model_target <- selected_manual
+      if (!is.null(selected_manual) && selected_manual %in% cols_dataset) {
+        model_target <- selected_manual
+      } else if (length(cols_dataset) > 0) {
+        model_target <- cols_dataset[[1]]
+      } else {
+        model_target <- ""
+      }
     }
 
     # 5) Exibe na UI SEMPRE o nome que vamos usar como target
