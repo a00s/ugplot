@@ -567,6 +567,7 @@ ui <- fluidPage(
         uiOutput("model_preprocess_ui"),
         ## NOVO: mostrar variável alvo do modelo
         uiOutput("model_target_var_ui"),
+        uiOutput("model_analysis_missing_features_ui"),
 
         ## NOVO: escolher no dataset qual coluna é o ground truth
         selectInput("dataset_response_col", "Target column:",
@@ -3065,8 +3066,12 @@ observeEvent(input$model_file, {
       }
     })
 
-    # 3) Prepara vetor de colunas do dataset
-    cols_dataset <- colnames(changed_table)
+    # 3) Prepara vetor de colunas ativas do dataset (seleção da aba TABLE)
+    active_cols <- input$column_checkbox_group %||% character(0)
+    cols_dataset <- intersect(active_cols, colnames(changed_table))
+    if (length(cols_dataset) == 0) {
+      cols_dataset <- colnames(changed_table)
+    }
 
     # 4) Detecta variável‑alvo em várias etapas
     model_target <- ""
@@ -3091,10 +3096,16 @@ observeEvent(input$model_file, {
       }
     }
 
-    # 4.4) Se ainda vazio ou não estiver no dataset, usar o que o usuário selecionou
+    # 4.4) Se ainda vazio ou não estiver nas colunas ativas, usar o que o usuário selecionou
     selected_manual <- input$dataset_response_col
     if (!(model_target %in% cols_dataset)) {
-      model_target <- selected_manual
+      if (!is.null(selected_manual) && selected_manual %in% cols_dataset) {
+        model_target <- selected_manual
+      } else if (length(cols_dataset) > 0) {
+        model_target <- cols_dataset[[1]]
+      } else {
+        model_target <- ""
+      }
     }
 
     # 5) Exibe na UI SEMPRE o nome que vamos usar como target
@@ -3134,9 +3145,24 @@ observeEvent(input$model_file, {
 
     dataset_col <- input$dataset_response_col
     if (!is.null(dataset_col) && dataset_col %in% colnames(analysis_data_raw)) {
-      predictors <- analysis_data_raw[, setdiff(colnames(analysis_data_raw), dataset_col), drop = FALSE]
+      predictors_all <- analysis_data_raw[, setdiff(colnames(analysis_data_raw), dataset_col), drop = FALSE]
     } else {
-      predictors <- analysis_data_raw
+      predictors_all <- analysis_data_raw
+    }
+
+    model_features <- character(0)
+    if (!is.null(loaded_model())) {
+      model_obj <- loaded_model()$model
+      model_features <- model_obj$finalModel$xNames %||% character(0)
+    }
+
+    if (length(model_features) > 0) {
+      present_model_features <- intersect(model_features, colnames(predictors_all))
+      predictors <- predictors_all[, present_model_features, drop = FALSE]
+      missing_model_features <- setdiff(model_features, colnames(predictors_all))
+    } else {
+      predictors <- predictors_all
+      missing_model_features <- character(0)
     }
 
     missing_definition <- input$model_analysis_missing_definition
@@ -3153,7 +3179,23 @@ observeEvent(input$model_file, {
       missing_definition = missing_definition,
       threshold_rows = threshold_rows,
       missing_mask = missing_mask,
-      keep_rows = keep_rows
+      keep_rows = keep_rows,
+      model_features = model_features,
+      missing_model_features = missing_model_features
+    )
+  })
+
+  output$model_analysis_missing_features_ui <- renderUI({
+    preview <- model_analysis_missing_preview()
+    missing_features <- preview$missing_model_features
+    if (length(missing_features) == 0) {
+      return(NULL)
+    }
+
+    tags$div(
+      style = "margin: 8px 0 12px 0; padding: 10px 12px; border-left: 4px solid #b26a00; background: #fff7e6;",
+      tags$p(style = "margin: 0 0 6px 0;", tags$strong("Model columns not found in current table:")),
+      tags$p(style = "margin: 0; color: #6a4a00;", paste(missing_features, collapse = ", "))
     )
   })
 
