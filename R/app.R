@@ -3327,6 +3327,9 @@ observeEvent(input$model_file, {
       output$model_analysis_plot_metrics <- renderPrint({
         cat("No valid numeric pairs for plot metrics.\n")
       })
+      output$model_analysis_plot_metrics <- renderPrint({
+        cat("No valid numeric pairs for plot metrics.\n")
+      })
       output$model_analysis_correlation_plot <- renderPlot({
         plot.new()
         text(0.5, 0.5, "No samples left after missingness filtering.")
@@ -3521,6 +3524,7 @@ observeEvent(input$model_file, {
           pearson_r <- if (n_pairs >= 2) stats::cor(gt_valid, pred_valid, method = "pearson") else NA_real_
           r2 <- if (!is.na(pearson_r)) pearson_r^2 else NA_real_
           mae <- mean(abs(pred_valid - gt_valid))
+          rmse <- sqrt(mean((pred_valid - gt_valid)^2))
           if (length(valid) >= 2) {
             abline(stats::lm(pred_valid ~ gt_valid), col = "#e31a1c", lwd = 2)
           }
