@@ -1258,6 +1258,21 @@ server <- function(input, output, session) {
   model_analysis_metrics_report <- reactiveVal("")
   gm_nodes_metrics <- reactiveVal(data.frame())
   gm_edges_metrics <- reactiveVal(data.frame())
+  pending_duplicate_row_names_upload <- reactiveVal(NULL)
+
+  finish_uploaded_dataset_load <- function(data) {
+    df_pre <<- data
+    reset_missing_strategy_ui()
+    updateTextAreaInput(session, "textarea_columns", value = paste(names(df_pre), collapse = "\n"))
+    updateTextAreaInput(session, "textarea_rows", value = paste(rownames(df_pre), collapse = "\n"))
+  }
+
+  load_uploaded_dataset_with_sequential_row_names <- function(upload_info) {
+    data <- read.table(upload_info$filepath, header = TRUE, sep = upload_info$separator, row.names = NULL,
+      dec = ".", stringsAsFactors = FALSE, strip.white = TRUE, skip = upload_info$skipline)
+    rownames(data) <- seq_len(nrow(data))
+    finish_uploaded_dataset_load(data)
+  }
 
   output$downloadData <- downloadHandler(
     filename = function() {
@@ -1439,22 +1454,51 @@ server <- function(input, output, session) {
     heatmap_recorded_plot(NULL)
     hide("downloadHeatmapPlotTiff")
     skipline <- input$startfromline - 1
+    upload_info <- list(filepath = filepath, separator = tab_separator(), skipline = skipline)
+    pending_duplicate_row_names_upload(NULL)
     tryCatch({
-      df_pre <<- read.table(filepath, header = TRUE, sep = tab_separator(), row.names = 1,
+      data <- read.table(filepath, header = TRUE, sep = tab_separator(), row.names = 1,
         dec = ".", stringsAsFactors = FALSE, strip.white = TRUE, skip = skipline)
-      reset_missing_strategy_ui()
-      updateTextAreaInput(session, "textarea_columns", value = paste(names(df_pre), collapse = "\n"))
-      updateTextAreaInput(session, "textarea_rows", value = paste(rownames(df_pre), collapse = "\n"))
+      finish_uploaded_dataset_load(data)
     }, error = function(e) {
       error_info <- ""
-      if (e$message == "duplicate 'row.names' are not allowed") {
+      if (grepl("duplicate 'row.names' are not allowed", e$message, fixed = TRUE)) {
         data <- read.table(filepath, header = TRUE, sep = tab_separator(), row.names = NULL,
           dec = ".", stringsAsFactors = FALSE, strip.white = TRUE, skip = skipline)
         error_info <- toString(unique(data[duplicated(data[, 1]) | duplicated(data[, 1], fromLast = TRUE), 1]))
+        pending_duplicate_row_names_upload(upload_info)
+        showModal(modalDialog(
+          title = "Duplicate row names",
+          tags$p("The first column contains duplicate values, so it cannot be used as row names."),
+          tags$p(paste("Duplicated values:", error_info)),
+          tags$p("Do you want ugPlot to automatically use sequential row names instead?"),
+          easyClose = FALSE,
+          footer = tagList(
+            modalButton("Cancel"),
+            actionButton("confirm_sequential_row_names", "Use sequential row names")
+          )
+        ))
+        return()
       }
       showModal(modalDialog(
         title = "Error",
         paste(e$message, error_info),
+        easyClose = TRUE,
+        footer = modalButton("OK")
+      ))
+    })
+  })
+
+  observeEvent(input$confirm_sequential_row_names, {
+    upload_info <- req(pending_duplicate_row_names_upload())
+    tryCatch({
+      load_uploaded_dataset_with_sequential_row_names(upload_info)
+      pending_duplicate_row_names_upload(NULL)
+      removeModal()
+    }, error = function(e) {
+      showModal(modalDialog(
+        title = "Error",
+        e$message,
         easyClose = TRUE,
         footer = modalButton("OK")
       ))
