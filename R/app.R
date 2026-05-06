@@ -97,23 +97,8 @@ format_running_metric_distribution <- function(values, metric_name = "R2", bins 
     "-",
     sprintf("%.2f", utils::tail(breaks, -1))
   )
-  mids <- utils::head(breaks, -1) + diff(breaks) / 2
-  normal_line <- NULL
-  values_sd <- stats::sd(values)
-  if (is.finite(values_sd) && values_sd > 0) {
-    normal_density <- stats::dnorm(mids, mean = mean(values), sd = values_sd)
-    density_levels <- c(" ", ".", ":", "-", "=", "+", "*", bar_char)
-    scaled_density <- if (max(normal_density) > 0) {
-      round((normal_density / max(normal_density)) * (length(density_levels) - 1)) + 1
-    } else {
-      rep(1, length(normal_density))
-    }
-    scaled_density <- pmax(1, pmin(length(density_levels), scaled_density))
-    normal_line <- paste0("𝗡𝗢𝗥𝗠𝗔𝗟 𝗙𝗜𝗧   : ", paste(density_levels[scaled_density], collapse = ""))
-  }
-
   lines <- paste0(interval_labels, " | ", bars, " ", counts)
-  paste(c(paste0("𝗗𝗜𝗦𝗧𝗥𝗜𝗕𝗨𝗧𝗜𝗢𝗡 : ", metric_name, " (n=", length(values), ")"), lines, normal_line), collapse = "\n")
+  paste(c(paste0("𝗗𝗜𝗦𝗧𝗥𝗜𝗕𝗨𝗧𝗜𝗢𝗡 : ", metric_name, " (n=", length(values), ")"), lines), collapse = "\n")
 }
 # Optional: set maximum number of threads
 # Sys.setenv(OMP_NUM_THREADS = 2)
@@ -226,10 +211,37 @@ getImage <- function(fileName) {
 # Define the UI of the application
 ui <- fluidPage(
   tags$script("
+    function filterCheckboxGroup(inputSelector, groupSelector) {
+      var query = ($(inputSelector).val() || '').toLowerCase().trim();
+      $(groupSelector + ' .checkbox').each(function() {
+        var label = $(this).text().toLowerCase();
+        $(this).toggle(query === '' || label.indexOf(query) !== -1);
+      });
+    }
+
+    function setupTableListFilters() {
+      var filters = [
+        ['#filter_columns', '#column_checkbox_group'],
+        ['#filter_rows', '#row_checkbox_group'],
+        ['#filter_categories', '#checkbox_group_categories']
+      ];
+      filters.forEach(function(pair) {
+        var inputSelector = pair[0];
+        var groupSelector = pair[1];
+        $(document)
+          .off('input.ugplotFilter', inputSelector)
+          .on('input.ugplotFilter', inputSelector, function() {
+            filterCheckboxGroup(inputSelector, groupSelector);
+          });
+        filterCheckboxGroup(inputSelector, groupSelector);
+      });
+    }
+
     $(document).on('shiny:sessioninitialized', function(event) {
       setInterval(function() {
         Shiny.setInputValue('keepAlive', Math.random());
       }, 60000);
+      setInterval(setupTableListFilters, 500);
     });
   "),
   includeCSS(path_to_css()),
@@ -297,6 +309,8 @@ ui <- fluidPage(
         column(
           width = 4,
           tags$h4("Columns", style = "margin-top: 10px;"),
+          tags$div(class = "table-list-filter",
+            textInput("filter_columns", NULL, placeholder = "Search columns", width = "100%")),
           div(class = "scrollable-table",
             div(id = "dynamic_columns")),
           actionButton("uncheck_all_columns", "Uncheck all"),
@@ -328,6 +342,8 @@ ui <- fluidPage(
         column(
           width = 4,
           tags$h4("Rows", style = "margin-top: 10px;"),
+          tags$div(class = "table-list-filter",
+            textInput("filter_rows", NULL, placeholder = "Search rows", width = "100%")),
           div(class = "scrollable-table",
             div(id = "dynamic_rows")),
           actionButton("uncheck_all_rows", "Uncheck all"),
@@ -337,6 +353,8 @@ ui <- fluidPage(
         column(
           width = 4,
           tags$h4("Categories", style = "margin-top: 10px;"),
+          tags$div(class = "table-list-filter",
+            textInput("filter_categories", NULL, placeholder = "Search categories", width = "100%")),
           div(class = "scrollable-table",
             style = "background-color: #f7f8fa; overflow-y: auto; max-height: 200px;",
             div(id = "dynamic_columns_categories")),
@@ -2798,8 +2816,7 @@ server <- function(input, output, session) {
         running_progress_detail <- function(model_name, loop_dataset_seed, loop_seed,
                                             count_model, active_model_count,
                                             seed_position, total_seed_runs,
-                                            dataset_position, total_dataset_runs,
-                                            completed_runs, total_runs) {
+                                            dataset_position, total_dataset_runs) {
           metric_values <- suppressWarnings(as.numeric(unlist(model_metric_values, use.names = FALSE)))
           metric_values <- metric_values[is.finite(metric_values)]
           mean_label <- if (length(metric_values) > 0) round(mean(metric_values), 4) else "N/A"
@@ -2807,12 +2824,11 @@ server <- function(input, output, session) {
           metric_distribution <- format_running_metric_distribution(metric_values, metric_name = metric_name)
 
           paste0(
-            "𝗠𝗢𝗗𝗘𝗟        : ", model_name, "\n",
+            "\n𝗠𝗢𝗗𝗘𝗟        : ", model_name, "\n",
             "𝗦𝗘𝗘𝗗         : dataset ", loop_dataset_seed, " (", dataset_position, "/", total_dataset_runs,
             ") / train ", loop_seed, " (", seed_position, "/", total_seed_runs, ")\n",
             "𝗠𝗜𝗦𝗦𝗜𝗡𝗚      : ", threshold_scope, " / ", missing_strategy, " / ", imputation_scope, "\n",
-            "𝗣𝗥𝗢𝗚𝗥𝗘𝗦𝗦     : model ", count_model, "/", max(1, active_model_count),
-            " | run ", completed_runs, "/", total_runs, "\n",
+            "𝗠𝗢𝗗𝗘𝗟 𝗣𝗢𝗦    : ", count_model, "/", max(1, active_model_count), "\n",
             "𝗪𝗢𝗥𝗦𝗧        : ", metric_label, " ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A",
             " (", worst_model, ")\n",
             "𝗕𝗘𝗦𝗧         : ", metric_label, " ", if (is.finite(best_result)) round(best_result, 4) else "N/A",
@@ -2840,9 +2856,7 @@ server <- function(input, output, session) {
               seed_position = seed_position,
               total_seed_runs = total_seed_runs,
               dataset_position = dataset_position,
-              total_dataset_runs = total_dataset_runs,
-              completed_runs = completed_runs,
-              total_runs = total_search_runs
+              total_dataset_runs = total_dataset_runs
             )
           )
         }

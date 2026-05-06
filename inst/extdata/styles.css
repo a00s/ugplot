@@ -90,6 +90,22 @@
   width: 100px;
 }
 
+.table-list-filter {
+  margin-bottom: 6px;
+}
+
+.table-list-filter .form-group {
+  margin-bottom: 0;
+}
+
+.table-list-filter input {
+  height: 32px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid #d1d6dc;
+  box-shadow: none;
+}
+
 #shiny-notification-panel {
   left: 16px !important;
   right: 16px !important;
