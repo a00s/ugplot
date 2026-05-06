@@ -90,6 +90,16 @@
   width: 100px;
 }
 
+.shiny-notification {
+  box-sizing: border-box;
+  width: 620px;
+  max-width: calc(100vw - 32px);
+}
+
+.shiny-notification .progress-text {
+  white-space: pre-line !important;
+}
+
 .scramble-controls {
   display: flex;
   gap: 8px;
