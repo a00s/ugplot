@@ -90,14 +90,31 @@
   width: 100px;
 }
 
+#shiny-notification-panel {
+  left: 16px !important;
+  right: 16px !important;
+  width: auto !important;
+}
+
+#shiny-notification-panel .shiny-notification,
 .shiny-notification {
   box-sizing: border-box;
-  width: 620px;
-  max-width: calc(100vw - 32px);
+  width: 100% !important;
+  max-width: 620px;
+  background: #ffffff !important;
+  opacity: 1 !important;
+  color: #2f3337;
+  border: 1px solid #cfd6de;
+  box-shadow: 0 8px 24px rgba(33, 37, 41, 0.16);
 }
 
 .shiny-notification .progress-text {
   white-space: pre-line !important;
+  overflow-wrap: anywhere;
+  font-family: Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
+  line-height: 1.45;
+  color: #2f3337;
 }
 
 .scramble-controls {

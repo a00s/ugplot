@@ -64,15 +64,16 @@ write_checkpoint_log <- function(last_model = "-", results_table = NULL, max_row
 format_running_metric_distribution <- function(values, metric_name = "R2", bins = 8, width = 18) {
   values <- suppressWarnings(as.numeric(unlist(values, use.names = FALSE)))
   values <- values[is.finite(values)]
+  bar_char <- "\u2588"
 
   if (length(values) == 0) {
-    return(paste0(metric_name, " distribution: waiting for results"))
+    return(paste0("𝗗𝗜𝗦𝗧𝗥𝗜𝗕𝗨𝗧𝗜𝗢𝗡 : waiting for ", metric_name, " results"))
   }
 
   if (length(unique(values)) == 1) {
-    bar <- paste(rep("#", min(width, max(1, length(values)))), collapse = "")
+    bar <- paste(rep(bar_char, min(width, max(1, length(values)))), collapse = "")
     return(paste0(
-      metric_name, " distribution (n=", length(values), "):\n",
+      "𝗗𝗜𝗦𝗧𝗥𝗜𝗕𝗨𝗧𝗜𝗢𝗡 : ", metric_name, " (n=", length(values), ")\n",
       sprintf("%.4f | %s", values[[1]], bar)
     ))
   }
@@ -88,7 +89,7 @@ format_running_metric_distribution <- function(values, metric_name = "R2", bins 
     if (count > 0 && bar_size == 0) {
       bar_size <- 1
     }
-    paste(rep("#", bar_size), collapse = "")
+    paste(rep(bar_char, bar_size), collapse = "")
   }, character(1))
 
   interval_labels <- paste0(
@@ -101,18 +102,18 @@ format_running_metric_distribution <- function(values, metric_name = "R2", bins 
   values_sd <- stats::sd(values)
   if (is.finite(values_sd) && values_sd > 0) {
     normal_density <- stats::dnorm(mids, mean = mean(values), sd = values_sd)
-    density_levels <- c(" ", ".", ":", "-", "=", "+", "*", "#")
+    density_levels <- c(" ", ".", ":", "-", "=", "+", "*", bar_char)
     scaled_density <- if (max(normal_density) > 0) {
       round((normal_density / max(normal_density)) * (length(density_levels) - 1)) + 1
     } else {
       rep(1, length(normal_density))
     }
     scaled_density <- pmax(1, pmin(length(density_levels), scaled_density))
-    normal_line <- paste0(metric_name, " normal fit: ", paste(density_levels[scaled_density], collapse = ""))
+    normal_line <- paste0("𝗡𝗢𝗥𝗠𝗔𝗟 𝗙𝗜𝗧   : ", paste(density_levels[scaled_density], collapse = ""))
   }
 
   lines <- paste0(interval_labels, " | ", bars, " ", counts)
-  paste(c(paste0(metric_name, " distribution (n=", length(values), "):"), lines, normal_line), collapse = "\n")
+  paste(c(paste0("𝗗𝗜𝗦𝗧𝗥𝗜𝗕𝗨𝗧𝗜𝗢𝗡 : ", metric_name, " (n=", length(values), ")"), lines, normal_line), collapse = "\n")
 }
 # Optional: set maximum number of threads
 # Sys.setenv(OMP_NUM_THREADS = 2)
@@ -224,13 +225,6 @@ getImage <- function(fileName) {
 
 # Define the UI of the application
 ui <- fluidPage(
-  tags$head(
-    tags$style(HTML("
-      .shiny-notification .progress-text {
-        white-space: pre-line !important;
-      }
-    "))
-  ),
   tags$script("
     $(document).on('shiny:sessioninitialized', function(event) {
       setInterval(function() {
@@ -2783,16 +2777,29 @@ server <- function(input, output, session) {
         }
         loop_seedi <- as.numeric(input$ml_seedi)
         loop_seedf <- as.numeric(input$ml_seedf)
-        total_seed_runs <- if (!is.na(loop_seedi) && !is.na(loop_seedf)) {
-          max(1, (loop_seedf - loop_seedi + 1))
+        dataset_seed_values <- if (!is.na(loop_dataset_seedi) && !is.na(loop_dataset_seedf)) {
+          seq(loop_dataset_seedi, loop_dataset_seedf)
         } else {
           1
         }
+        training_seed_values <- if (!is.na(loop_seedi) && !is.na(loop_seedf)) {
+          seq(loop_seedi, loop_seedf)
+        } else {
+          1
+        }
+        total_seed_runs <- length(training_seed_values)
+        total_dataset_runs <- length(dataset_seed_values)
+        total_model_runs <- max(1, length(all_models))
+        total_search_runs <- max(1, total_dataset_runs * total_model_runs * total_seed_runs)
+        completed_search_runs <- 0
+        last_progress_value <- 0
         metric_label <- if (is.factor(Y)) "Accuracy" else "R2 (MAE/RMSE na tabela)"
         metric_name <- if (is.factor(Y)) "Accuracy" else "R2"
         running_progress_detail <- function(model_name, loop_dataset_seed, loop_seed,
                                             count_model, active_model_count,
-                                            seed_position, total_seed_runs) {
+                                            seed_position, total_seed_runs,
+                                            dataset_position, total_dataset_runs,
+                                            completed_runs, total_runs) {
           metric_values <- suppressWarnings(as.numeric(unlist(model_metric_values, use.names = FALSE)))
           metric_values <- metric_values[is.finite(metric_values)]
           mean_label <- if (length(metric_values) > 0) round(mean(metric_values), 4) else "N/A"
@@ -2800,24 +2807,50 @@ server <- function(input, output, session) {
           metric_distribution <- format_running_metric_distribution(metric_values, metric_name = metric_name)
 
           paste0(
-            "Current model: ", model_name, "\n",
-            "Dataset/Train seed: ", loop_dataset_seed, "/", loop_seed, "\n",
-            "Missing: ", threshold_scope, " / ", missing_strategy, " / ", imputation_scope, "\n",
-            "Progress: model ", count_model, "/", max(1, active_model_count),
-            " | seed ", seed_position, "/", total_seed_runs, "\n",
-            "Worst ", metric_label, ": ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A",
+            "𝗠𝗢𝗗𝗘𝗟        : ", model_name, "\n",
+            "𝗦𝗘𝗘𝗗         : dataset ", loop_dataset_seed, " (", dataset_position, "/", total_dataset_runs,
+            ") / train ", loop_seed, " (", seed_position, "/", total_seed_runs, ")\n",
+            "𝗠𝗜𝗦𝗦𝗜𝗡𝗚      : ", threshold_scope, " / ", missing_strategy, " / ", imputation_scope, "\n",
+            "𝗣𝗥𝗢𝗚𝗥𝗘𝗦𝗦     : model ", count_model, "/", max(1, active_model_count),
+            " | run ", completed_runs, "/", total_runs, "\n",
+            "𝗪𝗢𝗥𝗦𝗧        : ", metric_label, " ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A",
             " (", worst_model, ")\n",
-            "Best ", metric_label, ": ", if (is.finite(best_result)) round(best_result, 4) else "N/A",
+            "𝗕𝗘𝗦𝗧         : ", metric_label, " ", if (is.finite(best_result)) round(best_result, 4) else "N/A",
             " (", best_model, ")\n",
-            "Mean ", metric_name, ": ", mean_label,
-            " | Median ", metric_name, ": ", median_label, "\n",
+            "𝗦𝗨𝗠𝗠𝗔𝗥𝗬      : mean ", metric_name, " ", mean_label,
+            " | median ", metric_name, " ", median_label, "\n",
             metric_distribution
+          )
+        }
+        set_search_progress <- function(model_name, loop_dataset_seed, loop_seed,
+                                        count_model, active_model_count,
+                                        seed_position, dataset_position,
+                                        completed_runs = completed_search_runs) {
+          progress_value <- min(1, max(0, completed_runs / total_search_runs))
+          progress_delta <- max(0, progress_value - last_progress_value)
+          last_progress_value <<- max(last_progress_value, progress_value)
+          incProgress(
+            amount = progress_delta,
+            detail = running_progress_detail(
+              model_name = model_name,
+              loop_dataset_seed = loop_dataset_seed,
+              loop_seed = loop_seed,
+              count_model = count_model,
+              active_model_count = active_model_count,
+              seed_position = seed_position,
+              total_seed_runs = total_seed_runs,
+              dataset_position = dataset_position,
+              total_dataset_runs = total_dataset_runs,
+              completed_runs = completed_runs,
+              total_runs = total_search_runs
+            )
           )
         }
         if (!is.na(loop_dataset_seedi) && !is.na(loop_dataset_seedf)) {
           do_dataset_seed <- 1
         }
-        for (loop_dataset_seed in loop_dataset_seedi:loop_dataset_seedf) {
+        for (dataset_position in seq_along(dataset_seed_values)) {
+          loop_dataset_seed <- dataset_seed_values[[dataset_position]]
           preprocess_meta_for_seed <- NULL
           X <- X_base
           Y <- Y_base
@@ -2900,6 +2933,9 @@ server <- function(input, output, session) {
               current_invalid <- if (!is.null(model_invalid_runs[[model_name]])) model_invalid_runs[[model_name]] else 0
               model_invalid_runs[[model_name]] <- current_invalid + total_seed_runs
             }
+            completed_search_runs <- completed_search_runs + (total_model_runs * total_seed_runs)
+            incProgress(amount = max(0, min(1, completed_search_runs / total_search_runs) - last_progress_value))
+            last_progress_value <- max(last_progress_value, min(1, completed_search_runs / total_search_runs))
             next
           }
           count_model <- 0
@@ -2909,6 +2945,9 @@ server <- function(input, output, session) {
           }
           for (model_name in all_models) {
             if (!(model_name %in% active_models)) {
+              completed_search_runs <- completed_search_runs + total_seed_runs
+              incProgress(amount = max(0, min(1, completed_search_runs / total_search_runs) - last_progress_value))
+              last_progress_value <- max(last_progress_value, min(1, completed_search_runs / total_search_runs))
               next
             }
             count_model <- count_model + 1
@@ -2943,22 +2982,21 @@ server <- function(input, output, session) {
             }
             model_types <- model_info$type
             print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
-            for (loop_seed in loop_seedi:loop_seedf) {
+            for (seed_position in seq_along(training_seed_values)) {
+              loop_seed <- training_seed_values[[seed_position]]
               if (do_seed == 1) {
                 set.seed(loop_seed)
               }
               tryCatch({
-                seed_position <- if (do_seed == 1) (loop_seed - loop_seedi + 1) else 1
-                incProgress((1 * count_model / (length(input$ml_checkbox_group) + 1)),
-                  detail = running_progress_detail(
-                    model_name = model_name,
-                    loop_dataset_seed = loop_dataset_seed,
-                    loop_seed = loop_seed,
-                    count_model = count_model,
-                    active_model_count = length(active_models),
-                    seed_position = seed_position,
-                    total_seed_runs = total_seed_runs
-                  ))
+                set_search_progress(
+                  model_name = model_name,
+                  loop_dataset_seed = loop_dataset_seed,
+                  loop_seed = loop_seed,
+                  count_model = count_model,
+                  active_model_count = total_model_runs,
+                  seed_position = seed_position,
+                  dataset_position = dataset_position
+                )
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
                 write_checkpoint_log(last_model = model_name, results_table = ml_table_results())
@@ -3033,16 +3071,6 @@ server <- function(input, output, session) {
                     "Imputation scope" = imputation_scope)
                   ml_table_results(rbind(ml_table_results(), model_results))
                   model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], accuracy)
-                  incProgress(0,
-                    detail = running_progress_detail(
-                      model_name = model_name,
-                      loop_dataset_seed = loop_dataset_seed,
-                      loop_seed = loop_seed,
-                      count_model = count_model,
-                      active_model_count = length(active_models),
-                      seed_position = seed_position,
-                      total_seed_runs = total_seed_runs
-                    ))
                   temp_models_list[[model_name]] <- model
                 } else {
                   result_pred <- postResample(pred, actual_values)
@@ -3079,16 +3107,6 @@ server <- function(input, output, session) {
                   model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], rsq_value)
                   model_mae_values[[model_name]] <- c(model_mae_values[[model_name]], mae_value)
                   model_rmse_values[[model_name]] <- c(model_rmse_values[[model_name]], rmse_value)
-                  incProgress(0,
-                    detail = running_progress_detail(
-                      model_name = model_name,
-                      loop_dataset_seed = loop_dataset_seed,
-                      loop_seed = loop_seed,
-                      count_model = count_model,
-                      active_model_count = length(active_models),
-                      seed_position = seed_position,
-                      total_seed_runs = total_seed_runs
-                    ))
                   if (auto_skip_enabled && rsq_value < min_r2_threshold) {
                     mark_model_skipped(
                       model_name,
@@ -3121,6 +3139,18 @@ server <- function(input, output, session) {
                 model_invalid_runs[[model_name]] <- current_invalid + 1
                 ml_error_message_text(paste(ml_error_message_text(), " ", "Couldn't run model", model_name, ":", conditionMessage(e)))
                 print(paste("Couldn't run model", model_name, ":", conditionMessage(e)))
+              }, finally = {
+                completed_search_runs <<- completed_search_runs + 1
+                set_search_progress(
+                  model_name = model_name,
+                  loop_dataset_seed = loop_dataset_seed,
+                  loop_seed = loop_seed,
+                  count_model = count_model,
+                  active_model_count = total_model_runs,
+                  seed_position = seed_position,
+                  dataset_position = dataset_position,
+                  completed_runs = completed_search_runs
+                )
               })
             }
             # pryr was archived from CRAN (2026-01-30), so we rely on base gc() only.
