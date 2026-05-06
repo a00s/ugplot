@@ -60,6 +60,60 @@ write_checkpoint_log <- function(last_model = "-", results_table = NULL, max_row
 
   writeLines(c(header_lines, body_lines), con = log_file_path, useBytes = TRUE)
 }
+
+format_running_metric_distribution <- function(values, metric_name = "R2", bins = 8, width = 18) {
+  values <- suppressWarnings(as.numeric(unlist(values, use.names = FALSE)))
+  values <- values[is.finite(values)]
+
+  if (length(values) == 0) {
+    return(paste0(metric_name, " distribution: waiting for results"))
+  }
+
+  if (length(unique(values)) == 1) {
+    bar <- paste(rep("#", min(width, max(1, length(values)))), collapse = "")
+    return(paste0(
+      metric_name, " distribution (n=", length(values), "):\n",
+      sprintf("%.4f | %s", values[[1]], bar)
+    ))
+  }
+
+  breaks <- pretty(range(values), n = bins)
+  if (length(breaks) < 2) {
+    breaks <- seq(min(values), max(values), length.out = bins + 1)
+  }
+  counts <- hist(values, breaks = breaks, plot = FALSE, include.lowest = TRUE)$counts
+  max_count <- max(counts)
+  bars <- vapply(counts, function(count) {
+    bar_size <- if (max_count > 0) round((count / max_count) * width) else 0
+    if (count > 0 && bar_size == 0) {
+      bar_size <- 1
+    }
+    paste(rep("#", bar_size), collapse = "")
+  }, character(1))
+
+  interval_labels <- paste0(
+    sprintf("%.2f", utils::head(breaks, -1)),
+    "-",
+    sprintf("%.2f", utils::tail(breaks, -1))
+  )
+  mids <- utils::head(breaks, -1) + diff(breaks) / 2
+  normal_line <- NULL
+  values_sd <- stats::sd(values)
+  if (is.finite(values_sd) && values_sd > 0) {
+    normal_density <- stats::dnorm(mids, mean = mean(values), sd = values_sd)
+    density_levels <- c(" ", ".", ":", "-", "=", "+", "*", "#")
+    scaled_density <- if (max(normal_density) > 0) {
+      round((normal_density / max(normal_density)) * (length(density_levels) - 1)) + 1
+    } else {
+      rep(1, length(normal_density))
+    }
+    scaled_density <- pmax(1, pmin(length(density_levels), scaled_density))
+    normal_line <- paste0(metric_name, " normal fit: ", paste(density_levels[scaled_density], collapse = ""))
+  }
+
+  lines <- paste0(interval_labels, " | ", bars, " ", counts)
+  paste(c(paste0(metric_name, " distribution (n=", length(values), "):"), lines, normal_line), collapse = "\n")
+}
 # Optional: set maximum number of threads
 # Sys.setenv(OMP_NUM_THREADS = 2)
 # Sys.setenv(MKL_NUM_THREADS = 2)
@@ -2735,6 +2789,31 @@ server <- function(input, output, session) {
           1
         }
         metric_label <- if (is.factor(Y)) "Accuracy" else "R2 (MAE/RMSE na tabela)"
+        metric_name <- if (is.factor(Y)) "Accuracy" else "R2"
+        running_progress_detail <- function(model_name, loop_dataset_seed, loop_seed,
+                                            count_model, active_model_count,
+                                            seed_position, total_seed_runs) {
+          metric_values <- suppressWarnings(as.numeric(unlist(model_metric_values, use.names = FALSE)))
+          metric_values <- metric_values[is.finite(metric_values)]
+          mean_label <- if (length(metric_values) > 0) round(mean(metric_values), 4) else "N/A"
+          median_label <- if (length(metric_values) > 0) round(median(metric_values), 4) else "N/A"
+          metric_distribution <- format_running_metric_distribution(metric_values, metric_name = metric_name)
+
+          paste0(
+            "Current model: ", model_name, "\n",
+            "Dataset/Train seed: ", loop_dataset_seed, "/", loop_seed, "\n",
+            "Missing: ", threshold_scope, " / ", missing_strategy, " / ", imputation_scope, "\n",
+            "Progress: model ", count_model, "/", max(1, active_model_count),
+            " | seed ", seed_position, "/", total_seed_runs, "\n",
+            "Worst ", metric_label, ": ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A",
+            " (", worst_model, ")\n",
+            "Best ", metric_label, ": ", if (is.finite(best_result)) round(best_result, 4) else "N/A",
+            " (", best_model, ")\n",
+            "Mean ", metric_name, ": ", mean_label,
+            " | Median ", metric_name, ": ", median_label, "\n",
+            metric_distribution
+          )
+        }
         if (!is.na(loop_dataset_seedi) && !is.na(loop_dataset_seedf)) {
           do_dataset_seed <- 1
         }
@@ -2871,16 +2950,14 @@ server <- function(input, output, session) {
               tryCatch({
                 seed_position <- if (do_seed == 1) (loop_seed - loop_seedi + 1) else 1
                 incProgress((1 * count_model / (length(input$ml_checkbox_group) + 1)),
-                  detail = paste0(
-                    "Current model: ", model_name, "\n",
-                    "Dataset/Train seed: ", loop_dataset_seed, "/", loop_seed, "\n",
-                    "Threshold scope / Missing strategy / Imputation scope: ", threshold_scope, " / ", missing_strategy, " / ", imputation_scope, "\n",
-                    "Model progress: ", count_model, "/", max(1, length(active_models)),
-                    " | Seed progress: ", seed_position, "/", total_seed_runs, "\n",
-                    "Worst ", metric_label, ": ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A",
-                    " (", worst_model, ")\n",
-                    "Best ", metric_label, ": ", if (is.finite(best_result)) round(best_result, 4) else "N/A",
-                    " (", best_model, ")"
+                  detail = running_progress_detail(
+                    model_name = model_name,
+                    loop_dataset_seed = loop_dataset_seed,
+                    loop_seed = loop_seed,
+                    count_model = count_model,
+                    active_model_count = length(active_models),
+                    seed_position = seed_position,
+                    total_seed_runs = total_seed_runs
                   ))
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
@@ -2956,6 +3033,16 @@ server <- function(input, output, session) {
                     "Imputation scope" = imputation_scope)
                   ml_table_results(rbind(ml_table_results(), model_results))
                   model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], accuracy)
+                  incProgress(0,
+                    detail = running_progress_detail(
+                      model_name = model_name,
+                      loop_dataset_seed = loop_dataset_seed,
+                      loop_seed = loop_seed,
+                      count_model = count_model,
+                      active_model_count = length(active_models),
+                      seed_position = seed_position,
+                      total_seed_runs = total_seed_runs
+                    ))
                   temp_models_list[[model_name]] <- model
                 } else {
                   result_pred <- postResample(pred, actual_values)
@@ -2992,6 +3079,16 @@ server <- function(input, output, session) {
                   model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], rsq_value)
                   model_mae_values[[model_name]] <- c(model_mae_values[[model_name]], mae_value)
                   model_rmse_values[[model_name]] <- c(model_rmse_values[[model_name]], rmse_value)
+                  incProgress(0,
+                    detail = running_progress_detail(
+                      model_name = model_name,
+                      loop_dataset_seed = loop_dataset_seed,
+                      loop_seed = loop_seed,
+                      count_model = count_model,
+                      active_model_count = length(active_models),
+                      seed_position = seed_position,
+                      total_seed_runs = total_seed_runs
+                    ))
                   if (auto_skip_enabled && rsq_value < min_r2_threshold) {
                     mark_model_skipped(
                       model_name,
