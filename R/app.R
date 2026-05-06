@@ -100,6 +100,53 @@ format_running_metric_distribution <- function(values, metric_name = "R2", bins 
   lines <- paste0(interval_labels, " | ", bars, " ", counts)
   paste(c(paste0("𝗗𝗜𝗦𝗧𝗥𝗜𝗕𝗨𝗧𝗜𝗢𝗡 : ", metric_name, " (n=", length(values), ")"), lines), collapse = "\n")
 }
+
+format_running_stability_signal <- function(values, metric_name = "R2") {
+  values <- suppressWarnings(as.numeric(unlist(values, use.names = FALSE)))
+  values <- values[is.finite(values)]
+  n_values <- length(values)
+
+  if (n_values < 30) {
+    return(paste0(
+      "𝗦𝗧𝗔𝗕𝗜𝗟𝗜𝗧𝗬  : 🟥 collecting data (n=", n_values, "/30)"
+    ))
+  }
+
+  recent_n <- min(100, max(20, floor(n_values * 0.25)))
+  recent_values <- utils::tail(values, recent_n)
+  previous_values <- utils::head(values, n_values - recent_n)
+  reference_values <- if (length(previous_values) >= 10) previous_values else values
+
+  mean_shift <- abs(mean(recent_values) - mean(reference_values))
+  median_shift <- abs(stats::median(recent_values) - stats::median(reference_values))
+  metric_se <- stats::sd(values) / sqrt(n_values)
+  metric_se <- if (is.finite(metric_se)) metric_se else 0
+
+  stable_green <- n_values >= 100 &&
+    mean_shift <= 0.005 &&
+    median_shift <= 0.005 &&
+    metric_se <= 0.01
+  stable_yellow <- n_values >= 50 &&
+    mean_shift <= 0.015 &&
+    median_shift <= 0.015 &&
+    metric_se <= 0.02
+
+  status <- if (stable_green) {
+    "🟩 stable - reasonable to stop"
+  } else if (stable_yellow) {
+    "🟨 getting stable - keep running if precision matters"
+  } else {
+    "🟥 still moving - keep running"
+  }
+
+  paste0(
+    "𝗦𝗧𝗔𝗕𝗜𝗟𝗜𝗧𝗬  : ", status,
+    " | n=", n_values,
+    " | Δmean ", round(mean_shift, 4),
+    " | Δmedian ", round(median_shift, 4),
+    " | SE ", round(metric_se, 4)
+  )
+}
 # Optional: set maximum number of threads
 # Sys.setenv(OMP_NUM_THREADS = 2)
 # Sys.setenv(MKL_NUM_THREADS = 2)
@@ -2821,6 +2868,7 @@ server <- function(input, output, session) {
           metric_values <- metric_values[is.finite(metric_values)]
           mean_label <- if (length(metric_values) > 0) round(mean(metric_values), 4) else "N/A"
           median_label <- if (length(metric_values) > 0) round(median(metric_values), 4) else "N/A"
+          stability_signal <- format_running_stability_signal(metric_values, metric_name = metric_name)
           metric_distribution <- format_running_metric_distribution(metric_values, metric_name = metric_name)
 
           paste0(
@@ -2835,6 +2883,7 @@ server <- function(input, output, session) {
             " (", best_model, ")\n",
             "𝗦𝗨𝗠𝗠𝗔𝗥𝗬      : mean ", metric_name, " ", mean_label,
             " | median ", metric_name, " ", median_label, "\n",
+            stability_signal, "\n",
             metric_distribution
           )
         }
