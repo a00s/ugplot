@@ -261,6 +261,14 @@ apply_runtime_thread_limit <- function(cpu_limit) {
 
 memory_sensitive_models <- c("cubist")
 
+model_parallel_worker_limit <- function(model_name, cpu_limit) {
+  cpu_limit <- max(1L, as.integer(cpu_limit))
+  if (tolower(model_name) %in% memory_sensitive_models) {
+    return(max(1L, min(cpu_limit, 4L, ceiling(cpu_limit / 2))))
+  }
+  cpu_limit
+}
+
 total_system_cpus <- detect_total_cpus()
 total_system_memory_gb <- detect_total_memory_gb()
 default_system_cpu_limit <- default_cpu_limit(total_system_cpus)
@@ -2967,9 +2975,10 @@ server <- function(input, output, session) {
       foreach::registerDoSEQ()
       invisible(NULL)
     }
-    restart_parallel_cluster <- function() {
+    restart_parallel_cluster <- function(worker_count = cpu_limit) {
       stop_parallel_cluster()
-      cl <<- parallel::makeCluster(cpu_limit)
+      worker_count <- max(1L, as.integer(worker_count))
+      cl <<- parallel::makeCluster(worker_count)
       doParallel::registerDoParallel(cl)
       invisible(cl)
     }
@@ -3258,17 +3267,18 @@ server <- function(input, output, session) {
             } else {
               trainControl(method = "cv", number = cv_settings$number)
             }
-            model_uses_serial_backend <- tolower(model_name) %in% memory_sensitive_models
-            if (model_uses_serial_backend) {
-              stop_parallel_cluster()
-              ctrl$allowParallel <- FALSE
+            model_worker_limit <- model_parallel_worker_limit(model_name, cpu_limit)
+            if (tolower(model_name) %in% memory_sensitive_models) {
+              restart_parallel_cluster(model_worker_limit)
+              ctrl$allowParallel <- TRUE
               ml_error_message_text(paste(
                 ml_error_message_text(),
                 " ", model_name,
-                "is running with caret internal parallelism disabled to avoid worker memory growth./"
+                "is running with", model_worker_limit,
+                "parallel workers to reduce memory growth./"
               ))
             } else if (is.null(cl)) {
-              restart_parallel_cluster()
+              restart_parallel_cluster(cpu_limit)
             }
             model_types <- model_info$type
             print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
