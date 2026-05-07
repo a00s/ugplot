@@ -262,6 +262,55 @@ clean_ml_memory <- function(cluster = NULL) {
   invisible(gc(full = TRUE))
 }
 
+run_caret_train_isolated <- function(formula, train_set, model_name, train_control,
+                                     tune_length, model_libraries, cpu_limit, seed,
+                                     timeout_seconds) {
+  callr::r(
+    func = function(formula, train_set, model_name, train_control,
+                    tune_length, model_libraries, cpu_limit, seed) {
+      suppressPackageStartupMessages(library(caret))
+      suppressPackageStartupMessages(library(doParallel))
+      for (lib in model_libraries) {
+        suppressPackageStartupMessages(library(lib, character.only = TRUE))
+      }
+      if (!is.null(seed) && !is.na(seed)) {
+        set.seed(seed)
+      }
+      cl <- NULL
+      if (isTRUE(train_control$allowParallel)) {
+        cl <- parallel::makeCluster(max(1L, as.integer(cpu_limit)))
+        doParallel::registerDoParallel(cl)
+      }
+      on.exit({
+        if (!is.null(cl)) {
+          parallel::stopCluster(cl)
+        }
+        foreach::registerDoSEQ()
+      }, add = TRUE)
+      caret::train(
+        formula,
+        data = train_set,
+        method = model_name,
+        trControl = train_control,
+        tuneLength = tune_length
+      )
+    },
+    args = list(
+      formula = formula,
+      train_set = train_set,
+      model_name = model_name,
+      train_control = train_control,
+      tune_length = tune_length,
+      model_libraries = model_libraries,
+      cpu_limit = cpu_limit,
+      seed = seed
+    ),
+    timeout = timeout_seconds,
+    stdout = "|",
+    stderr = "|"
+  )
+}
+
 apply_runtime_thread_limit <- function(cpu_limit) {
   cpu_limit <- max(1L, as.integer(cpu_limit))
   Sys.setenv(
@@ -966,6 +1015,11 @@ ui <- fluidPage(
         checkboxInput(
           "config_clean_memory_each_training",
           "Clean memory after each Machine Learning training run",
+          value = FALSE
+        ),
+        checkboxInput(
+          "config_isolate_memory_heavy_models",
+          "Run memory-heavy models in isolated R sessions",
           value = FALSE
         ),
         tags$p(
@@ -2991,10 +3045,22 @@ server <- function(input, output, session) {
     worker_memory_limit_gb <- configure_ml_worker_memory_limit(memory_limit_gb, cpu_limit)
     cl <- parallel::makeCluster(cpu_limit)
     doParallel::registerDoParallel(cl)
-    on.exit({
+    stop_main_cluster <- function() {
       if (!is.null(cl)) {
         parallel::stopCluster(cl)
+        cl <<- NULL
       }
+      foreach::registerDoSEQ()
+      invisible(NULL)
+    }
+    restart_main_cluster <- function() {
+      stop_main_cluster()
+      cl <<- parallel::makeCluster(cpu_limit)
+      doParallel::registerDoParallel(cl)
+      invisible(cl)
+    }
+    on.exit({
+      stop_main_cluster()
     }, add = TRUE)
 
     all_models_reactive(list())
@@ -3308,17 +3374,39 @@ server <- function(input, output, session) {
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
                 write_checkpoint_log(last_model = model_name, results_table = ml_table_results())
+                use_isolated_training <- isTRUE(input$config_isolate_memory_heavy_models) &&
+                  tolower(model_name) %in% memory_heavy_models
                 result <- tryCatch({
-                  withTimeout({
-                    model <- caret::train(
-                      formula,
-                      data = trainSet,
-                      method = model_name,
-                      trControl = ctrl,
-                      tuneLength = cv_settings$tune_length
+                  if (use_isolated_training) {
+                    stop_main_cluster()
+                    ml_error_message_text(paste(
+                      ml_error_message_text(),
+                      " Running memory-heavy model in an isolated R session./"
+                    ))
+                    model <- run_caret_train_isolated(
+                      formula = formula,
+                      train_set = trainSet,
+                      model_name = model_name,
+                      train_control = ctrl,
+                      tune_length = cv_settings$tune_length,
+                      model_libraries = model_libraries,
+                      cpu_limit = cpu_limit,
+                      seed = if (do_seed == 1) loop_seed else NA,
+                      timeout_seconds = input$ml_timeout
                     )
                     model
-                  }, timeout = input$ml_timeout, onTimeout = "error")
+                  } else {
+                    withTimeout({
+                      model <- caret::train(
+                        formula,
+                        data = trainSet,
+                        method = model_name,
+                        trControl = ctrl,
+                        tuneLength = cv_settings$tune_length
+                      )
+                      model
+                    }, timeout = input$ml_timeout, onTimeout = "error")
+                  }
                 }, TimeoutException = function(ex) {
                   ml_error_message_text(paste(ml_error_message_text(), " ", "TIMEOUT:", model_name, "/"))
                   print(paste("Training timed out for model:", model_name))
@@ -3327,6 +3415,10 @@ server <- function(input, output, session) {
                 }, error = function(e) {
                   print(paste("Error training model", model_name, ":", conditionMessage(e)))
                   return(NULL)
+                }, finally = {
+                  if (use_isolated_training && is.null(cl)) {
+                    restart_main_cluster()
+                  }
                 })
                 if (is.null(result)) {
                   next
