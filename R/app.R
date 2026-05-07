@@ -2696,7 +2696,7 @@ server <- function(input, output, session) {
         print(text_result_ml())
         print(summary(specific_model$finalModel))
       }, error = function(e) {
-        print("Variable importance not supported or R^2 smaller than 0.6 for this model.")
+        print("Variable importance is available only for the best model kept in memory, or the selected model does not support it.")
       })
     }
   })
@@ -2765,11 +2765,13 @@ server <- function(input, output, session) {
     cl <- makeCluster(detectCores())
     registerDoParallel(cl)
 
-    temp_models_list <- list()
+    all_models_reactive(list())
     ml_prediction <<- list()
+    best_model_object(NULL)
     best_model_preprocess(NULL)
     ml_error_message_text("")
     ml_final_summary(NULL)
+    best_model_name <- "-"
 
     tryCatch({
       withProgress(message = 'Searching the best model...', {
@@ -3121,6 +3123,7 @@ server <- function(input, output, session) {
                     best_rmse <- NA_real_
                     best_model_object(model)
                     best_model_preprocess(preprocess_meta_for_seed)
+                    all_models_reactive(stats::setNames(list(model), model_name))
                   }
                   if (accuracy < worst_result) {
                     worst_result <- accuracy
@@ -3134,7 +3137,6 @@ server <- function(input, output, session) {
                     "Imputation scope" = imputation_scope)
                   ml_table_results(rbind(ml_table_results(), model_results))
                   model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], accuracy)
-                  temp_models_list[[model_name]] <- model
                 } else {
                   result_pred <- postResample(pred, actual_values)
                   rsq_value <- unname(result_pred["Rsquared"])
@@ -3153,6 +3155,7 @@ server <- function(input, output, session) {
                     best_rmse <- rmse_value
                     best_model_object(model)
                     best_model_preprocess(preprocess_meta_for_seed)
+                    all_models_reactive(stats::setNames(list(model), model_name))
                   }
                   if (rsq_value < worst_result) {
                     worst_result <- rsq_value
@@ -3175,9 +3178,6 @@ server <- function(input, output, session) {
                       model_name,
                       paste0("R2 ", round(rsq_value, 4), " < ", round(min_r2_threshold, 4))
                     )
-                  }
-                  if (rsq_value >= 0.6) {
-                    temp_models_list[[model_name]] <- model
                   }
                 }
                 current_results <- ml_table_results()
@@ -3286,7 +3286,11 @@ server <- function(input, output, session) {
     }, error = function(e) {
       print(e)
     })
-    all_models_reactive(temp_models_list)
+    if (!is.null(best_model_object()) && !is.null(best_model_name) && nzchar(best_model_name) && !identical(best_model_name, "-")) {
+      all_models_reactive(stats::setNames(list(best_model_object()), best_model_name))
+    } else {
+      all_models_reactive(list())
+    }
     stopCluster(cl)
   })
 
