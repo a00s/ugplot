@@ -159,6 +159,69 @@ options(shiny.maxRequestSize = 800 * 1024 * 1024)
   if (is.null(lhs)) rhs else lhs
 }
 
+detect_total_cpus <- function() {
+  cpu_count <- tryCatch(parallel::detectCores(logical = TRUE), error = function(e) NA_integer_)
+  if (is.na(cpu_count) || cpu_count < 1) 1L else as.integer(cpu_count)
+}
+
+detect_total_memory_gb <- function() {
+  memory_gb <- NA_real_
+  if (file.exists("/proc/meminfo")) {
+    meminfo <- readLines("/proc/meminfo", warn = FALSE)
+    memtotal <- grep("^MemTotal:", meminfo, value = TRUE)
+    if (length(memtotal) > 0) {
+      memory_kb <- suppressWarnings(as.numeric(gsub("[^0-9]", "", memtotal[[1]])))
+      memory_gb <- memory_kb / 1024 / 1024
+    }
+  }
+  if (!is.finite(memory_gb) && Sys.info()[["sysname"]] == "Darwin") {
+    memory_bytes <- suppressWarnings(as.numeric(system("sysctl -n hw.memsize", intern = TRUE)))
+    memory_gb <- memory_bytes / 1024^3
+  }
+  if (!is.finite(memory_gb) && .Platform$OS.type == "windows" && exists("memory.limit", mode = "function")) {
+    memory_gb <- suppressWarnings(utils::memory.limit() / 1024)
+  }
+  if (is.finite(memory_gb) && memory_gb > 0) memory_gb else NA_real_
+}
+
+default_cpu_limit <- function(total_cpus) {
+  max(1L, as.integer(total_cpus) - 1L)
+}
+
+default_memory_limit_gb <- function(total_memory_gb) {
+  if (!is.finite(total_memory_gb) || total_memory_gb <= 1) {
+    return(1)
+  }
+  reserve_gb <- if (total_memory_gb >= 8) 2 else 1
+  max(1, floor(total_memory_gb - reserve_gb))
+}
+
+current_r_memory_gb <- function() {
+  sum(gc()[, 2], na.rm = TRUE) / 1024
+}
+
+apply_runtime_thread_limit <- function(cpu_limit) {
+  cpu_limit <- max(1L, as.integer(cpu_limit))
+  Sys.setenv(
+    OMP_NUM_THREADS = cpu_limit,
+    MKL_NUM_THREADS = cpu_limit,
+    OPENBLAS_NUM_THREADS = cpu_limit,
+    VECLIB_MAXIMUM_THREADS = cpu_limit,
+    NUMEXPR_NUM_THREADS = cpu_limit,
+    UGPlot_CPU_LIMIT = cpu_limit
+  )
+  if (requireNamespace("torch", quietly = TRUE)) {
+    try(torch::torch_set_num_threads(cpu_limit), silent = TRUE)
+    try(torch::torch_set_num_interop_threads(max(1L, min(2L, cpu_limit))), silent = TRUE)
+  }
+  invisible(cpu_limit)
+}
+
+total_system_cpus <- detect_total_cpus()
+total_system_memory_gb <- detect_total_memory_gb()
+default_system_cpu_limit <- default_cpu_limit(total_system_cpus)
+default_system_memory_limit_gb <- default_memory_limit_gb(total_system_memory_gb)
+
 # Auxiliary functions to load example files, palettes, and CSS
 resolve_extdata <- function(filename) {
   package_path <- system.file("extdata", filename, package = "ugplot")
@@ -300,7 +363,7 @@ ui <- fluidPage(
   )),
   tabsetPanel(
     id = "tabs",
-    tabPanel("1) LOAD DATA",
+    tabPanel("LOAD DATA",
       tags$div(
         style = "display: inline-block; vertical-align: top;",
         class = "small-input",
@@ -325,7 +388,7 @@ ui <- fluidPage(
           tags$span(style = "font-size: 17px; color: white;", ".")
         ),
         tags$div(
-          actionButton("process_table_content", "GO TO STEP 2 (TABLE)")
+          actionButton("process_table_content", "GO TO TABLE")
         )
       ),
       conditionalPanel(
@@ -350,7 +413,7 @@ ui <- fluidPage(
         actionButton("load_sample", "Click here to load an example")
       )
     ),
-    tabPanel("2) TABLE",
+    tabPanel("TABLE",
       div(
         style = "width: 100%; overflow-x: auto;",
         column(
@@ -414,7 +477,7 @@ ui <- fluidPage(
         DT::DTOutput("contents")
       )
     ),
-    tabPanel("3) HEATMAP PLOT",
+    tabPanel("HEATMAP PLOT",
       br(),
       fluidRow(
         column(
@@ -461,7 +524,7 @@ ui <- fluidPage(
         )
       )
     ),
-    tabPanel("4) 2D PLOT",
+    tabPanel("2D PLOT",
       class = "sidebar-layout",
       sidebarLayout(
         sidebarPanel(
@@ -495,7 +558,7 @@ ui <- fluidPage(
         )
       )
     ),
-    tabPanel("5) MACHINE LEARNING",
+    tabPanel("MACHINE LEARNING",
       tags$div(
         style = "display: block; width: 100%;",
         selectizeInput("ml_target", "Target column (healthy, cancer, ...)", choices = ""),
@@ -671,8 +734,8 @@ ui <- fluidPage(
         )
       )
     ),
-    # Tab 6: MODEL ANALYSIS (vertical layout)
-    tabPanel("6) MODEL ANALYSIS",
+    # MODEL ANALYSIS (vertical layout)
+    tabPanel("MODEL ANALYSIS",
       fluidPage(
         # File input and model details display
         fileInput("model_file", "Load RDS Model", accept = c(".rds")),
@@ -724,7 +787,7 @@ ui <- fluidPage(
         DT::DTOutput("model_analysis_table")
       )
     ),
-    tabPanel("7) DEEP LEARNING",
+    tabPanel("DEEP LEARNING",
       fluidPage(
         tags$h4("Deep Learning (torch)"),
         fluidRow(
@@ -770,7 +833,7 @@ ui <- fluidPage(
         )
       )
     ),
-    tabPanel("8) GRAPH MODELS",
+    tabPanel("GRAPH MODELS",
       fluidPage(
         tags$h4("Graph Models"),
         fluidRow(
@@ -796,6 +859,45 @@ ui <- fluidPage(
             DT::DTOutput("gm_nodes_table"),
             DT::DTOutput("gm_edges_table")
           )
+        )
+      )
+    ),
+    tabPanel("CONFIGURATIONS",
+      fluidPage(
+        tags$h4("Resource limits"),
+        fluidRow(
+          column(
+            6,
+            sliderInput(
+              "config_memory_gb",
+              paste0(
+                "Memory to use (GB). Available: ",
+                if (is.finite(total_system_memory_gb)) round(total_system_memory_gb, 1) else "unknown"
+              ),
+              min = 1,
+              max = max(1, if (is.finite(total_system_memory_gb)) floor(total_system_memory_gb) else default_system_memory_limit_gb),
+              value = default_system_memory_limit_gb,
+              step = 1
+            ),
+            textOutput("config_memory_summary")
+          ),
+          column(
+            6,
+            sliderInput(
+              "config_cpu_count",
+              paste0("CPUs to use. Available: ", total_system_cpus),
+              min = 1,
+              max = total_system_cpus,
+              value = default_system_cpu_limit,
+              step = 1
+            ),
+            textOutput("config_cpu_summary")
+          )
+        ),
+        tags$hr(),
+        tags$p(
+          "Use these controls to limit how much CPU and memory ugPlot can use during Machine Learning. ",
+          "The default values do not use the whole computer, so the operating system stays responsive."
         )
       )
     )
@@ -845,16 +947,16 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   }
   changed_table <<- dff
   load_checkbox_group()
-  updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
+  updateTabsetPanel(localsession, "tabs", selected = "TABLE")
   enable("merge_all_columns")
   enable("merge_all_rows")
-  showTab(inputId = "tabs", target = "2) TABLE")
-  showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
-  showTab(inputId = "tabs", target = "4) 2D PLOT")
-  showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
-  showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
-  showTab(inputId = "tabs", target = "7) DEEP LEARNING")
-  showTab(inputId = "tabs", target = "8) GRAPH MODELS")
+  showTab(inputId = "tabs", target = "TABLE")
+  showTab(inputId = "tabs", target = "HEATMAP PLOT")
+  showTab(inputId = "tabs", target = "2D PLOT")
+  showTab(inputId = "tabs", target = "MACHINE LEARNING")
+  showTab(inputId = "tabs", target = "MODEL ANALYSIS")
+  showTab(inputId = "tabs", target = "DEEP LEARNING")
+  showTab(inputId = "tabs", target = "GRAPH MODELS")
 }
 
 build_missing_mask <- function(df, missing_definition = c("empty", "na"), zero_exceptions = character(0)) {
@@ -1268,16 +1370,16 @@ load_dataset_into_table <- function(localsession) {
   if (exists("dff") && is.data.frame(dff) && nrow(dff) > 0) {
     changed_table <<- dff
     load_checkbox_group()
-    updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
+    updateTabsetPanel(localsession, "tabs", selected = "TABLE")
     enable("merge_all_columns")
     enable("merge_all_rows")
-    showTab(inputId = "tabs", target = "2) TABLE")
-    showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
-    showTab(inputId = "tabs", target = "4) 2D PLOT")
-    showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
-    showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
-    showTab(inputId = "tabs", target = "7) DEEP LEARNING")
-    showTab(inputId = "tabs", target = "8) GRAPH MODELS")
+    showTab(inputId = "tabs", target = "TABLE")
+    showTab(inputId = "tabs", target = "HEATMAP PLOT")
+    showTab(inputId = "tabs", target = "2D PLOT")
+    showTab(inputId = "tabs", target = "MACHINE LEARNING")
+    showTab(inputId = "tabs", target = "MODEL ANALYSIS")
+    showTab(inputId = "tabs", target = "DEEP LEARNING")
+    showTab(inputId = "tabs", target = "GRAPH MODELS")
   }
 }
 
@@ -1326,17 +1428,57 @@ server <- function(input, output, session) {
   # Define reactive to store the loaded model
   loaded_model <- reactiveVal(NULL)
 
-  hideTab(inputId = "tabs", target = "2) TABLE")
-  hideTab(inputId = "tabs", target = "3) HEATMAP PLOT")
-  hideTab(inputId = "tabs", target = "4) 2D PLOT")
-  hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
-  hideTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
-  hideTab(inputId = "tabs", target = "7) DEEP LEARNING")
-  hideTab(inputId = "tabs", target = "8) GRAPH MODELS")
+  hideTab(inputId = "tabs", target = "TABLE")
+  hideTab(inputId = "tabs", target = "HEATMAP PLOT")
+  hideTab(inputId = "tabs", target = "2D PLOT")
+  hideTab(inputId = "tabs", target = "MACHINE LEARNING")
+  hideTab(inputId = "tabs", target = "MODEL ANALYSIS")
+  hideTab(inputId = "tabs", target = "DEEP LEARNING")
+  hideTab(inputId = "tabs", target = "GRAPH MODELS")
 
   disable("merge_all_columns")
   disable("merge_all_rows")
   session$allowReconnect(TRUE)
+
+  configured_cpu_limit <- reactive({
+    cpu_limit <- suppressWarnings(as.integer(input$config_cpu_count %||% default_system_cpu_limit))
+    if (is.na(cpu_limit)) {
+      cpu_limit <- default_system_cpu_limit
+    }
+    max(1L, min(total_system_cpus, cpu_limit))
+  })
+
+  configured_memory_limit_gb <- reactive({
+    memory_limit <- suppressWarnings(as.numeric(input$config_memory_gb %||% default_system_memory_limit_gb))
+    if (is.na(memory_limit)) {
+      memory_limit <- default_system_memory_limit_gb
+    }
+    max(1, memory_limit)
+  })
+
+  observe({
+    apply_runtime_thread_limit(configured_cpu_limit())
+    Sys.setenv(UGPlot_MEMORY_LIMIT_GB = configured_memory_limit_gb())
+  })
+
+  output$config_cpu_summary <- renderText({
+    paste0(
+      "Parallel jobs will use up to ", configured_cpu_limit(), " of ",
+      total_system_cpus, " CPU threads."
+    )
+  })
+
+  output$config_memory_summary <- renderText({
+    available_label <- if (is.finite(total_system_memory_gb)) {
+      paste0(round(total_system_memory_gb, 1), " GB")
+    } else {
+      "unknown"
+    }
+    paste0(
+      "Memory limit selected: ", configured_memory_limit_gb(),
+      " GB. System memory: ", available_label, "."
+    )
+  })
 
   ml_data_table <- reactiveVal(data.frame())
   ml_table_results <- reactiveVal(data.frame())
@@ -2304,7 +2446,7 @@ server <- function(input, output, session) {
     scramble_original_columns(list())
     load_checkbox_group()
     update_scramble_selector()
-    updateTabsetPanel(session, "tabs", selected = "2) TABLE")
+    updateTabsetPanel(session, "tabs", selected = "TABLE")
   })
 
   observeEvent(input$remove_columns_variability, {
@@ -2378,7 +2520,7 @@ server <- function(input, output, session) {
     scramble_original_columns(list())
     load_checkbox_group()
     update_scramble_selector()
-    updateTabsetPanel(session, "tabs", selected = "2) TABLE")
+    updateTabsetPanel(session, "tabs", selected = "TABLE")
   })
 
   observeEvent(input$process_table_content, {
@@ -2762,8 +2904,23 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$play_search_best_model_caret, {
-    cl <- makeCluster(detectCores())
-    registerDoParallel(cl)
+    cpu_limit <- configured_cpu_limit()
+    memory_limit_gb <- configured_memory_limit_gb()
+    apply_runtime_thread_limit(cpu_limit)
+    if (current_r_memory_gb() >= memory_limit_gb) {
+      ml_error_message_text(paste0(
+        "Current R memory use is already at or above the configured limit of ",
+        memory_limit_gb, " GB. Increase the memory limit or restart the app before running ML."
+      ))
+      return()
+    }
+    cl <- parallel::makeCluster(cpu_limit)
+    doParallel::registerDoParallel(cl)
+    on.exit({
+      if (!is.null(cl)) {
+        parallel::stopCluster(cl)
+      }
+    }, add = TRUE)
 
     all_models_reactive(list())
     ml_prediction <<- list()
@@ -3217,8 +3374,15 @@ server <- function(input, output, session) {
               })
             }
             # pryr was archived from CRAN (2026-01-30), so we rely on base gc() only.
-            memory_used_mb <- sum(gc()[, 2])
-            print(paste("Memory used (MB):", round(memory_used_mb, 2)))
+            memory_used_gb <- current_r_memory_gb()
+            print(paste("Memory used (GB):", round(memory_used_gb, 2), "| configured limit:", memory_limit_gb))
+            if (memory_used_gb >= memory_limit_gb) {
+              stop(paste0(
+                "Configured memory limit reached (",
+                round(memory_used_gb, 2), " GB used / ",
+                memory_limit_gb, " GB selected)."
+              ))
+            }
             gc()
           }
         }
@@ -3284,6 +3448,7 @@ server <- function(input, output, session) {
         }
       })
     }, error = function(e) {
+      ml_error_message_text(paste(ml_error_message_text(), " ", conditionMessage(e)))
       print(e)
     })
     if (!is.null(best_model_object()) && !is.null(best_model_name) && nzchar(best_model_name) && !identical(best_model_name, "-")) {
@@ -3291,7 +3456,8 @@ server <- function(input, output, session) {
     } else {
       all_models_reactive(list())
     }
-    stopCluster(cl)
+    parallel::stopCluster(cl)
+    cl <- NULL
   })
 
   # Tab 6) MODEL ANALYSIS: Carrega o modelo e detecta variável‑alvo
