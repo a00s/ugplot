@@ -264,10 +264,12 @@ clean_ml_memory <- function(cluster = NULL) {
 
 run_caret_train_isolated <- function(formula, train_set, model_name, train_control,
                                      tune_length, model_libraries, cpu_limit, seed,
-                                     timeout_seconds) {
+                                     timeout_seconds, return_model = TRUE,
+                                     prediction_set = NULL) {
   callr::r(
     func = function(formula, train_set, model_name, train_control,
-                    tune_length, model_libraries, cpu_limit, seed) {
+                    tune_length, model_libraries, cpu_limit, seed,
+                    return_model, prediction_set) {
       suppressPackageStartupMessages(library(caret))
       suppressPackageStartupMessages(library(doParallel))
       for (lib in model_libraries) {
@@ -293,7 +295,12 @@ run_caret_train_isolated <- function(formula, train_set, model_name, train_contr
         method = model_name,
         trControl = train_control,
         tuneLength = tune_length
-      )
+      ) -> trained_model
+      if (isTRUE(return_model)) {
+        return(list(model = trained_model, pred = NULL))
+      }
+      pred <- predict(trained_model, newdata = prediction_set)
+      list(model = NULL, pred = pred)
     },
     args = list(
       formula = formula,
@@ -303,7 +310,9 @@ run_caret_train_isolated <- function(formula, train_set, model_name, train_contr
       tune_length = tune_length,
       model_libraries = model_libraries,
       cpu_limit = cpu_limit,
-      seed = seed
+      seed = seed,
+      return_model = return_model,
+      prediction_set = prediction_set
     ),
     timeout = timeout_seconds,
     stdout = "|",
@@ -1020,6 +1029,11 @@ ui <- fluidPage(
         checkboxInput(
           "config_isolate_memory_heavy_models",
           "Run memory-heavy models in isolated R sessions",
+          value = FALSE
+        ),
+        checkboxInput(
+          "config_discard_memory_heavy_model_objects",
+          "Do not keep memory-heavy trained models in memory",
           value = FALSE
         ),
         tags$p(
@@ -3376,6 +3390,9 @@ server <- function(input, output, session) {
                 write_checkpoint_log(last_model = model_name, results_table = ml_table_results())
                 use_isolated_training <- isTRUE(input$config_isolate_memory_heavy_models) &&
                   tolower(model_name) %in% memory_heavy_models
+                discard_trained_model <- use_isolated_training &&
+                  isTRUE(input$config_discard_memory_heavy_model_objects)
+                pred <- NULL
                 result <- tryCatch({
                   if (use_isolated_training) {
                     stop_main_cluster()
@@ -3392,9 +3409,13 @@ server <- function(input, output, session) {
                       model_libraries = model_libraries,
                       cpu_limit = cpu_limit,
                       seed = if (do_seed == 1) loop_seed else NA,
-                      timeout_seconds = input$ml_timeout
+                      timeout_seconds = input$ml_timeout,
+                      return_model = !discard_trained_model,
+                      prediction_set = if (discard_trained_model) testSet else NULL
                     )
-                    model
+                    model <- isolated_result$model
+                    pred <- isolated_result$pred
+                    isolated_result
                   } else {
                     withTimeout({
                       model <- caret::train(
@@ -3423,7 +3444,9 @@ server <- function(input, output, session) {
                 if (is.null(result)) {
                   next
                 }
-                pred <- predict(model, newdata = testSet)
+                if (is.null(pred)) {
+                  pred <- predict(model, newdata = testSet)
+                }
                 if (is.null(pred) || length(pred) == 0) {
                   stop("model returned empty predictions")
                 }
@@ -3456,9 +3479,13 @@ server <- function(input, output, session) {
                     best_training_seed <- loop_seed
                     best_mae <- NA_real_
                     best_rmse <- NA_real_
-                    best_model_object(model)
+                    best_model_object(if (discard_trained_model) NULL else model)
                     best_model_preprocess(preprocess_meta_for_seed)
-                    all_models_reactive(stats::setNames(list(model), model_name))
+                    if (discard_trained_model) {
+                      all_models_reactive(list())
+                    } else {
+                      all_models_reactive(stats::setNames(list(model), model_name))
+                    }
                   }
                   if (accuracy < worst_result) {
                     worst_result <- accuracy
@@ -3488,9 +3515,13 @@ server <- function(input, output, session) {
                     best_training_seed <- loop_seed
                     best_mae <- mae_value
                     best_rmse <- rmse_value
-                    best_model_object(model)
+                    best_model_object(if (discard_trained_model) NULL else model)
                     best_model_preprocess(preprocess_meta_for_seed)
-                    all_models_reactive(stats::setNames(list(model), model_name))
+                    if (discard_trained_model) {
+                      all_models_reactive(list())
+                    } else {
+                      all_models_reactive(stats::setNames(list(model), model_name))
+                    }
                   }
                   if (rsq_value < worst_result) {
                     worst_result <- rsq_value
