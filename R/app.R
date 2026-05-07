@@ -255,6 +255,13 @@ configure_ml_worker_memory_limit <- function(memory_limit_gb, cpu_limit) {
   worker_limit_mb / 1024
 }
 
+clean_ml_memory <- function(cluster = NULL) {
+  if (!is.null(cluster)) {
+    try(parallel::clusterEvalQ(cluster, gc(full = TRUE)), silent = TRUE)
+  }
+  invisible(gc(full = TRUE))
+}
+
 apply_runtime_thread_limit <- function(cpu_limit) {
   cpu_limit <- max(1L, as.integer(cpu_limit))
   Sys.setenv(
@@ -954,6 +961,11 @@ ui <- fluidPage(
         checkboxInput(
           "config_parallel_memory_heavy_models",
           "Use parallel processing for memory-heavy models. Uncheck this if ugPlot crashes during seed search.",
+          value = TRUE
+        ),
+        checkboxInput(
+          "config_clean_memory_each_training",
+          "Clean memory after each Machine Learning training run",
           value = TRUE
         ),
         tags$p(
@@ -3445,11 +3457,13 @@ server <- function(input, output, session) {
                   dataset_position = dataset_position,
                   completed_runs = completed_search_runs
                 )
+                if (isTRUE(input$config_clean_memory_each_training)) {
+                  clean_ml_memory(cl)
+                }
               })
             }
             # pryr was archived from CRAN (2026-01-30), so we rely on base gc() only.
-            try(parallel::clusterEvalQ(cl, gc()), silent = TRUE)
-            gc()
+            clean_ml_memory(cl)
             memory_used_gb <- current_r_process_tree_memory_gb()
             print(paste("Memory used by R process tree (GB):", round(memory_used_gb, 2), "| configured limit:", memory_limit_gb))
             if (memory_used_gb >= memory_limit_gb) {
