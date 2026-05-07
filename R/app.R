@@ -966,7 +966,7 @@ ui <- fluidPage(
         checkboxInput(
           "config_clean_memory_each_training",
           "Clean memory after each Machine Learning training run",
-          value = TRUE
+          value = FALSE
         ),
         tags$p(
           "Use these controls to limit how much CPU and memory ugPlot can use during Machine Learning. ",
