@@ -953,7 +953,7 @@ ui <- fluidPage(
         tags$hr(),
         checkboxInput(
           "config_parallel_memory_heavy_models",
-          "Use parallel processing for memory-heavy models, unmark if ugPlot is crashing during seed search",
+          "Use parallel processing for memory-heavy models. Uncheck this if ugPlot crashes during seed search.",
           value = TRUE
         ),
         tags$p(
