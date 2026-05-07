@@ -200,48 +200,6 @@ current_r_memory_gb <- function() {
   sum(gc()[, 2], na.rm = TRUE) / 1024
 }
 
-process_rss_gb <- function(pid) {
-  status_path <- file.path("/proc", as.character(pid), "status")
-  if (!file.exists(status_path)) {
-    return(0)
-  }
-  status_lines <- readLines(status_path, warn = FALSE)
-  vmrss <- grep("^VmRSS:", status_lines, value = TRUE)
-  if (length(vmrss) == 0) {
-    return(0)
-  }
-  rss_kb <- suppressWarnings(as.numeric(gsub("[^0-9]", "", vmrss[[1]])))
-  if (is.finite(rss_kb)) rss_kb / 1024 / 1024 else 0
-}
-
-process_child_pids <- function(pid) {
-  children_path <- file.path("/proc", as.character(pid), "task", as.character(pid), "children")
-  if (!file.exists(children_path)) {
-    return(integer(0))
-  }
-  children_text <- readLines(children_path, warn = FALSE)
-  if (length(children_text) == 0 || !nzchar(children_text[[1]])) {
-    return(integer(0))
-  }
-  child_values <- suppressWarnings(as.integer(strsplit(children_text[[1]], "\\s+")[[1]]))
-  child_values[is.finite(child_values)]
-}
-
-process_tree_pids <- function(pid = Sys.getpid()) {
-  pid <- as.integer(pid)
-  children <- process_child_pids(pid)
-  descendants <- unlist(lapply(children, process_tree_pids), use.names = FALSE)
-  unique(c(pid, descendants))
-}
-
-current_r_process_tree_memory_gb <- function() {
-  if (!dir.exists("/proc")) {
-    return(current_r_memory_gb())
-  }
-  pids <- process_tree_pids(Sys.getpid())
-  sum(vapply(pids, process_rss_gb, numeric(1)), na.rm = TRUE)
-}
-
 apply_runtime_thread_limit <- function(cpu_limit) {
   cpu_limit <- max(1L, as.integer(cpu_limit))
   Sys.setenv(
@@ -258,8 +216,6 @@ apply_runtime_thread_limit <- function(cpu_limit) {
   }
   invisible(cpu_limit)
 }
-
-memory_sensitive_models <- c("cubist")
 
 total_system_cpus <- detect_total_cpus()
 total_system_memory_gb <- detect_total_memory_gb()
@@ -2951,31 +2907,19 @@ server <- function(input, output, session) {
     cpu_limit <- configured_cpu_limit()
     memory_limit_gb <- configured_memory_limit_gb()
     apply_runtime_thread_limit(cpu_limit)
-    if (current_r_process_tree_memory_gb() >= memory_limit_gb) {
+    if (current_r_memory_gb() >= memory_limit_gb) {
       ml_error_message_text(paste0(
-        "Current R memory use, including parallel workers, is already at or above the configured limit of ",
+        "Current R memory use is already at or above the configured limit of ",
         memory_limit_gb, " GB. Increase the memory limit or restart the app before running ML."
       ))
       return()
     }
-    cl <- NULL
-    stop_parallel_cluster <- function() {
+    cl <- parallel::makeCluster(cpu_limit)
+    doParallel::registerDoParallel(cl)
+    on.exit({
       if (!is.null(cl)) {
         parallel::stopCluster(cl)
-        cl <<- NULL
       }
-      foreach::registerDoSEQ()
-      invisible(NULL)
-    }
-    restart_parallel_cluster <- function() {
-      stop_parallel_cluster()
-      cl <<- parallel::makeCluster(cpu_limit)
-      doParallel::registerDoParallel(cl)
-      invisible(cl)
-    }
-    restart_parallel_cluster()
-    on.exit({
-      stop_parallel_cluster()
     }, add = TRUE)
 
     all_models_reactive(list())
@@ -3258,18 +3202,6 @@ server <- function(input, output, session) {
             } else {
               trainControl(method = "cv", number = cv_settings$number)
             }
-            model_uses_serial_backend <- tolower(model_name) %in% memory_sensitive_models
-            if (model_uses_serial_backend) {
-              stop_parallel_cluster()
-              ctrl$allowParallel <- FALSE
-              ml_error_message_text(paste(
-                ml_error_message_text(),
-                " ", model_name,
-                "is running with caret internal parallelism disabled to avoid worker memory growth./"
-              ))
-            } else if (is.null(cl)) {
-              restart_parallel_cluster()
-            }
             model_types <- model_info$type
             print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
             for (seed_position in seq_along(training_seed_values)) {
@@ -3442,12 +3374,8 @@ server <- function(input, output, session) {
               })
             }
             # pryr was archived from CRAN (2026-01-30), so we rely on base gc() only.
-            if (!is.null(cl)) {
-              try(parallel::clusterEvalQ(cl, gc()), silent = TRUE)
-            }
-            gc()
-            memory_used_gb <- current_r_process_tree_memory_gb()
-            print(paste("Memory used by R process tree (GB):", round(memory_used_gb, 2), "| configured limit:", memory_limit_gb))
+            memory_used_gb <- current_r_memory_gb()
+            print(paste("Memory used (GB):", round(memory_used_gb, 2), "| configured limit:", memory_limit_gb))
             if (memory_used_gb >= memory_limit_gb) {
               stop(paste0(
                 "Configured memory limit reached (",
@@ -3455,7 +3383,7 @@ server <- function(input, output, session) {
                 memory_limit_gb, " GB selected)."
               ))
             }
-            restart_parallel_cluster()
+            gc()
           }
         }
         metric_name <- if (is.factor(Y_base)) "Accuracy" else "R2"
