@@ -358,6 +358,7 @@ slow_models <- c(
 )
 slow_models_text <- paste("Slow or problematic models automatically removed:",
   paste(slow_models, collapse = ", "))
+memory_heavy_models <- c("cubist")
 
 # Global variables (seguindo o padrão utilizado)
 df_pre <<- ""
@@ -950,6 +951,11 @@ ui <- fluidPage(
           )
         ),
         tags$hr(),
+        checkboxInput(
+          "config_parallel_memory_heavy_models",
+          "Use parallel processing for memory-heavy models, unmark if ugPlot is crashing during seed search",
+          value = TRUE
+        ),
         tags$p(
           "Use these controls to limit how much CPU and memory ugPlot can use during Machine Learning. ",
           "The default values do not use the whole computer, so the operating system stays responsive."
@@ -3261,6 +3267,14 @@ server <- function(input, output, session) {
               trainControl(method = "repeatedcv", number = cv_settings$number, repeats = cv_settings$repeats)
             } else {
               trainControl(method = "cv", number = cv_settings$number)
+            }
+            if (!isTRUE(input$config_parallel_memory_heavy_models) &&
+                tolower(model_name) %in% memory_heavy_models) {
+              ctrl$allowParallel <- FALSE
+              ml_error_message_text(paste(
+                ml_error_message_text(),
+                " Parallel processing disabled for a memory-heavy model./"
+              ))
             }
             model_types <- model_info$type
             print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
