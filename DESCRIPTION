@@ -32,7 +32,6 @@ Imports:
     missForest,
     methyLImp2,
     caret,
-    callr,
     base64enc,
     ggExtra,
     gridExtra,
