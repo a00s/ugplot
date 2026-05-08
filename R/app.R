@@ -159,6 +159,189 @@ options(shiny.maxRequestSize = 800 * 1024 * 1024)
   if (is.null(lhs)) rhs else lhs
 }
 
+detect_total_cpus <- function() {
+  cpu_count <- tryCatch(parallel::detectCores(logical = TRUE), error = function(e) NA_integer_)
+  if (is.na(cpu_count) || cpu_count < 1) 1L else as.integer(cpu_count)
+}
+
+detect_total_memory_gb <- function() {
+  memory_gb <- NA_real_
+  if (file.exists("/proc/meminfo")) {
+    meminfo <- readLines("/proc/meminfo", warn = FALSE)
+    memtotal <- grep("^MemTotal:", meminfo, value = TRUE)
+    if (length(memtotal) > 0) {
+      memory_kb <- suppressWarnings(as.numeric(gsub("[^0-9]", "", memtotal[[1]])))
+      memory_gb <- memory_kb / 1024 / 1024
+    }
+  }
+  if (!is.finite(memory_gb) && Sys.info()[["sysname"]] == "Darwin") {
+    memory_bytes <- suppressWarnings(as.numeric(system("sysctl -n hw.memsize", intern = TRUE)))
+    memory_gb <- memory_bytes / 1024^3
+  }
+  if (!is.finite(memory_gb) && .Platform$OS.type == "windows" && exists("memory.limit", mode = "function")) {
+    memory_gb <- suppressWarnings(utils::memory.limit() / 1024)
+  }
+  if (is.finite(memory_gb) && memory_gb > 0) memory_gb else NA_real_
+}
+
+default_cpu_limit <- function(total_cpus) {
+  max(1L, as.integer(total_cpus) - 1L)
+}
+
+default_memory_limit_gb <- function(total_memory_gb) {
+  if (!is.finite(total_memory_gb) || total_memory_gb <= 1) {
+    return(1)
+  }
+  reserve_gb <- if (total_memory_gb >= 8) 2 else 1
+  max(1, floor(total_memory_gb - reserve_gb))
+}
+
+current_r_memory_gb <- function() {
+  sum(gc()[, 2], na.rm = TRUE) / 1024
+}
+
+process_rss_gb <- function(pid) {
+  status_path <- file.path("/proc", as.character(pid), "status")
+  if (!file.exists(status_path)) {
+    return(0)
+  }
+  status_lines <- readLines(status_path, warn = FALSE)
+  vmrss <- grep("^VmRSS:", status_lines, value = TRUE)
+  if (length(vmrss) == 0) {
+    return(0)
+  }
+  rss_kb <- suppressWarnings(as.numeric(gsub("[^0-9]", "", vmrss[[1]])))
+  if (is.finite(rss_kb)) rss_kb / 1024 / 1024 else 0
+}
+
+process_child_pids <- function(pid) {
+  children_path <- file.path("/proc", as.character(pid), "task", as.character(pid), "children")
+  if (!file.exists(children_path)) {
+    return(integer(0))
+  }
+  children_text <- readLines(children_path, warn = FALSE)
+  if (length(children_text) == 0 || !nzchar(children_text[[1]])) {
+    return(integer(0))
+  }
+  child_values <- suppressWarnings(as.integer(strsplit(children_text[[1]], "\\s+")[[1]]))
+  child_values[is.finite(child_values)]
+}
+
+process_tree_pids <- function(pid = Sys.getpid()) {
+  pid <- as.integer(pid)
+  children <- process_child_pids(pid)
+  descendants <- unlist(lapply(children, process_tree_pids), use.names = FALSE)
+  unique(c(pid, descendants))
+}
+
+current_r_process_tree_memory_gb <- function() {
+  if (!dir.exists("/proc")) {
+    return(current_r_memory_gb())
+  }
+  pids <- process_tree_pids(Sys.getpid())
+  sum(vapply(pids, process_rss_gb, numeric(1)), na.rm = TRUE)
+}
+
+configure_ml_worker_memory_limit <- function(memory_limit_gb, cpu_limit) {
+  cpu_limit <- max(1L, as.integer(cpu_limit))
+  memory_limit_gb <- max(1, as.numeric(memory_limit_gb))
+  parent_memory_gb <- current_r_process_tree_memory_gb()
+  available_for_workers_gb <- max(0.5, memory_limit_gb - parent_memory_gb)
+  worker_limit_mb <- max(512L, floor((available_for_workers_gb / cpu_limit) * 1024))
+  Sys.setenv(
+    R_MAX_VSIZE = paste0(worker_limit_mb, "M"),
+    UGPlot_WORKER_MEMORY_LIMIT_MB = worker_limit_mb
+  )
+  worker_limit_mb / 1024
+}
+
+clean_ml_memory <- function(cluster = NULL) {
+  if (!is.null(cluster)) {
+    try(parallel::clusterEvalQ(cluster, gc(full = TRUE)), silent = TRUE)
+  }
+  invisible(gc(full = TRUE))
+}
+
+run_caret_train_isolated <- function(formula, train_set, model_name, train_control,
+                                     tune_length, model_libraries, cpu_limit, seed,
+                                     timeout_seconds, return_model = TRUE,
+                                     prediction_set = NULL) {
+  callr::r(
+    func = function(formula, train_set, model_name, train_control,
+                    tune_length, model_libraries, cpu_limit, seed,
+                    return_model, prediction_set) {
+      suppressPackageStartupMessages(library(caret))
+      suppressPackageStartupMessages(library(doParallel))
+      for (lib in model_libraries) {
+        suppressPackageStartupMessages(library(lib, character.only = TRUE))
+      }
+      if (!is.null(seed) && !is.na(seed)) {
+        set.seed(seed)
+      }
+      cl <- NULL
+      if (isTRUE(train_control$allowParallel)) {
+        cl <- parallel::makeCluster(max(1L, as.integer(cpu_limit)))
+        doParallel::registerDoParallel(cl)
+      }
+      on.exit({
+        if (!is.null(cl)) {
+          parallel::stopCluster(cl)
+        }
+        foreach::registerDoSEQ()
+      }, add = TRUE)
+      caret::train(
+        formula,
+        data = train_set,
+        method = model_name,
+        trControl = train_control,
+        tuneLength = tune_length
+      ) -> trained_model
+      if (isTRUE(return_model)) {
+        return(list(model = trained_model, pred = NULL))
+      }
+      pred <- predict(trained_model, newdata = prediction_set)
+      list(model = NULL, pred = pred)
+    },
+    args = list(
+      formula = formula,
+      train_set = train_set,
+      model_name = model_name,
+      train_control = train_control,
+      tune_length = tune_length,
+      model_libraries = model_libraries,
+      cpu_limit = cpu_limit,
+      seed = seed,
+      return_model = return_model,
+      prediction_set = prediction_set
+    ),
+    timeout = timeout_seconds,
+    stdout = "|",
+    stderr = "|"
+  )
+}
+
+apply_runtime_thread_limit <- function(cpu_limit) {
+  cpu_limit <- max(1L, as.integer(cpu_limit))
+  Sys.setenv(
+    OMP_NUM_THREADS = cpu_limit,
+    MKL_NUM_THREADS = cpu_limit,
+    OPENBLAS_NUM_THREADS = cpu_limit,
+    VECLIB_MAXIMUM_THREADS = cpu_limit,
+    NUMEXPR_NUM_THREADS = cpu_limit,
+    UGPlot_CPU_LIMIT = cpu_limit
+  )
+  if (requireNamespace("torch", quietly = TRUE)) {
+    try(torch::torch_set_num_threads(cpu_limit), silent = TRUE)
+    try(torch::torch_set_num_interop_threads(max(1L, min(2L, cpu_limit))), silent = TRUE)
+  }
+  invisible(cpu_limit)
+}
+
+total_system_cpus <- detect_total_cpus()
+total_system_memory_gb <- detect_total_memory_gb()
+default_system_cpu_limit <- default_cpu_limit(total_system_cpus)
+default_system_memory_limit_gb <- default_memory_limit_gb(total_system_memory_gb)
+
 # Auxiliary functions to load example files, palettes, and CSS
 resolve_extdata <- function(filename) {
   package_path <- system.file("extdata", filename, package = "ugplot")
@@ -240,6 +423,7 @@ slow_models <- c(
 )
 slow_models_text <- paste("Slow or problematic models automatically removed:",
   paste(slow_models, collapse = ", "))
+memory_heavy_models <- c("cubist")
 
 # Global variables (seguindo o padrão utilizado)
 df_pre <<- ""
@@ -300,7 +484,7 @@ ui <- fluidPage(
   )),
   tabsetPanel(
     id = "tabs",
-    tabPanel("1) LOAD DATA",
+    tabPanel("LOAD DATA",
       tags$div(
         style = "display: inline-block; vertical-align: top;",
         class = "small-input",
@@ -325,7 +509,7 @@ ui <- fluidPage(
           tags$span(style = "font-size: 17px; color: white;", ".")
         ),
         tags$div(
-          actionButton("process_table_content", "GO TO STEP 2 (TABLE)")
+          actionButton("process_table_content", "GO TO TABLE")
         )
       ),
       conditionalPanel(
@@ -350,7 +534,7 @@ ui <- fluidPage(
         actionButton("load_sample", "Click here to load an example")
       )
     ),
-    tabPanel("2) TABLE",
+    tabPanel("TABLE",
       div(
         style = "width: 100%; overflow-x: auto;",
         column(
@@ -414,7 +598,7 @@ ui <- fluidPage(
         DT::DTOutput("contents")
       )
     ),
-    tabPanel("3) HEATMAP PLOT",
+    tabPanel("HEATMAP PLOT",
       br(),
       fluidRow(
         column(
@@ -461,7 +645,7 @@ ui <- fluidPage(
         )
       )
     ),
-    tabPanel("4) 2D PLOT",
+    tabPanel("2D PLOT",
       class = "sidebar-layout",
       sidebarLayout(
         sidebarPanel(
@@ -495,7 +679,7 @@ ui <- fluidPage(
         )
       )
     ),
-    tabPanel("5) MACHINE LEARNING",
+    tabPanel("MACHINE LEARNING",
       tags$div(
         style = "display: block; width: 100%;",
         selectizeInput("ml_target", "Target column (healthy, cancer, ...)", choices = ""),
@@ -671,8 +855,8 @@ ui <- fluidPage(
         )
       )
     ),
-    # Tab 6: MODEL ANALYSIS (vertical layout)
-    tabPanel("6) MODEL ANALYSIS",
+    # MODEL ANALYSIS (vertical layout)
+    tabPanel("MODEL ANALYSIS",
       fluidPage(
         # File input and model details display
         fileInput("model_file", "Load RDS Model", accept = c(".rds")),
@@ -724,7 +908,7 @@ ui <- fluidPage(
         DT::DTOutput("model_analysis_table")
       )
     ),
-    tabPanel("7) DEEP LEARNING",
+    tabPanel("DEEP LEARNING",
       fluidPage(
         tags$h4("Deep Learning (torch)"),
         fluidRow(
@@ -770,7 +954,7 @@ ui <- fluidPage(
         )
       )
     ),
-    tabPanel("8) GRAPH MODELS",
+    tabPanel("GRAPH MODELS",
       fluidPage(
         tags$h4("Graph Models"),
         fluidRow(
@@ -796,6 +980,65 @@ ui <- fluidPage(
             DT::DTOutput("gm_nodes_table"),
             DT::DTOutput("gm_edges_table")
           )
+        )
+      )
+    ),
+    tabPanel("CONFIGURATIONS",
+      fluidPage(
+        tags$h4("Resource limits"),
+        fluidRow(
+          column(
+            6,
+            sliderInput(
+              "config_memory_gb",
+              paste0(
+                "Memory to use (GB). Available: ",
+                if (is.finite(total_system_memory_gb)) round(total_system_memory_gb, 1) else "unknown"
+              ),
+              min = 1,
+              max = max(1, if (is.finite(total_system_memory_gb)) floor(total_system_memory_gb) else default_system_memory_limit_gb),
+              value = default_system_memory_limit_gb,
+              step = 1
+            ),
+            textOutput("config_memory_summary")
+          ),
+          column(
+            6,
+            sliderInput(
+              "config_cpu_count",
+              paste0("CPUs to use. Available: ", total_system_cpus),
+              min = 1,
+              max = total_system_cpus,
+              value = default_system_cpu_limit,
+              step = 1
+            ),
+            textOutput("config_cpu_summary")
+          )
+        ),
+        tags$hr(),
+        checkboxInput(
+          "config_parallel_memory_heavy_models",
+          "Use parallel processing for memory-heavy models. Uncheck this if ugPlot crashes during seed search.",
+          value = TRUE
+        ),
+        checkboxInput(
+          "config_clean_memory_each_training",
+          "Clean memory after each Machine Learning training run",
+          value = FALSE
+        ),
+        checkboxInput(
+          "config_isolate_memory_heavy_models",
+          "Run memory-heavy models in isolated R sessions",
+          value = FALSE
+        ),
+        checkboxInput(
+          "config_discard_memory_heavy_model_objects",
+          "Do not keep memory-heavy trained models in memory",
+          value = FALSE
+        ),
+        tags$p(
+          "Use these controls to limit how much CPU and memory ugPlot can use during Machine Learning. ",
+          "The default values do not use the whole computer, so the operating system stays responsive."
         )
       )
     )
@@ -845,16 +1088,16 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   }
   changed_table <<- dff
   load_checkbox_group()
-  updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
+  updateTabsetPanel(localsession, "tabs", selected = "TABLE")
   enable("merge_all_columns")
   enable("merge_all_rows")
-  showTab(inputId = "tabs", target = "2) TABLE")
-  showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
-  showTab(inputId = "tabs", target = "4) 2D PLOT")
-  showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
-  showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
-  showTab(inputId = "tabs", target = "7) DEEP LEARNING")
-  showTab(inputId = "tabs", target = "8) GRAPH MODELS")
+  showTab(inputId = "tabs", target = "TABLE")
+  showTab(inputId = "tabs", target = "HEATMAP PLOT")
+  showTab(inputId = "tabs", target = "2D PLOT")
+  showTab(inputId = "tabs", target = "MACHINE LEARNING")
+  showTab(inputId = "tabs", target = "MODEL ANALYSIS")
+  showTab(inputId = "tabs", target = "DEEP LEARNING")
+  showTab(inputId = "tabs", target = "GRAPH MODELS")
 }
 
 build_missing_mask <- function(df, missing_definition = c("empty", "na"), zero_exceptions = character(0)) {
@@ -1268,16 +1511,16 @@ load_dataset_into_table <- function(localsession) {
   if (exists("dff") && is.data.frame(dff) && nrow(dff) > 0) {
     changed_table <<- dff
     load_checkbox_group()
-    updateTabsetPanel(localsession, "tabs", selected = "2) TABLE")
+    updateTabsetPanel(localsession, "tabs", selected = "TABLE")
     enable("merge_all_columns")
     enable("merge_all_rows")
-    showTab(inputId = "tabs", target = "2) TABLE")
-    showTab(inputId = "tabs", target = "3) HEATMAP PLOT")
-    showTab(inputId = "tabs", target = "4) 2D PLOT")
-    showTab(inputId = "tabs", target = "5) MACHINE LEARNING")
-    showTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
-    showTab(inputId = "tabs", target = "7) DEEP LEARNING")
-    showTab(inputId = "tabs", target = "8) GRAPH MODELS")
+    showTab(inputId = "tabs", target = "TABLE")
+    showTab(inputId = "tabs", target = "HEATMAP PLOT")
+    showTab(inputId = "tabs", target = "2D PLOT")
+    showTab(inputId = "tabs", target = "MACHINE LEARNING")
+    showTab(inputId = "tabs", target = "MODEL ANALYSIS")
+    showTab(inputId = "tabs", target = "DEEP LEARNING")
+    showTab(inputId = "tabs", target = "GRAPH MODELS")
   }
 }
 
@@ -1326,17 +1569,57 @@ server <- function(input, output, session) {
   # Define reactive to store the loaded model
   loaded_model <- reactiveVal(NULL)
 
-  hideTab(inputId = "tabs", target = "2) TABLE")
-  hideTab(inputId = "tabs", target = "3) HEATMAP PLOT")
-  hideTab(inputId = "tabs", target = "4) 2D PLOT")
-  hideTab(inputId = "tabs", target = "5) MACHINE LEARNING")
-  hideTab(inputId = "tabs", target = "6) MODEL ANALYSIS")
-  hideTab(inputId = "tabs", target = "7) DEEP LEARNING")
-  hideTab(inputId = "tabs", target = "8) GRAPH MODELS")
+  hideTab(inputId = "tabs", target = "TABLE")
+  hideTab(inputId = "tabs", target = "HEATMAP PLOT")
+  hideTab(inputId = "tabs", target = "2D PLOT")
+  hideTab(inputId = "tabs", target = "MACHINE LEARNING")
+  hideTab(inputId = "tabs", target = "MODEL ANALYSIS")
+  hideTab(inputId = "tabs", target = "DEEP LEARNING")
+  hideTab(inputId = "tabs", target = "GRAPH MODELS")
 
   disable("merge_all_columns")
   disable("merge_all_rows")
   session$allowReconnect(TRUE)
+
+  configured_cpu_limit <- reactive({
+    cpu_limit <- suppressWarnings(as.integer(input$config_cpu_count %||% default_system_cpu_limit))
+    if (is.na(cpu_limit)) {
+      cpu_limit <- default_system_cpu_limit
+    }
+    max(1L, min(total_system_cpus, cpu_limit))
+  })
+
+  configured_memory_limit_gb <- reactive({
+    memory_limit <- suppressWarnings(as.numeric(input$config_memory_gb %||% default_system_memory_limit_gb))
+    if (is.na(memory_limit)) {
+      memory_limit <- default_system_memory_limit_gb
+    }
+    max(1, memory_limit)
+  })
+
+  observe({
+    apply_runtime_thread_limit(configured_cpu_limit())
+    Sys.setenv(UGPlot_MEMORY_LIMIT_GB = configured_memory_limit_gb())
+  })
+
+  output$config_cpu_summary <- renderText({
+    paste0(
+      "Parallel jobs will use up to ", configured_cpu_limit(), " of ",
+      total_system_cpus, " CPU threads."
+    )
+  })
+
+  output$config_memory_summary <- renderText({
+    available_label <- if (is.finite(total_system_memory_gb)) {
+      paste0(round(total_system_memory_gb, 1), " GB")
+    } else {
+      "unknown"
+    }
+    paste0(
+      "Memory limit selected: ", configured_memory_limit_gb(),
+      " GB. System memory: ", available_label, "."
+    )
+  })
 
   ml_data_table <- reactiveVal(data.frame())
   ml_table_results <- reactiveVal(data.frame())
@@ -2304,7 +2587,7 @@ server <- function(input, output, session) {
     scramble_original_columns(list())
     load_checkbox_group()
     update_scramble_selector()
-    updateTabsetPanel(session, "tabs", selected = "2) TABLE")
+    updateTabsetPanel(session, "tabs", selected = "TABLE")
   })
 
   observeEvent(input$remove_columns_variability, {
@@ -2378,7 +2661,7 @@ server <- function(input, output, session) {
     scramble_original_columns(list())
     load_checkbox_group()
     update_scramble_selector()
-    updateTabsetPanel(session, "tabs", selected = "2) TABLE")
+    updateTabsetPanel(session, "tabs", selected = "TABLE")
   })
 
   observeEvent(input$process_table_content, {
@@ -2762,14 +3045,46 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$play_search_best_model_caret, {
-    cl <- makeCluster(detectCores())
-    registerDoParallel(cl)
+    cpu_limit <- configured_cpu_limit()
+    memory_limit_gb <- configured_memory_limit_gb()
+    apply_runtime_thread_limit(cpu_limit)
+    current_memory_gb <- current_r_process_tree_memory_gb()
+    if (current_memory_gb >= memory_limit_gb) {
+      ml_error_message_text(paste0(
+        "Current R memory use, including parallel workers, is already at or above the configured limit of ",
+        memory_limit_gb, " GB. Increase the memory limit or restart the app before running ML."
+      ))
+      return()
+    }
+    worker_memory_limit_gb <- configure_ml_worker_memory_limit(memory_limit_gb, cpu_limit)
+    cl <- parallel::makeCluster(cpu_limit)
+    doParallel::registerDoParallel(cl)
+    stop_main_cluster <- function() {
+      if (!is.null(cl)) {
+        parallel::stopCluster(cl)
+        cl <<- NULL
+      }
+      foreach::registerDoSEQ()
+      invisible(NULL)
+    }
+    restart_main_cluster <- function() {
+      stop_main_cluster()
+      cl <<- parallel::makeCluster(cpu_limit)
+      doParallel::registerDoParallel(cl)
+      invisible(cl)
+    }
+    on.exit({
+      stop_main_cluster()
+    }, add = TRUE)
 
     all_models_reactive(list())
     ml_prediction <<- list()
     best_model_object(NULL)
     best_model_preprocess(NULL)
-    ml_error_message_text("")
+    ml_error_message_text(paste0(
+      "ML memory limit: ", memory_limit_gb, " GB total; each parallel worker is capped at about ",
+      round(worker_memory_limit_gb, 2), " GB./"
+    ))
     ml_final_summary(NULL)
     best_model_name <- "-"
 
@@ -3045,6 +3360,14 @@ server <- function(input, output, session) {
             } else {
               trainControl(method = "cv", number = cv_settings$number)
             }
+            if (!isTRUE(input$config_parallel_memory_heavy_models) &&
+                tolower(model_name) %in% memory_heavy_models) {
+              ctrl$allowParallel <- FALSE
+              ml_error_message_text(paste(
+                ml_error_message_text(),
+                " Parallel processing disabled for a memory-heavy model./"
+              ))
+            }
             model_types <- model_info$type
             print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
             for (seed_position in seq_along(training_seed_values)) {
@@ -3065,17 +3388,46 @@ server <- function(input, output, session) {
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
                 write_checkpoint_log(last_model = model_name, results_table = ml_table_results())
+                use_isolated_training <- isTRUE(input$config_isolate_memory_heavy_models) &&
+                  tolower(model_name) %in% memory_heavy_models
+                discard_trained_model <- use_isolated_training &&
+                  isTRUE(input$config_discard_memory_heavy_model_objects)
+                pred <- NULL
                 result <- tryCatch({
-                  withTimeout({
-                    model <- caret::train(
-                      formula,
-                      data = trainSet,
-                      method = model_name,
-                      trControl = ctrl,
-                      tuneLength = cv_settings$tune_length
+                  if (use_isolated_training) {
+                    stop_main_cluster()
+                    ml_error_message_text(paste(
+                      ml_error_message_text(),
+                      " Running memory-heavy model in an isolated R session./"
+                    ))
+                    model <- run_caret_train_isolated(
+                      formula = formula,
+                      train_set = trainSet,
+                      model_name = model_name,
+                      train_control = ctrl,
+                      tune_length = cv_settings$tune_length,
+                      model_libraries = model_libraries,
+                      cpu_limit = cpu_limit,
+                      seed = if (do_seed == 1) loop_seed else NA,
+                      timeout_seconds = input$ml_timeout,
+                      return_model = !discard_trained_model,
+                      prediction_set = if (discard_trained_model) testSet else NULL
                     )
-                    model
-                  }, timeout = input$ml_timeout, onTimeout = "error")
+                    model <- isolated_result$model
+                    pred <- isolated_result$pred
+                    isolated_result
+                  } else {
+                    withTimeout({
+                      model <- caret::train(
+                        formula,
+                        data = trainSet,
+                        method = model_name,
+                        trControl = ctrl,
+                        tuneLength = cv_settings$tune_length
+                      )
+                      model
+                    }, timeout = input$ml_timeout, onTimeout = "error")
+                  }
                 }, TimeoutException = function(ex) {
                   ml_error_message_text(paste(ml_error_message_text(), " ", "TIMEOUT:", model_name, "/"))
                   print(paste("Training timed out for model:", model_name))
@@ -3084,11 +3436,17 @@ server <- function(input, output, session) {
                 }, error = function(e) {
                   print(paste("Error training model", model_name, ":", conditionMessage(e)))
                   return(NULL)
+                }, finally = {
+                  if (use_isolated_training && is.null(cl)) {
+                    restart_main_cluster()
+                  }
                 })
                 if (is.null(result)) {
                   next
                 }
-                pred <- predict(model, newdata = testSet)
+                if (is.null(pred)) {
+                  pred <- predict(model, newdata = testSet)
+                }
                 if (is.null(pred) || length(pred) == 0) {
                   stop("model returned empty predictions")
                 }
@@ -3121,9 +3479,13 @@ server <- function(input, output, session) {
                     best_training_seed <- loop_seed
                     best_mae <- NA_real_
                     best_rmse <- NA_real_
-                    best_model_object(model)
+                    best_model_object(if (discard_trained_model) NULL else model)
                     best_model_preprocess(preprocess_meta_for_seed)
-                    all_models_reactive(stats::setNames(list(model), model_name))
+                    if (discard_trained_model) {
+                      all_models_reactive(list())
+                    } else {
+                      all_models_reactive(stats::setNames(list(model), model_name))
+                    }
                   }
                   if (accuracy < worst_result) {
                     worst_result <- accuracy
@@ -3153,9 +3515,13 @@ server <- function(input, output, session) {
                     best_training_seed <- loop_seed
                     best_mae <- mae_value
                     best_rmse <- rmse_value
-                    best_model_object(model)
+                    best_model_object(if (discard_trained_model) NULL else model)
                     best_model_preprocess(preprocess_meta_for_seed)
-                    all_models_reactive(stats::setNames(list(model), model_name))
+                    if (discard_trained_model) {
+                      all_models_reactive(list())
+                    } else {
+                      all_models_reactive(stats::setNames(list(model), model_name))
+                    }
                   }
                   if (rsq_value < worst_result) {
                     worst_result <- rsq_value
@@ -3214,12 +3580,22 @@ server <- function(input, output, session) {
                   dataset_position = dataset_position,
                   completed_runs = completed_search_runs
                 )
+                if (isTRUE(input$config_clean_memory_each_training)) {
+                  clean_ml_memory(cl)
+                }
               })
             }
             # pryr was archived from CRAN (2026-01-30), so we rely on base gc() only.
-            memory_used_mb <- sum(gc()[, 2])
-            print(paste("Memory used (MB):", round(memory_used_mb, 2)))
-            gc()
+            clean_ml_memory(cl)
+            memory_used_gb <- current_r_process_tree_memory_gb()
+            print(paste("Memory used by R process tree (GB):", round(memory_used_gb, 2), "| configured limit:", memory_limit_gb))
+            if (memory_used_gb >= memory_limit_gb) {
+              stop(paste0(
+                "Configured memory limit reached (",
+                round(memory_used_gb, 2), " GB used / ",
+                memory_limit_gb, " GB selected)."
+              ))
+            }
           }
         }
         metric_name <- if (is.factor(Y_base)) "Accuracy" else "R2"
@@ -3284,6 +3660,7 @@ server <- function(input, output, session) {
         }
       })
     }, error = function(e) {
+      ml_error_message_text(paste(ml_error_message_text(), " ", conditionMessage(e)))
       print(e)
     })
     if (!is.null(best_model_object()) && !is.null(best_model_name) && nzchar(best_model_name) && !identical(best_model_name, "-")) {
@@ -3291,7 +3668,8 @@ server <- function(input, output, session) {
     } else {
       all_models_reactive(list())
     }
-    stopCluster(cl)
+    parallel::stopCluster(cl)
+    cl <- NULL
   })
 
   # Tab 6) MODEL ANALYSIS: Carrega o modelo e detecta variável‑alvo

@@ -32,11 +32,13 @@ Imports:
     missForest,
     methyLImp2,
     caret,
+    callr,
     base64enc,
     ggExtra,
     gridExtra,
     parallel,
     doParallel,
+    foreach,
     R.utils,
     ConsensusClusterPlus,
     gam
