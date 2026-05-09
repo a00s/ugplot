@@ -300,7 +300,9 @@ ui <- fluidPage(
       var filters = [
         ['#filter_columns', '#column_checkbox_group'],
         ['#filter_rows', '#row_checkbox_group'],
-        ['#filter_categories', '#checkbox_group_categories']
+        ['#filter_categories', '#checkbox_group_categories'],
+        ['#filter_ml_models', '#ml_checkbox_group'],
+        ['#filter_ml_missing_models', '#ml_missing_checkbox_group']
       ];
       filters.forEach(function(pair) {
         var inputSelector = pair[0];
@@ -355,7 +357,7 @@ ui <- fluidPage(
           tags$span(style = "font-size: 17px; color: white;", ".")
         ),
         tags$div(
-          actionButton("process_table_content", "GO TO TABLE")
+          actionButton("process_table_content", "Load data")
         )
       ),
       conditionalPanel(
@@ -675,6 +677,8 @@ ui <- fluidPage(
             column(
               width = 6,
               tags$h4("Models installed", style = "margin-top: 10px;"),
+              tags$div(class = "table-list-filter",
+                textInput("filter_ml_models", NULL, placeholder = "Search models", width = "100%")),
               div(class = "scrollable-table", div(id = "dynamic_machine_learning")),
               actionButton("uncheck_all_ml", "Uncheck all"),
               actionButton("check_all_ml", "Check all"),
@@ -686,6 +690,8 @@ ui <- fluidPage(
             column(
               width = 6,
               tags$h4("Models missing", style = "margin-top: 10px;"),
+              tags$div(class = "table-list-filter",
+                textInput("filter_ml_missing_models", NULL, placeholder = "Search missing models", width = "100%")),
               div(class = "scrollable-table", div(id = "dynamic_machine_learning_missing")),
               actionButton("uncheck_all_ml_missing", "Uncheck all"),
               actionButton("check_all_ml_missing", "Check all"),
@@ -914,6 +920,7 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   showTab(inputId = "tabs", target = "MODEL ANALYSIS")
   showTab(inputId = "tabs", target = "DEEP LEARNING")
   showTab(inputId = "tabs", target = "GRAPH MODELS")
+  showTab(inputId = "tabs", target = "CONFIGURATIONS")
 }
 
 build_missing_mask <- function(df, missing_definition = c("empty", "na"), zero_exceptions = character(0)) {
@@ -1337,6 +1344,7 @@ load_dataset_into_table <- function(localsession) {
     showTab(inputId = "tabs", target = "MODEL ANALYSIS")
     showTab(inputId = "tabs", target = "DEEP LEARNING")
     showTab(inputId = "tabs", target = "GRAPH MODELS")
+    showTab(inputId = "tabs", target = "CONFIGURATIONS")
   }
 }
 
@@ -1392,6 +1400,7 @@ server <- function(input, output, session) {
   hideTab(inputId = "tabs", target = "MODEL ANALYSIS")
   hideTab(inputId = "tabs", target = "DEEP LEARNING")
   hideTab(inputId = "tabs", target = "GRAPH MODELS")
+  hideTab(inputId = "tabs", target = "CONFIGURATIONS")
 
   disable("merge_all_columns")
   disable("merge_all_rows")
@@ -1517,11 +1526,18 @@ server <- function(input, output, session) {
   )
 
   output$downloadModelUI <- renderUI({
+    buttons <- list()
     if (!is.null(best_model_object())) {
-      tags$div(
-        style = "display: flex; gap: 8px; align-items: center; flex-wrap: wrap;",
-        downloadButton("downloadBestModel", "Download best model"),
-        downloadButton("downloadCalculatedMLTable", "Download calculated table (CSV)")
+      buttons <- c(buttons, list(downloadButton("downloadBestModel", "Download best model")))
+    }
+    table_to_download <- ml_table_results()
+    if (is.data.frame(table_to_download) && nrow(table_to_download) > 0) {
+      buttons <- c(buttons, list(downloadButton("downloadCalculatedMLTable", "Download calculated table (CSV)")))
+    }
+    if (length(buttons) > 0) {
+      do.call(
+        tags$div,
+        c(list(style = "display: flex; gap: 8px; align-items: center; flex-wrap: wrap;"), buttons)
       )
     }
   })
@@ -2846,7 +2862,7 @@ server <- function(input, output, session) {
     doParallel::registerDoParallel(cl)
     stop_main_cluster <- function() {
       if (!is.null(cl)) {
-        parallel::stopCluster(cl)
+        try(parallel::stopCluster(cl), silent = TRUE)
         cl <<- NULL
       }
       foreach::registerDoSEQ()
@@ -3226,13 +3242,9 @@ server <- function(input, output, session) {
                     best_training_seed <- loop_seed
                     best_mae <- NA_real_
                     best_rmse <- NA_real_
-                    best_model_object(if (discard_trained_model) NULL else model)
+                    best_model_object(model)
                     best_model_preprocess(preprocess_meta_for_seed)
-                    if (discard_trained_model) {
-                      all_models_reactive(list())
-                    } else {
-                      all_models_reactive(stats::setNames(list(model), model_name))
-                    }
+                    all_models_reactive(stats::setNames(list(model), model_name))
                   }
                   if (accuracy < worst_result) {
                     worst_result <- accuracy
@@ -3262,13 +3274,9 @@ server <- function(input, output, session) {
                     best_training_seed <- loop_seed
                     best_mae <- mae_value
                     best_rmse <- rmse_value
-                    best_model_object(if (discard_trained_model) NULL else model)
+                    best_model_object(model)
                     best_model_preprocess(preprocess_meta_for_seed)
-                    if (discard_trained_model) {
-                      all_models_reactive(list())
-                    } else {
-                      all_models_reactive(stats::setNames(list(model), model_name))
-                    }
+                    all_models_reactive(stats::setNames(list(model), model_name))
                   }
                   if (rsq_value < worst_result) {
                     worst_result <- rsq_value
@@ -3401,8 +3409,7 @@ server <- function(input, output, session) {
     } else {
       all_models_reactive(list())
     }
-    parallel::stopCluster(cl)
-    cl <- NULL
+    stop_main_cluster()
   })
 
   # Tab 6) MODEL ANALYSIS: Carrega o modelo e detecta variável‑alvo
