@@ -28,17 +28,38 @@ library(gam)
 
 log_file_path <- "ugplot.log"
 
-write_checkpoint_log <- function(last_model = "-", results_table = NULL, max_rows = 20) {
+write_checkpoint_log <- function(last_model = "-", results_table = NULL, context = list(), max_rows = 20) {
   timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+  context_value <- function(name, default = "N/A") {
+    value <- context[[name]]
+    if (is.null(value) || length(value) == 0 || is.na(value)) default else as.character(value)
+  }
   header_lines <- c(
     paste0("ugplot checkpoint log (last update: ", timestamp, ")"),
     paste0("Last model analyzed: ", last_model),
+    paste0("Phase: ", context_value("phase", "unknown")),
+    paste0("Current model: ", context_value("current_model", last_model)),
+    paste0("Dataset seed: ", context_value("dataset_seed")),
+    paste0("Training seed: ", context_value("training_seed")),
+    paste0("Run progress: ", context_value("current_run"), "/", context_value("total_runs")),
+    paste0("Model progress: ", context_value("model_position"), "/", context_value("total_models")),
+    paste0("Best model so far: ", context_value("best_model")),
+    paste0("Best metric so far: ", context_value("best_metric")),
     ""
   )
 
   if (is.null(results_table) || !is.data.frame(results_table) || nrow(results_table) == 0) {
     body_lines <- "No results recorded yet."
   } else {
+    status_lines <- character(0)
+    if ("Status" %in% names(results_table)) {
+      status_counts <- table(results_table$Status, useNA = "ifany")
+      status_lines <- c(
+        "Status counts:",
+        paste0("  ", names(status_counts), ": ", as.integer(status_counts)),
+        ""
+      )
+    }
     metric_col <- if ("Accuracy" %in% names(results_table)) {
       "Accuracy"
     } else if ("R2" %in% names(results_table)) {
@@ -48,11 +69,24 @@ write_checkpoint_log <- function(last_model = "-", results_table = NULL, max_row
     }
     ordered_results <- results_table
     if (!is.null(metric_col)) {
-      ordered_idx <- order(-as.numeric(as.character(ordered_results[[metric_col]])))
+      metric_values <- suppressWarnings(as.numeric(as.character(ordered_results[[metric_col]])))
+      ordered_idx <- order(-metric_values, na.last = TRUE)
       ordered_results <- ordered_results[ordered_idx, , drop = FALSE]
+    }
+    priority_columns <- c(
+      "Model", "R2", "Accuracy", "MAE", "RMSE",
+      "dataset_seed", "training_seed", "threshold_scope", "imputation_scope",
+      "elapsed_seconds", "Status", "Error"
+    )
+    ordered_columns <- c(intersect(priority_columns, names(ordered_results)), setdiff(names(ordered_results), priority_columns))
+    ordered_results <- ordered_results[, ordered_columns, drop = FALSE]
+    for (metric_name in intersect(c("R2", "Accuracy", "MAE", "RMSE", "elapsed_seconds"), names(ordered_results))) {
+      metric_values <- suppressWarnings(as.numeric(ordered_results[[metric_name]]))
+      ordered_results[[metric_name]] <- ifelse(is.finite(metric_values), round(metric_values, 4), NA)
     }
     ordered_results <- utils::head(ordered_results, max_rows)
     body_lines <- c(
+      status_lines,
       paste0("Latest results (top ", nrow(ordered_results), "):"),
       capture.output(print(ordered_results, row.names = FALSE))
     )
@@ -3001,7 +3035,7 @@ server <- function(input, output, session) {
         X_base <- X
         Y_base <- Y
         ml_table_results(data.frame())
-        write_checkpoint_log(last_model = "-", results_table = ml_table_results())
+        write_checkpoint_log(last_model = "-", results_table = ml_table_results(), context = list(phase = "starting"))
         append_ml_result_row <- function(row) {
           current_results <- ml_table_results()
           row <- as.data.frame(row, stringsAsFactors = FALSE)
@@ -3287,19 +3321,8 @@ server <- function(input, output, session) {
                 set.seed(loop_seed)
               }
               tryCatch({
-                set_search_progress(
-                  model_name = model_name,
-                  loop_dataset_seed = loop_dataset_seed,
-                  loop_seed = loop_seed,
-                  count_model = count_model,
-                  active_model_count = total_model_runs,
-                  seed_position = seed_position,
-                  dataset_position = dataset_position,
-                  progress_runs = current_run_index
-                )
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
-                write_checkpoint_log(last_model = model_name, results_table = ml_table_results())
                 pred <- NULL
                 run_status <- "OK"
                 run_error <- ""
@@ -3320,6 +3343,35 @@ server <- function(input, output, session) {
                     error_message
                   }
                 }
+                checkpoint_context <- function(phase) {
+                  list(
+                    phase = phase,
+                    current_model = model_name,
+                    dataset_seed = loop_dataset_seed,
+                    training_seed = loop_seed,
+                    current_run = current_run_index,
+                    total_runs = total_search_runs,
+                    model_position = count_model,
+                    total_models = total_model_runs,
+                    best_model = if (is.finite(best_result)) best_model else "N/A",
+                    best_metric = if (is.finite(best_result)) round(best_result, 4) else "N/A"
+                  )
+                }
+                write_checkpoint_log(
+                  last_model = model_name,
+                  results_table = ml_table_results(),
+                  context = checkpoint_context("running")
+                )
+                set_search_progress(
+                  model_name = model_name,
+                  loop_dataset_seed = loop_dataset_seed,
+                  loop_seed = loop_seed,
+                  count_model = count_model,
+                  active_model_count = total_model_runs,
+                  seed_position = seed_position,
+                  dataset_position = dataset_position,
+                  progress_runs = current_run_index
+                )
                 is_parallel_connection_error <- function(error) {
                   grepl(
                     "error (writing|reading) to connection|serialize|unserialize|SOCK",
@@ -3391,7 +3443,11 @@ server <- function(input, output, session) {
                     imputation_scope = imputation_scope
                   )
                   append_ml_result_row(failed_result)
-                  write_checkpoint_log(last_model = model_name, results_table = ml_table_results())
+                  write_checkpoint_log(
+                    last_model = model_name,
+                    results_table = ml_table_results(),
+                    context = checkpoint_context(run_status)
+                  )
                   next
                 }
                 model <- result
@@ -3509,7 +3565,11 @@ server <- function(input, output, session) {
                 } else {
                   print(current_results)
                 }
-                write_checkpoint_log(last_model = model_name, results_table = current_results)
+                write_checkpoint_log(
+                  last_model = model_name,
+                  results_table = current_results,
+                  context = checkpoint_context("OK")
+                )
               }, error = function(e) {
                 elapsed_seconds <- if (exists("attempt_start_time", inherits = FALSE)) {
                   round(proc.time()[["elapsed"]] - attempt_start_time, 3)
@@ -3531,7 +3591,11 @@ server <- function(input, output, session) {
                   imputation_scope = imputation_scope
                 )
                 append_ml_result_row(failed_result)
-                write_checkpoint_log(last_model = model_name, results_table = ml_table_results())
+                write_checkpoint_log(
+                  last_model = model_name,
+                  results_table = ml_table_results(),
+                  context = checkpoint_context(classify_training_error(conditionMessage(e)))
+                )
                 ml_error_message_text(paste(ml_error_message_text(), " ", "Couldn't run model", model_name, ":", conditionMessage(e)))
                 print(paste("Couldn't run model", model_name, ":", conditionMessage(e)))
               }, finally = {
