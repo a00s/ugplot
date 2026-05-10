@@ -108,7 +108,7 @@ format_running_stability_signal <- function(values, metric_name = "R2") {
 
   if (n_values < 30) {
     return(paste0(
-      "𝗦𝗧𝗔𝗕𝗜𝗟𝗜𝗧𝗬  : 🟥 collecting data (n=", n_values, "/30)"
+      "Stability: collecting data (n=", n_values, "/30)"
     ))
   }
 
@@ -132,15 +132,15 @@ format_running_stability_signal <- function(values, metric_name = "R2") {
     metric_se <= 0.02
 
   status <- if (stable_green) {
-    "🟩 stable - reasonable to stop"
+    "stable"
   } else if (stable_yellow) {
-    "🟨 getting stable - keep running if precision matters"
+    "getting stable"
   } else {
-    "🟥 still moving - keep running"
+    "still moving"
   }
 
   paste0(
-    "𝗦𝗧𝗔𝗕𝗜𝗟𝗜𝗧𝗬  : ", status,
+    "Stability: ", status,
     " | n=", n_values,
     " | Δmean ", round(mean_shift, 4),
     " | Δmedian ", round(median_shift, 4),
@@ -269,7 +269,6 @@ slow_models <- c(
 )
 slow_models_text <- paste("Slow or problematic models automatically removed:",
   paste(slow_models, collapse = ", "))
-parallel_sensitive_models <- c("cubist")
 
 # Global variables (seguindo o padrão utilizado)
 df_pre <<- ""
@@ -855,7 +854,17 @@ ui <- fluidPage(
         tags$hr(),
         checkboxInput(
           "config_parallel_cubist_models",
-          "Use parallel processing for Cubist models",
+          "Use parallel processing",
+          value = TRUE
+        ),
+        checkboxInput(
+          "config_restart_parallel_each_model",
+          "Restart parallel workers for each model",
+          value = TRUE
+        ),
+        checkboxInput(
+          "config_retry_parallel_connection_errors",
+          "Retry once if parallel workers fail",
           value = TRUE
         ),
         tags$p(
@@ -1404,6 +1413,7 @@ server <- function(input, output, session) {
 
   disable("merge_all_columns")
   disable("merge_all_rows")
+  disable("process_table_content")
   session$allowReconnect(TRUE)
 
   configured_cpu_limit <- reactive({
@@ -1416,6 +1426,16 @@ server <- function(input, output, session) {
 
   observe({
     apply_runtime_thread_limit(configured_cpu_limit())
+  })
+
+  observe({
+    has_pending_table <- nzchar(trimws(input$textarea_columns %||% "")) &&
+      nzchar(trimws(input$textarea_rows %||% ""))
+    if (has_pending_table) {
+      enable("process_table_content")
+    } else {
+      disable("process_table_content")
+    }
   })
 
   output$config_cpu_summary <- renderText({
@@ -1772,11 +1792,23 @@ server <- function(input, output, session) {
       return(NULL)
     }
     fmt <- function(value, digits = 2) {
-      if (is.null(value) || length(value) == 0 || !is.finite(as.numeric(value))) {
+      numeric_value <- suppressWarnings(as.numeric(value))
+      if (is.null(value) || length(value) == 0 || !is.finite(numeric_value)) {
         return("N/A")
       }
-      format(round(as.numeric(value), digits), nsmall = digits, trim = TRUE)
+      format(round(numeric_value, digits), nsmall = digits, trim = TRUE)
     }
+    runtime_lines <- list(
+      tags$strong("Runtime:"),
+      tags$div(paste0("Total: ", fmt(summary_data$total_elapsed_seconds), " seconds")),
+      tags$div(paste0(
+        "Runs: ", summary_data$ok_runs, " OK / ",
+        summary_data$timeout_runs, " timeout / ",
+        summary_data$incompatible_runs, " incompatible / ",
+        summary_data$invalid_metric_runs, " invalid metrics / ",
+        summary_data$error_runs, " error"
+      ))
+    )
     best_model_title <- paste0(summary_data$best_model, "(", summary_data$dataset_seed, ":", summary_data$training_seed, ")")
     if (identical(summary_data$metric_name, "R2")) {
       tags$div(
@@ -1791,7 +1823,8 @@ server <- function(input, output, session) {
           tags$strong("Medians:"),
           tags$div(paste0("R²: ", fmt(summary_data$best_model_median), " (IQR ", fmt(summary_data$best_model_iqr), ")")),
           tags$div(paste0("MAE: ", fmt(summary_data$best_model_mae_median), " (IQR ", fmt(summary_data$best_model_mae_iqr), ")")),
-          tags$div(paste0("RMSE: ", fmt(summary_data$best_model_rmse_median), " (IQR ", fmt(summary_data$best_model_rmse_iqr), ")"))
+          tags$div(paste0("RMSE: ", fmt(summary_data$best_model_rmse_median), " (IQR ", fmt(summary_data$best_model_rmse_iqr), ")")),
+          runtime_lines
         )
       )
     } else {
@@ -1805,7 +1838,8 @@ server <- function(input, output, session) {
           tags$div(paste0("Max ", summary_data$metric_name, ": ", fmt(summary_data$best_model_max))),
           tags$div(paste0("Range ", summary_data$metric_name, ": ", fmt(summary_data$best_model_range))),
           tags$strong("Medians:"),
-          tags$div(paste0(summary_data$metric_name, ": ", fmt(summary_data$best_model_median), " (IQR ", fmt(summary_data$best_model_iqr), ")"))
+          tags$div(paste0(summary_data$metric_name, ": ", fmt(summary_data$best_model_median), " (IQR ", fmt(summary_data$best_model_iqr), ")")),
+          runtime_lines
         )
       )
     }
@@ -2476,6 +2510,8 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$process_table_content, {
+    req(nzchar(trimws(input$textarea_columns %||% "")))
+    req(nzchar(trimws(input$textarea_rows %||% "")))
     scrambled_columns(character(0))
     scramble_original_columns(list())
     heatmap_recorded_plot(NULL)
@@ -2753,8 +2789,34 @@ server <- function(input, output, session) {
     if (!is.data.frame(ml_results)) {
       ml_results <- data.frame()
     }
+    priority_columns <- c(
+      "Model", "R2", "Accuracy", "MAE", "RMSE",
+      "dataset_seed", "training_seed", "threshold_scope", "imputation_scope",
+      "elapsed_seconds", "Status", "Error"
+    )
+    ordered_columns <- c(intersect(priority_columns, names(ml_results)), setdiff(names(ml_results), priority_columns))
+    ml_results <- ml_results[, ordered_columns, drop = FALSE]
+    for (metric_column in intersect(c("R2", "MAE", "RMSE"), names(ml_results))) {
+      metric_values <- suppressWarnings(as.numeric(ml_results[[metric_column]]))
+      ml_results[[metric_column]] <- ifelse(
+        is.finite(metric_values),
+        format(round(metric_values, 3), nsmall = 3, trim = TRUE),
+        ""
+      )
+    }
+    error_column <- match("Error", names(ml_results)) - 1
     datatable(ml_results,
-      options = list(lengthChange = FALSE, paging = FALSE, searching = FALSE, info = FALSE),
+      options = list(
+        lengthChange = FALSE,
+        paging = FALSE,
+        searching = FALSE,
+        info = FALSE,
+        scrollX = TRUE,
+        autoWidth = FALSE,
+        columnDefs = list(
+          list(targets = error_column, width = "420px", className = "dt-error-column")
+        )
+      ),
       rownames = FALSE)
   })
 
@@ -2858,8 +2920,16 @@ server <- function(input, output, session) {
   observeEvent(input$play_search_best_model_caret, {
     cpu_limit <- configured_cpu_limit()
     apply_runtime_thread_limit(cpu_limit)
-    cl <- parallel::makeCluster(cpu_limit)
-    doParallel::registerDoParallel(cl)
+    parallel_enabled <- isTRUE(input$config_parallel_cubist_models)
+    restart_parallel_each_model <- isTRUE(input$config_restart_parallel_each_model)
+    retry_parallel_connection_errors <- isTRUE(input$config_retry_parallel_connection_errors)
+    cl <- NULL
+    start_main_cluster <- function() {
+      stop_main_cluster()
+      cl <<- parallel::makeCluster(cpu_limit)
+      doParallel::registerDoParallel(cl)
+      invisible(cl)
+    }
     stop_main_cluster <- function() {
       if (!is.null(cl)) {
         try(parallel::stopCluster(cl), silent = TRUE)
@@ -2867,6 +2937,9 @@ server <- function(input, output, session) {
       }
       foreach::registerDoSEQ()
       invisible(NULL)
+    }
+    if (parallel_enabled && !restart_parallel_each_model) {
+      start_main_cluster()
     }
     on.exit({
       stop_main_cluster()
@@ -2882,6 +2955,7 @@ server <- function(input, output, session) {
     ))
     ml_final_summary(NULL)
     best_model_name <- "-"
+    search_start_time <- proc.time()[["elapsed"]]
 
     tryCatch({
       withProgress(message = 'Searching the best model...', {
@@ -2928,6 +3002,25 @@ server <- function(input, output, session) {
         Y_base <- Y
         ml_table_results(data.frame())
         write_checkpoint_log(last_model = "-", results_table = ml_table_results())
+        append_ml_result_row <- function(row) {
+          current_results <- ml_table_results()
+          row <- as.data.frame(row, stringsAsFactors = FALSE)
+          if (!is.data.frame(current_results) || nrow(current_results) == 0) {
+            ml_table_results(row)
+            return(invisible(row))
+          }
+          all_columns <- union(names(current_results), names(row))
+          for (column_name in setdiff(all_columns, names(current_results))) {
+            current_results[[column_name]] <- NA
+          }
+          for (column_name in setdiff(all_columns, names(row))) {
+            row[[column_name]] <- NA
+          }
+          current_results <- current_results[, all_columns, drop = FALSE]
+          row <- row[, all_columns, drop = FALSE]
+          ml_table_results(rbind(current_results, row))
+          invisible(row)
+        }
         do_dataset_seed <- 0
         loop_dataset_seedi <- as.numeric(input$ml_dataset_seedi)
         loop_dataset_seedf <- as.numeric(input$ml_dataset_seedf)
@@ -2975,35 +3068,53 @@ server <- function(input, output, session) {
         running_progress_detail <- function(model_name, loop_dataset_seed, loop_seed,
                                             count_model, active_model_count,
                                             seed_position, total_seed_runs,
-                                            dataset_position, total_dataset_runs) {
+                                            dataset_position, total_dataset_runs,
+                                            current_run_index, total_search_runs) {
           metric_values <- suppressWarnings(as.numeric(unlist(model_metric_values, use.names = FALSE)))
           metric_values <- metric_values[is.finite(metric_values)]
           mean_label <- if (length(metric_values) > 0) round(mean(metric_values), 4) else "N/A"
           median_label <- if (length(metric_values) > 0) round(median(metric_values), 4) else "N/A"
           stability_signal <- format_running_stability_signal(metric_values, metric_name = metric_name)
           metric_distribution <- format_running_metric_distribution(metric_values, metric_name = metric_name)
+          progress_percent <- round((current_run_index / total_search_runs) * 100)
+          best_model_label <- if (is.finite(best_result)) {
+            best_model
+          } else {
+            "N/A"
+          }
+          best_metric_label <- if (is.finite(best_result)) {
+            round(best_result, 4)
+          } else {
+            "N/A"
+          }
+          worst_label <- if (is.finite(worst_result)) {
+            paste0(round(worst_result, 4), " - ", worst_model)
+          } else {
+            "N/A"
+          }
+          best_metric_name <- if (identical(metric_name, "R2")) "R2" else metric_name
 
           paste0(
-            "\n𝗠𝗢𝗗𝗘𝗟        : ", model_name, "\n",
-            "𝗦𝗘𝗘𝗗         : dataset ", loop_dataset_seed, " (", dataset_position, "/", total_dataset_runs,
-            ") / train ", loop_seed, " (", seed_position, "/", total_seed_runs, ")\n",
-            "𝗠𝗜𝗦𝗦𝗜𝗡𝗚      : ", threshold_scope, " / ", missing_strategy, " / ", imputation_scope, "\n",
-            "𝗠𝗢𝗗𝗘𝗟 𝗣𝗢𝗦    : ", count_model, "/", max(1, active_model_count), "\n",
-            "𝗪𝗢𝗥𝗦𝗧        : ", metric_label, " ", if (is.finite(worst_result)) round(worst_result, 4) else "N/A",
-            " (", worst_model, ")\n",
-            "𝗕𝗘𝗦𝗧         : ", metric_label, " ", if (is.finite(best_result)) round(best_result, 4) else "N/A",
-            " (", best_model, ")\n",
-            "𝗦𝗨𝗠𝗠𝗔𝗥𝗬      : mean ", metric_name, " ", mean_label,
-            " | median ", metric_name, " ", median_label, "\n",
-            stability_signal, "\n",
+            "\n",
+            "𝗕𝗘𝗦𝗧 𝗠𝗢𝗗𝗘𝗟 : ", best_model_label, "\n",
+            "𝗕𝗘𝗦𝗧 ", if (identical(best_metric_name, "R2")) "𝗥𝟮" else best_metric_name, " : ", best_metric_label, "\n\n",
+            "Progress: ", current_run_index, "/", total_search_runs, " (", progress_percent, "%)",
+            " | Model: ", count_model, "/", max(1, active_model_count), "\n",
+            "Running: ", model_name, "\n",
+            "Seed: dataset ", loop_dataset_seed, " (", dataset_position, "/", total_dataset_runs,
+            ") | train ", loop_seed, " (", seed_position, "/", total_seed_runs, ")\n\n",
+            "Worst ", best_metric_name, ": ", worst_label, "\n",
+            "Current summary: mean ", mean_label, " | median ", median_label, "\n",
+            stability_signal, "\n\n",
             metric_distribution
           )
         }
         set_search_progress <- function(model_name, loop_dataset_seed, loop_seed,
                                         count_model, active_model_count,
                                         seed_position, dataset_position,
-                                        completed_runs = completed_search_runs) {
-          progress_value <- min(1, max(0, completed_runs / total_search_runs))
+                                        progress_runs = completed_search_runs) {
+          current_run_index <- min(total_search_runs, max(1, progress_runs))
+          progress_value <- min(1, max(0, progress_runs / total_search_runs))
           progress_delta <- max(0, progress_value - last_progress_value)
           last_progress_value <<- max(last_progress_value, progress_value)
           incProgress(
@@ -3017,7 +3128,9 @@ server <- function(input, output, session) {
               seed_position = seed_position,
               total_seed_runs = total_seed_runs,
               dataset_position = dataset_position,
-              total_dataset_runs = total_dataset_runs
+              total_dataset_runs = total_dataset_runs,
+              current_run_index = current_run_index,
+              total_search_runs = total_search_runs
             )
           )
         }
@@ -3155,18 +3268,21 @@ server <- function(input, output, session) {
             } else {
               trainControl(method = "cv", number = cv_settings$number)
             }
-            if (!isTRUE(input$config_parallel_cubist_models) &&
-                tolower(model_name) %in% parallel_sensitive_models) {
+            ctrl$allowParallel <- parallel_enabled
+            if (!parallel_enabled) {
               ctrl$allowParallel <- FALSE
               ml_error_message_text(paste(
                 ml_error_message_text(),
-                " Parallel processing disabled for this model./"
+                " Parallel processing disabled./"
               ))
             }
             model_types <- model_info$type
             print(paste("Model", model_name, "supports types:", paste(model_types, collapse = ", ")))
             for (seed_position in seq_along(training_seed_values)) {
               loop_seed <- training_seed_values[[seed_position]]
+              current_run_index <- ((dataset_position - 1) * total_model_runs * total_seed_runs) +
+                ((count_model - 1) * total_seed_runs) +
+                seed_position
               if (do_seed == 1) {
                 set.seed(loop_seed)
               }
@@ -3178,13 +3294,44 @@ server <- function(input, output, session) {
                   count_model = count_model,
                   active_model_count = total_model_runs,
                   seed_position = seed_position,
-                  dataset_position = dataset_position
+                  dataset_position = dataset_position,
+                  progress_runs = current_run_index
                 )
                 formula <- as.formula(paste(target_name, "~ ."))
                 model <- NULL
                 write_checkpoint_log(last_model = model_name, results_table = ml_table_results())
                 pred <- NULL
-                result <- tryCatch({
+                run_status <- "OK"
+                run_error <- ""
+                attempt_start_time <- proc.time()[["elapsed"]]
+                classify_training_error <- function(error_message) {
+                  if (grepl("wrong model type for (regression|classification)", error_message, ignore.case = TRUE)) {
+                    "INCOMPATIBLE"
+                  } else if (identical(error_message, "Stopping")) {
+                    "INVALID_METRICS"
+                  } else {
+                    "ERROR"
+                  }
+                }
+                format_training_error <- function(error_message) {
+                  if (identical(error_message, "Stopping")) {
+                    "The model did not produce usable predictions for this split"
+                  } else {
+                    error_message
+                  }
+                }
+                is_parallel_connection_error <- function(error) {
+                  grepl(
+                    "error (writing|reading) to connection|serialize|unserialize|SOCK",
+                    conditionMessage(error),
+                    ignore.case = TRUE
+                  )
+                }
+                train_model_once <- function() {
+                  if (parallel_enabled && restart_parallel_each_model && isTRUE(ctrl$allowParallel)) {
+                    start_main_cluster()
+                    on.exit(stop_main_cluster(), add = TRUE)
+                  }
                   withTimeout({
                     model <- caret::train(
                       formula,
@@ -3195,18 +3342,59 @@ server <- function(input, output, session) {
                     )
                     model
                   }, timeout = input$ml_timeout, onTimeout = "error")
+                }
+                result <- tryCatch({
+                  tryCatch(
+                    train_model_once(),
+                    error = function(e) {
+                      if (parallel_enabled &&
+                          retry_parallel_connection_errors &&
+                          is_parallel_connection_error(e)) {
+                        ml_error_message_text(paste(
+                          ml_error_message_text(),
+                          " Parallel worker failed for", model_name, "- retrying once./"
+                        ))
+                        print(paste("Retrying model after parallel worker failure:", model_name, conditionMessage(e)))
+                        stop_main_cluster()
+                        if (!restart_parallel_each_model) {
+                          start_main_cluster()
+                        }
+                        return(train_model_once())
+                      }
+                      stop(e)
+                    }
+                  )
                 }, TimeoutException = function(ex) {
+                  run_status <<- "TIMEOUT"
+                  run_error <<- paste0("Timed out after ", input$ml_timeout, " seconds")
                   ml_error_message_text(paste(ml_error_message_text(), " ", "TIMEOUT:", model_name, "/"))
                   print(paste("Training timed out for model:", model_name))
                   mark_model_skipped(model_name, "timeout")
                   return(NULL)
                 }, error = function(e) {
+                  raw_error <- conditionMessage(e)
+                  run_error <<- format_training_error(raw_error)
+                  run_status <<- classify_training_error(raw_error)
                   print(paste("Error training model", model_name, ":", conditionMessage(e)))
                   return(NULL)
                 })
                 if (is.null(result)) {
+                  elapsed_seconds <- round(proc.time()[["elapsed"]] - attempt_start_time, 3)
+                  failed_result <- data.frame(
+                    Model = model_name,
+                    Status = run_status,
+                    elapsed_seconds = elapsed_seconds,
+                    Error = run_error,
+                    dataset_seed = loop_dataset_seed,
+                    training_seed = loop_seed,
+                    threshold_scope = threshold_scope,
+                    imputation_scope = imputation_scope
+                  )
+                  append_ml_result_row(failed_result)
+                  write_checkpoint_log(last_model = model_name, results_table = ml_table_results())
                   next
                 }
+                model <- result
                 if (is.null(pred)) {
                   pred <- predict(model, newdata = testSet)
                 }
@@ -3251,12 +3439,15 @@ server <- function(input, output, session) {
                     worst_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
                   }
                   model_results <- data.frame(Model = model_name,
-                    "Accuracy" = accuracy,
-                    "Dataset seed" = loop_dataset_seed,
-                    "Training seed" = loop_seed,
-                    "Threshold scope" = threshold_scope,
-                    "Imputation scope" = imputation_scope)
-                  ml_table_results(rbind(ml_table_results(), model_results))
+                    Status = "OK",
+                    elapsed_seconds = round(proc.time()[["elapsed"]] - attempt_start_time, 3),
+                    Accuracy = accuracy,
+                    Error = "",
+                    dataset_seed = loop_dataset_seed,
+                    training_seed = loop_seed,
+                    threshold_scope = threshold_scope,
+                    imputation_scope = imputation_scope)
+                  append_ml_result_row(model_results)
                   model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], accuracy)
                 } else {
                   result_pred <- postResample(pred, actual_values)
@@ -3283,14 +3474,17 @@ server <- function(input, output, session) {
                     worst_model <- paste(model_name, "(", loop_dataset_seed, ":", loop_seed, ")")
                   }
                   model_results <- data.frame(Model = model_name,
+                    Status = "OK",
+                    elapsed_seconds = round(proc.time()[["elapsed"]] - attempt_start_time, 3),
                     "R2" = rsq_value,
-                    "MAE" = mae_value,
-                    "RMSE" = rmse_value,
-                    "Dataset seed" = loop_dataset_seed,
-                    "Training seed" = loop_seed,
-                    "Threshold scope" = threshold_scope,
-                    "Imputation scope" = imputation_scope)
-                  ml_table_results(rbind(ml_table_results(), model_results))
+                    MAE = mae_value,
+                    RMSE = rmse_value,
+                    Error = "",
+                    dataset_seed = loop_dataset_seed,
+                    training_seed = loop_seed,
+                    threshold_scope = threshold_scope,
+                    imputation_scope = imputation_scope)
+                  append_ml_result_row(model_results)
                   model_metric_values[[model_name]] <- c(model_metric_values[[model_name]], rsq_value)
                   model_mae_values[[model_name]] <- c(model_mae_values[[model_name]], mae_value)
                   model_rmse_values[[model_name]] <- c(model_rmse_values[[model_name]], rmse_value)
@@ -3317,10 +3511,27 @@ server <- function(input, output, session) {
                 }
                 write_checkpoint_log(last_model = model_name, results_table = current_results)
               }, error = function(e) {
+                elapsed_seconds <- if (exists("attempt_start_time", inherits = FALSE)) {
+                  round(proc.time()[["elapsed"]] - attempt_start_time, 3)
+                } else {
+                  NA_real_
+                }
                 invalid_runs <- invalid_runs + 1
                 invalid_models <- union(invalid_models, model_name)
                 current_invalid <- if (!is.null(model_invalid_runs[[model_name]])) model_invalid_runs[[model_name]] else 0
                 model_invalid_runs[[model_name]] <- current_invalid + 1
+                failed_result <- data.frame(
+                  Model = model_name,
+                  Status = classify_training_error(conditionMessage(e)),
+                  elapsed_seconds = elapsed_seconds,
+                  Error = format_training_error(conditionMessage(e)),
+                  dataset_seed = loop_dataset_seed,
+                  training_seed = loop_seed,
+                  threshold_scope = threshold_scope,
+                  imputation_scope = imputation_scope
+                )
+                append_ml_result_row(failed_result)
+                write_checkpoint_log(last_model = model_name, results_table = ml_table_results())
                 ml_error_message_text(paste(ml_error_message_text(), " ", "Couldn't run model", model_name, ":", conditionMessage(e)))
                 print(paste("Couldn't run model", model_name, ":", conditionMessage(e)))
               }, finally = {
@@ -3333,7 +3544,7 @@ server <- function(input, output, session) {
                   active_model_count = total_model_runs,
                   seed_position = seed_position,
                   dataset_position = dataset_position,
-                  completed_runs = completed_search_runs
+                  progress_runs = completed_search_runs
                 )
               })
             }
@@ -3372,6 +3583,21 @@ server <- function(input, output, session) {
         best_model_mae <- best_model_mae[is.finite(best_model_mae)]
         best_model_rmse <- model_rmse_values[[best_model_name]]
         best_model_rmse <- best_model_rmse[is.finite(best_model_rmse)]
+        final_results <- ml_table_results()
+        if (is.data.frame(final_results) && "Status" %in% names(final_results)) {
+          status_values <- as.character(final_results$Status)
+          ok_runs <- sum(status_values == "OK", na.rm = TRUE)
+          timeout_runs <- sum(status_values == "TIMEOUT", na.rm = TRUE)
+          incompatible_runs <- sum(status_values == "INCOMPATIBLE", na.rm = TRUE)
+          invalid_metric_runs <- sum(status_values == "INVALID_METRICS", na.rm = TRUE)
+          error_runs <- sum(status_values == "ERROR", na.rm = TRUE)
+        } else {
+          ok_runs <- 0L
+          timeout_runs <- 0L
+          incompatible_runs <- 0L
+          invalid_metric_runs <- 0L
+          error_runs <- 0L
+        }
         ml_final_summary(list(
           best_model = best_model_name,
           dataset_seed = dataset_seed_label,
@@ -3390,6 +3616,12 @@ server <- function(input, output, session) {
           best_model_rmse_iqr = if (length(best_model_rmse) > 1) round(IQR(best_model_rmse), 4) else "N/A",
           mae = if (identical(metric_name, "R2")) best_mae else NA_real_,
           rmse = if (identical(metric_name, "R2")) best_rmse else NA_real_,
+          total_elapsed_seconds = round(proc.time()[["elapsed"]] - search_start_time, 3),
+          ok_runs = ok_runs,
+          timeout_runs = timeout_runs,
+          incompatible_runs = incompatible_runs,
+          invalid_metric_runs = invalid_metric_runs,
+          error_runs = error_runs,
           model_robust_stats = robust_stats
         ))
         if (auto_skip_enabled && length(skipped_models) > 0) {

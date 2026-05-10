@@ -404,6 +404,15 @@ button.ml-section-toggle:focus,
   margin: 8px 0 0 18px;
 }
 
+table.dataTable td.dt-error-column,
+table.dataTable th.dt-error-column {
+  min-width: 420px;
+  max-width: 640px;
+  white-space: normal;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
 .model-analysis-missing-features {
   margin: 8px 0 12px 0;
   padding: 10px 12px;
