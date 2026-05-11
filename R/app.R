@@ -142,7 +142,7 @@ format_running_stability_signal <- function(values, metric_name = "R2") {
 
   if (n_values < 30) {
     return(paste0(
-      "Stability: collecting data (n=", n_values, "/30)"
+      "Stability: 🟥 collecting data (n=", n_values, "/30)"
     ))
   }
 
@@ -166,11 +166,11 @@ format_running_stability_signal <- function(values, metric_name = "R2") {
     metric_se <= 0.02
 
   status <- if (stable_green) {
-    "stable"
+    "🟩 stable"
   } else if (stable_yellow) {
-    "getting stable"
+    "🟨 getting stable"
   } else {
-    "still moving"
+    "🟥 still moving"
   }
 
   paste0(
