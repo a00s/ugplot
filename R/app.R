@@ -3132,6 +3132,7 @@ server <- function(input, output, session) {
             "\n",
             "𝗕𝗘𝗦𝗧 𝗠𝗢𝗗𝗘𝗟 : ", best_model_label, "\n",
             "𝗕𝗘𝗦𝗧 ", if (identical(best_metric_name, "R2")) "𝗥𝟮" else best_metric_name, " : ", best_metric_label, "\n\n",
+            "𝗠𝗘𝗗𝗜𝗔𝗡 ", if (identical(best_metric_name, "R2")) "𝗥𝟮" else best_metric_name, " : ", median_label, "\n\n",
             "Progress: ", current_run_index, "/", total_search_runs, " (", progress_percent, "%)",
             " | Model: ", count_model, "/", max(1, active_model_count), "\n",
             "Running: ", model_name, "\n",
