@@ -415,6 +415,12 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
     robust_stats <- robust_stats[order(-robust_stats$MedianMetric, robust_stats$Model), , drop = FALSE]
   }
 
+  best_model_metrics <- metric_values[[best_model_name]]
+  best_model_metrics <- best_model_metrics[is.finite(best_model_metrics)]
+  best_model_mae <- mae_values[[best_model_name]]
+  best_model_mae <- best_model_mae[is.finite(best_model_mae)]
+  best_model_rmse <- rmse_values[[best_model_name]]
+  best_model_rmse <- best_model_rmse[is.finite(best_model_rmse)]
   status_values <- if ("Status" %in% names(results)) as.character(results$Status) else character(0)
   final_summary <- list(
     best_model = best_model_name,
@@ -423,6 +429,16 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
     training_seed = if (!is.na(best_training_seed)) best_training_seed else "N/A",
     metric_name = metric_name,
     metric_value = if (is.finite(best_result)) best_result else NA_real_,
+    best_model_min = if (length(best_model_metrics) > 0) round(min(best_model_metrics), 4) else "N/A",
+    best_model_max = if (length(best_model_metrics) > 0) round(max(best_model_metrics), 4) else "N/A",
+    best_model_mean = if (length(best_model_metrics) > 0) round(mean(best_model_metrics), 4) else "N/A",
+    best_model_median = if (length(best_model_metrics) > 0) round(stats::median(best_model_metrics), 4) else "N/A",
+    best_model_iqr = if (length(best_model_metrics) > 1) round(stats::IQR(best_model_metrics), 4) else "N/A",
+    best_model_range = if (length(best_model_metrics) > 1) round(diff(range(best_model_metrics)), 4) else "N/A",
+    best_model_mae_median = if (length(best_model_mae) > 0) round(stats::median(best_model_mae), 4) else "N/A",
+    best_model_mae_iqr = if (length(best_model_mae) > 1) round(stats::IQR(best_model_mae), 4) else "N/A",
+    best_model_rmse_median = if (length(best_model_rmse) > 0) round(stats::median(best_model_rmse), 4) else "N/A",
+    best_model_rmse_iqr = if (length(best_model_rmse) > 1) round(stats::IQR(best_model_rmse), 4) else "N/A",
     mae = if (identical(metric_name, "R2")) best_mae else NA_real_,
     rmse = if (identical(metric_name, "R2")) best_rmse else NA_real_,
     total_elapsed_seconds = round(proc.time()[["elapsed"]] - start_time, 3),
