@@ -361,7 +361,7 @@ ui <- fluidPage(
   useShinyjs(),
   titlePanel(tags$img(
     src = getImage("ugplot.png"), height = "50px",
-    tags$span("version 1.0", style = "color: gray; font-size: 11px;")
+    tags$span("version 1.0.1", style = "color: gray; font-size: 11px;")
   )),
   tabsetPanel(
     id = "tabs",
