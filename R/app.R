@@ -744,7 +744,7 @@ ui <- fluidPage(
               conditionalPanel(
                 condition = "input.ml_run_target == 'remote'",
                 textInput("remote_server_url", "Server URL", value = "http://127.0.0.1:8080"),
-                textInput("remote_server_token", "Token", value = Sys.getenv("UGPLOT_SERVER_TOKEN", unset = ""))
+                textInput("remote_server_token", "Token", value = "")
               ),
               actionButton("play_search_best_model_caret", "RUN"),
               uiOutput("downloadModelUI"),

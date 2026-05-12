@@ -101,12 +101,12 @@ ugplot_read_rds_base64 <- function(value) {
 #' @param host Interface to bind. Use `"0.0.0.0"` for remote access.
 #' @param port Port to listen on.
 #' @param jobs_dir Directory used to persist datasets, status and results.
-#' @param token Optional bearer token. If empty, requests are unauthenticated.
+#' @param token Optional bearer token. Defaults to no authentication.
 #' @return The plumber server result.
 #' @export
 ugPlotServer <- function(host = "127.0.0.1", port = 8080,
                          jobs_dir = ugplot_default_jobs_dir(),
-                         token = Sys.getenv("UGPLOT_SERVER_TOKEN", unset = "")) {
+                         token = "") {
   ugplot_assert_server_system_deps()
   if (!requireNamespace("plumber", quietly = TRUE)) {
     stop("Package 'plumber' is required to start ugPlotServer(). Run ugPlotInstallServerDeps().", call. = FALSE)

@@ -6,7 +6,7 @@ ugPlotServer(
   host = "127.0.0.1",
   port = 8080,
   jobs_dir = ugplot_default_jobs_dir(),
-  token = Sys.getenv("UGPLOT_SERVER_TOKEN", unset = "")
+  token = ""
 )
 }
 \arguments{
@@ -16,7 +16,7 @@ ugPlotServer(
 
 \item{jobs_dir}{Directory used to persist datasets, status and results.}
 
-\item{token}{Optional bearer token. If empty, requests are unauthenticated.}
+\item{token}{Optional bearer token. Defaults to no authentication.}
 }
 \value{
 The plumber server result.
