@@ -22,7 +22,7 @@ ugplot_remote_parse <- function(response) {
     message <- if (is.list(body) && !is.null(body$error)) body$error else httr::http_status(response)$message
     stop(message, call. = FALSE)
   }
-  httr::content(response, as = "parsed", simplifyVector = FALSE)
+  httr::content(response, as = "parsed", simplifyVector = TRUE)
 }
 
 ugplot_remote_create_job <- function(server_url, dataset, config, token = "") {
@@ -71,11 +71,14 @@ ugplot_remote_get_result <- function(server_url, job_id, token = "") {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/result-rds"), token)
   response <- httr::GET(request$url, request$headers)
   parsed <- ugplot_remote_parse(response)
-  if (is.null(parsed$content_base64)) {
+  content_base64 <- parsed$content_base64
+  content_base64 <- as.character(unlist(content_base64, use.names = FALSE))
+  content_base64 <- content_base64[nzchar(content_base64)]
+  if (length(content_base64) == 0) {
     stop("Remote result response did not include RDS content.", call. = FALSE)
   }
   result_file <- tempfile(fileext = ".rds")
-  raw_result <- base64enc::base64decode(parsed$content_base64)
+  raw_result <- base64enc::base64decode(content_base64[[1]])
   writeBin(raw_result, result_file)
   on.exit(unlink(result_file), add = TRUE)
   readRDS(result_file)
