@@ -57,8 +57,12 @@ ugplot_request_config <- function(req) {
 ugPlotServer <- function(host = "127.0.0.1", port = 8080,
                          jobs_dir = ugplot_default_jobs_dir(),
                          token = Sys.getenv("UGPLOT_SERVER_TOKEN", unset = "")) {
+  ugplot_assert_server_system_deps()
   if (!requireNamespace("plumber", quietly = TRUE)) {
-    stop("Package 'plumber' is required to start ugPlotServer().", call. = FALSE)
+    stop("Package 'plumber' is required to start ugPlotServer(). Run ugPlotInstallServerDeps().", call. = FALSE)
+  }
+  if (!requireNamespace("callr", quietly = TRUE)) {
+    stop("Package 'callr' is required to start background jobs. Run ugPlotInstallServerDeps().", call. = FALSE)
   }
 
   ugplot_ensure_dir(jobs_dir)

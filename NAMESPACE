@@ -1,4 +1,5 @@
 export("ugPlot")
+export("ugPlotInstallServerDeps")
 export("ugPlotServer")
 import("shiny", except=c(dataTableOutput, renderDataTable))
 import("shinyWidgets")

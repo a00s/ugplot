@@ -1,11 +1,3 @@
-ugplot_test_internal <- function(name) {
-  namespace <- tryCatch(asNamespace("ugplot"), error = function(e) NULL)
-  if (!is.null(namespace) && exists(name, envir = namespace, inherits = FALSE)) {
-    return(get(name, envir = namespace, inherits = FALSE))
-  }
-  get(name, inherits = TRUE)
-}
-
 test_that("job store creates and lists jobs", {
   jobs_dir <- tempfile("ugplot-jobs-")
   dataset <- data.frame(x = 1:3, y = c("a", "b", "c"))
