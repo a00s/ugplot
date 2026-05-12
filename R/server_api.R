@@ -8,6 +8,15 @@ ugplot_check_token <- function(req, token) {
 }
 
 ugplot_request_dataset <- function(req) {
+  json_body <- ugplot_request_json_body(req)
+  if (!is.null(json_body$dataset_rds_base64)) {
+    dataset <- ugplot_read_rds_base64(json_body$dataset_rds_base64)
+    if (!is.data.frame(dataset)) {
+      stop("Uploaded dataset must resolve to a data.frame.", call. = FALSE)
+    }
+    return(dataset)
+  }
+
   upload <- req$files$dataset %||% NULL
   if (!is.null(upload) && !is.null(upload$datapath)) {
     ext <- tolower(tools::file_ext(upload$name %||% upload$datapath))
@@ -25,6 +34,15 @@ ugplot_request_dataset <- function(req) {
 }
 
 ugplot_request_config <- function(req) {
+  json_body <- ugplot_request_json_body(req)
+  if (!is.null(json_body$config_rds_base64)) {
+    config <- ugplot_read_rds_base64(json_body$config_rds_base64)
+    if (!is.list(config)) {
+      stop("Uploaded config must resolve to a list.", call. = FALSE)
+    }
+    return(config)
+  }
+
   config_upload <- req$files$config %||% NULL
   if (!is.null(config_upload) && !is.null(config_upload$datapath)) {
     ext <- tolower(tools::file_ext(config_upload$name %||% config_upload$datapath))
@@ -41,6 +59,38 @@ ugplot_request_config <- function(req) {
     return(config)
   }
   list()
+}
+
+ugplot_request_json_body <- function(req) {
+  cached_body <- req$ugplot_json_body %||% NULL
+  if (!is.null(cached_body)) {
+    return(cached_body)
+  }
+  body <- req$postBody %||% ""
+  if (!nzchar(body)) {
+    req$ugplot_json_body <- list()
+    return(req$ugplot_json_body)
+  }
+  if (!requireNamespace("jsonlite", quietly = TRUE)) {
+    stop("Package 'jsonlite' is required to read JSON job submissions.", call. = FALSE)
+  }
+  parsed <- tryCatch(
+    jsonlite::fromJSON(body, simplifyVector = FALSE),
+    error = function(e) list()
+  )
+  if (!is.list(parsed)) {
+    parsed <- list()
+  }
+  req$ugplot_json_body <- parsed
+  parsed
+}
+
+ugplot_read_rds_base64 <- function(value) {
+  raw_value <- base64enc::base64decode(value)
+  tmp_file <- tempfile(fileext = ".rds")
+  on.exit(unlink(tmp_file), add = TRUE)
+  writeBin(raw_value, tmp_file)
+  readRDS(tmp_file)
 }
 
 #' Start a ugplot job server

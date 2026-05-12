@@ -35,11 +35,15 @@ ugplot_remote_create_job <- function(server_url, dataset, config, token = "") {
   response <- httr::POST(
     request$url,
     request$headers,
-    body = list(
-      dataset = httr::upload_file(dataset_file, type = "application/octet-stream"),
-      config = httr::upload_file(config_file, type = "application/octet-stream")
+    httr::content_type_json(),
+    body = jsonlite::toJSON(
+      list(
+        dataset_rds_base64 = base64enc::base64encode(dataset_file),
+        config_rds_base64 = base64enc::base64encode(config_file)
+      ),
+      auto_unbox = TRUE
     ),
-    encode = "multipart"
+    encode = "raw"
   )
   ugplot_remote_parse(response)
 }
