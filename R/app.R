@@ -734,6 +734,18 @@ ui <- fluidPage(
               div(class = "scrollable-table", div(id = "dynamic_machine_learning")),
               actionButton("uncheck_all_ml", "Uncheck all"),
               actionButton("check_all_ml", "Check all"),
+              radioButtons(
+                "ml_run_target",
+                "Run target",
+                choices = c("Local" = "local", "Remote server" = "remote"),
+                selected = "local",
+                inline = TRUE
+              ),
+              conditionalPanel(
+                condition = "input.ml_run_target == 'remote'",
+                textInput("remote_server_url", "Server URL", value = "http://127.0.0.1:8080"),
+                textInput("remote_server_token", "Token", value = Sys.getenv("UGPLOT_SERVER_TOKEN", unset = ""))
+              ),
               actionButton("play_search_best_model_caret", "RUN"),
               uiOutput("downloadModelUI"),
               tags$br(),
@@ -764,9 +776,6 @@ ui <- fluidPage(
         fluidRow(
           column(
             4,
-            textInput("remote_server_url", "Server URL", value = "http://127.0.0.1:8080"),
-            passwordInput("remote_server_token", "Token", value = Sys.getenv("UGPLOT_SERVER_TOKEN", unset = "")),
-            actionButton("remote_submit_job", "Send current ML job"),
             actionButton("remote_refresh_jobs", "Refresh jobs")
           ),
           column(
@@ -2968,22 +2977,27 @@ server <- function(input, output, session) {
     invisible(jobs)
   }
 
+  submit_remote_ml_job <- function() {
+    config <- build_remote_ml_config()
+    if (length(config$models) == 0) {
+      stop("Select at least one ML model before sending a remote job.", call. = FALSE)
+    }
+    started <- ugplot_remote_create_job(
+      server_url = input$remote_server_url,
+      dataset = current_remote_ml_dataset(),
+      config = config,
+      token = input$remote_server_token %||% ""
+    )
+    updateTextInput(session, "remote_job_id", value = started$id %||% "")
+    remote_job_status_text(paste("Remote job submitted:", started$id %||% "unknown"))
+    refresh_remote_jobs()
+    updateTabsetPanel(session, "tabs", selected = "JOBS")
+    invisible(started)
+  }
+
   observeEvent(input$remote_submit_job, {
     tryCatch({
-      config <- build_remote_ml_config()
-      if (length(config$models) == 0) {
-        stop("Select at least one ML model before sending a remote job.", call. = FALSE)
-      }
-      started <- ugplot_remote_create_job(
-        server_url = input$remote_server_url,
-        dataset = current_remote_ml_dataset(),
-        config = config,
-        token = input$remote_server_token %||% ""
-      )
-      updateTextInput(session, "remote_job_id", value = started$id %||% "")
-      remote_job_status_text(paste("Remote job submitted:", started$id %||% "unknown"))
-      refresh_remote_jobs()
-      updateTabsetPanel(session, "tabs", selected = "JOBS")
+      submit_remote_ml_job()
     }, error = function(e) {
       remote_job_status_text(paste("Remote submit failed:", conditionMessage(e)))
     })
@@ -3167,6 +3181,16 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$play_search_best_model_caret, {
+    if (identical(input$ml_run_target, "remote")) {
+      tryCatch({
+        submit_remote_ml_job()
+      }, error = function(e) {
+        remote_job_status_text(paste("Remote submit failed:", conditionMessage(e)))
+        updateTabsetPanel(session, "tabs", selected = "JOBS")
+      })
+      return(invisible(NULL))
+    }
+
     cpu_limit <- configured_cpu_limit()
     apply_runtime_thread_limit(cpu_limit)
     parallel_enabled <- isTRUE(input$config_parallel_cubist_models)
