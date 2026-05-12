@@ -193,6 +193,25 @@ options(shiny.maxRequestSize = 800 * 1024 * 1024)
   if (is.null(lhs)) rhs else lhs
 }
 
+source_local_helper_if_missing <- function(function_name, file_name) {
+  if (exists(function_name, mode = "function", inherits = TRUE)) {
+    return(invisible(TRUE))
+  }
+  candidate_paths <- c(
+    file.path("R", file_name),
+    file_name
+  )
+  for (candidate_path in candidate_paths) {
+    if (file.exists(candidate_path)) {
+      source(candidate_path, local = FALSE)
+      return(invisible(TRUE))
+    }
+  }
+  invisible(FALSE)
+}
+
+source_local_helper_if_missing("ugplot_remote_create_job", "remote_client.R")
+
 detect_total_cpus <- function() {
   cpu_count <- tryCatch(parallel::detectCores(logical = TRUE), error = function(e) NA_integer_)
   if (is.na(cpu_count) || cpu_count < 1) 1L else as.integer(cpu_count)
