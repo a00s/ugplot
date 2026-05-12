@@ -1,0 +1,188 @@
+ugplot_check_token <- function(req, token) {
+  if (!nzchar(token)) {
+    return(TRUE)
+  }
+  header_token <- req$HTTP_AUTHORIZATION %||% ""
+  header_token <- sub("^Bearer[[:space:]]+", "", header_token, ignore.case = TRUE)
+  identical(header_token, token)
+}
+
+ugplot_request_dataset <- function(req) {
+  json_body <- ugplot_request_json_body(req)
+  if (!is.null(json_body$dataset_rds_base64)) {
+    dataset <- ugplot_read_rds_base64(json_body$dataset_rds_base64)
+    if (!is.data.frame(dataset)) {
+      stop("Uploaded dataset must resolve to a data.frame.", call. = FALSE)
+    }
+    return(dataset)
+  }
+
+  upload <- req$files$dataset %||% NULL
+  if (!is.null(upload) && !is.null(upload$datapath)) {
+    ext <- tolower(tools::file_ext(upload$name %||% upload$datapath))
+    if (identical(ext, "rds")) {
+      dataset <- readRDS(upload$datapath)
+    } else {
+      dataset <- utils::read.csv(upload$datapath, stringsAsFactors = FALSE, check.names = FALSE)
+    }
+    if (!is.data.frame(dataset)) {
+      stop("Uploaded dataset must resolve to a data.frame.", call. = FALSE)
+    }
+    return(dataset)
+  }
+  stop("Upload a dataset file using multipart field 'dataset'.", call. = FALSE)
+}
+
+ugplot_request_config <- function(req) {
+  json_body <- ugplot_request_json_body(req)
+  if (!is.null(json_body$config_rds_base64)) {
+    config <- ugplot_read_rds_base64(json_body$config_rds_base64)
+    if (!is.list(config)) {
+      stop("Uploaded config must resolve to a list.", call. = FALSE)
+    }
+    return(config)
+  }
+
+  config_upload <- req$files$config %||% NULL
+  if (!is.null(config_upload) && !is.null(config_upload$datapath)) {
+    ext <- tolower(tools::file_ext(config_upload$name %||% config_upload$datapath))
+    if (identical(ext, "rds")) {
+      config <- readRDS(config_upload$datapath)
+    } else if (requireNamespace("jsonlite", quietly = TRUE)) {
+      config <- jsonlite::fromJSON(config_upload$datapath, simplifyVector = FALSE)
+    } else {
+      stop("Package 'jsonlite' is required to read JSON config uploads.", call. = FALSE)
+    }
+    if (!is.list(config)) {
+      stop("Uploaded config must resolve to a list.", call. = FALSE)
+    }
+    return(config)
+  }
+  list()
+}
+
+ugplot_request_json_body <- function(req) {
+  cached_body <- req$ugplot_json_body %||% NULL
+  if (!is.null(cached_body)) {
+    return(cached_body)
+  }
+  body <- req$postBody %||% ""
+  if (!nzchar(body)) {
+    req$ugplot_json_body <- list()
+    return(req$ugplot_json_body)
+  }
+  if (!requireNamespace("jsonlite", quietly = TRUE)) {
+    stop("Package 'jsonlite' is required to read JSON job submissions.", call. = FALSE)
+  }
+  parsed <- tryCatch(
+    jsonlite::fromJSON(body, simplifyVector = FALSE),
+    error = function(e) list()
+  )
+  if (!is.list(parsed)) {
+    parsed <- list()
+  }
+  req$ugplot_json_body <- parsed
+  parsed
+}
+
+ugplot_read_rds_base64 <- function(value) {
+  raw_value <- base64enc::base64decode(value)
+  tmp_file <- tempfile(fileext = ".rds")
+  on.exit(unlink(tmp_file), add = TRUE)
+  writeBin(raw_value, tmp_file)
+  readRDS(tmp_file)
+}
+
+#' Start a ugplot job server
+#'
+#' Starts an HTTP server that can receive datasets, run jobs in background R
+#' processes, report progress, and return completed results.
+#'
+#' @param host Interface to bind. Use `"0.0.0.0"` for remote access.
+#' @param port Port to listen on.
+#' @param jobs_dir Directory used to persist datasets, status and results.
+#' @param token Optional bearer token. Defaults to no authentication.
+#' @return The plumber server result.
+#' @export
+ugPlotServer <- function(host = "127.0.0.1", port = 8080,
+                         jobs_dir = ugplot_default_jobs_dir(),
+                         token = "") {
+  ugplot_assert_server_system_deps()
+  if (!requireNamespace("plumber", quietly = TRUE)) {
+    stop("Package 'plumber' is required to start ugPlotServer(). Run ugPlotInstallServerDeps().", call. = FALSE)
+  }
+  if (!requireNamespace("callr", quietly = TRUE)) {
+    stop("Package 'callr' is required to start background jobs. Run ugPlotInstallServerDeps().", call. = FALSE)
+  }
+
+  ugplot_ensure_dir(jobs_dir)
+  pr <- plumber::pr()
+
+  pr$filter("auth", function(req, res) {
+    if (!ugplot_check_token(req, token)) {
+      res$status <- 401
+      return(list(error = "Unauthorized"))
+    }
+    plumber::forward()
+  })
+
+  pr$handle("GET", "/health", function() {
+    list(status = "ok", jobs_dir = jobs_dir)
+  })
+
+  pr$handle("GET", "/jobs", function() {
+    ugplot_list_jobs(jobs_dir)
+  })
+
+  pr$handle("GET", "/jobs/<job_id>", function(job_id, res) {
+    tryCatch(
+      ugplot_read_job_status(job_id, jobs_dir),
+      error = function(e) {
+        res$status <- 404
+        list(error = conditionMessage(e))
+      }
+    )
+  })
+
+  pr$handle("POST", "/jobs", function(req, res) {
+    tryCatch({
+      dataset <- ugplot_request_dataset(req)
+      config <- ugplot_request_config(req)
+      started <- ugplot_start_background_job(dataset, config, jobs_dir)
+      res$status <- 202
+      started$job
+    }, error = function(e) {
+      res$status <- 400
+      list(error = conditionMessage(e))
+    })
+  })
+
+  pr$handle("GET", "/jobs/<job_id>/result", function(job_id, res) {
+    tryCatch(
+      ugplot_read_job_result(job_id, jobs_dir),
+      error = function(e) {
+        res$status <- 404
+        list(error = conditionMessage(e))
+      }
+    )
+  })
+
+  pr$handle("GET", "/jobs/<job_id>/result-rds", function(job_id, res) {
+    tryCatch({
+      status <- ugplot_read_job_status(job_id, jobs_dir)
+      result_path <- status$result_path
+      if (is.null(result_path) || !file.exists(result_path)) {
+        stop("Result is not available for job: ", job_id, call. = FALSE)
+      }
+      list(
+        filename = paste0("ugplot-job-", job_id, ".rds"),
+        content_base64 = base64enc::base64encode(result_path)
+      )
+    }, error = function(e) {
+      res$status <- 404
+      list(error = conditionMessage(e))
+    })
+  })
+
+  pr$run(host = host, port = port)
+}

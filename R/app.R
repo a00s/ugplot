@@ -193,6 +193,27 @@ options(shiny.maxRequestSize = 800 * 1024 * 1024)
   if (is.null(lhs)) rhs else lhs
 }
 
+source_local_helper <- function(file_name, function_name = NULL, always_reload = FALSE) {
+  if (!always_reload && !is.null(function_name) && exists(function_name, mode = "function", inherits = TRUE)) {
+    return(invisible(TRUE))
+  }
+  candidate_paths <- c(
+    file.path("R", file_name),
+    file_name
+  )
+  for (candidate_path in candidate_paths) {
+    if (file.exists(candidate_path)) {
+      source(candidate_path, local = FALSE)
+      return(invisible(TRUE))
+    }
+  }
+  invisible(FALSE)
+}
+
+source_local_helper("job_store.R", "ugplot_ensure_dir", always_reload = TRUE)
+source_local_helper("remote_client.R", "ugplot_remote_create_job", always_reload = TRUE)
+source_local_helper("remote_servers.R", "ugplot_read_remote_servers", always_reload = TRUE)
+
 detect_total_cpus <- function() {
   cpu_count <- tryCatch(parallel::detectCores(logical = TRUE), error = function(e) NA_integer_)
   if (is.na(cpu_count) || cpu_count < 1) 1L else as.integer(cpu_count)
@@ -715,6 +736,18 @@ ui <- fluidPage(
               div(class = "scrollable-table", div(id = "dynamic_machine_learning")),
               actionButton("uncheck_all_ml", "Uncheck all"),
               actionButton("check_all_ml", "Check all"),
+              radioButtons(
+                "ml_run_target",
+                "Run target",
+                choices = c("Local" = "local", "Remote server" = "remote"),
+                selected = "local",
+                inline = TRUE
+              ),
+              conditionalPanel(
+                condition = "input.ml_run_target == 'remote'",
+                selectInput("remote_server_name", "Remote server", choices = NULL),
+                textInput("remote_job_name", "Job name", value = "")
+              ),
               actionButton("play_search_best_model_caret", "RUN"),
               uiOutput("downloadModelUI"),
               tags$br(),
@@ -736,6 +769,27 @@ ui <- fluidPage(
             div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table_results_output")),
             verbatimTextOutput("ml_row_details"),
             div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("ml_table"))
+          )
+        )
+      )
+    ),
+    tabPanel("JOBS",
+      fluidPage(
+        fluidRow(
+          column(
+            4,
+            actionButton("remote_refresh_jobs", "Refresh jobs")
+          ),
+          column(
+            8,
+            tags$h4("Remote jobs"),
+            DT::DTOutput("remote_jobs_table"),
+            tags$div(style = "display: flex; gap: 8px; align-items: center; flex-wrap: wrap;",
+              textInput("remote_job_id", "Job ID", value = "", width = "360px"),
+              actionButton("remote_load_result", "Load result locally"),
+              downloadButton("downloadRemoteJobResult", "Download result (RDS)")
+            ),
+            verbatimTextOutput("remote_job_status")
           )
         )
       )
@@ -886,6 +940,23 @@ ui <- fluidPage(
           )
         ),
         tags$hr(),
+        tags$h4("Remote servers"),
+        fluidRow(
+          column(
+            4,
+            selectInput("config_remote_existing", "Configured servers", choices = NULL),
+            textInput("config_remote_name", "Server name", value = ""),
+            textInput("config_remote_url", "Server URL", value = "http://127.0.0.1:8080"),
+            textInput("config_remote_token", "Token", value = ""),
+            actionButton("config_remote_save", "Save server"),
+            actionButton("config_remote_remove", "Remove server")
+          ),
+          column(
+            8,
+            DT::DTOutput("config_remote_servers_table")
+          )
+        ),
+        tags$hr(),
         checkboxInput(
           "config_parallel_cubist_models",
           "Use parallel processing",
@@ -963,6 +1034,7 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   showTab(inputId = "tabs", target = "MODEL ANALYSIS")
   showTab(inputId = "tabs", target = "DEEP LEARNING")
   showTab(inputId = "tabs", target = "GRAPH MODELS")
+  showTab(inputId = "tabs", target = "JOBS")
   showTab(inputId = "tabs", target = "CONFIGURATIONS")
 }
 
@@ -1387,6 +1459,7 @@ load_dataset_into_table <- function(localsession) {
     showTab(inputId = "tabs", target = "MODEL ANALYSIS")
     showTab(inputId = "tabs", target = "DEEP LEARNING")
     showTab(inputId = "tabs", target = "GRAPH MODELS")
+    showTab(inputId = "tabs", target = "JOBS")
     showTab(inputId = "tabs", target = "CONFIGURATIONS")
   }
 }
@@ -1435,6 +1508,7 @@ ugPlot <- function(dataset = data.frame()) {
 server <- function(input, output, session) {
   # Define reactive to store the loaded model
   loaded_model <- reactiveVal(NULL)
+  remote_servers <- reactiveVal(ugplot_read_remote_servers())
 
   hideTab(inputId = "tabs", target = "TABLE")
   hideTab(inputId = "tabs", target = "HEATMAP PLOT")
@@ -1479,6 +1553,80 @@ server <- function(input, output, session) {
     )
   })
 
+  remote_server_choices <- function() {
+    servers <- remote_servers()
+    if (!is.data.frame(servers) || nrow(servers) == 0) {
+      servers <- ugplot_default_remote_servers()
+    }
+    stats::setNames(servers$name, servers$name)
+  }
+
+  selected_remote_server <- function() {
+    servers <- remote_servers()
+    if (!is.data.frame(servers) || nrow(servers) == 0) {
+      servers <- ugplot_default_remote_servers()
+    }
+    selected_name <- input$remote_server_name %||% servers$name[[1]]
+    server <- servers[servers$name == selected_name, , drop = FALSE]
+    if (nrow(server) == 0) {
+      server <- servers[1, , drop = FALSE]
+    }
+    server
+  }
+
+  refresh_remote_server_inputs <- function(selected = NULL) {
+    servers <- remote_servers()
+    if (!is.data.frame(servers) || nrow(servers) == 0) {
+      servers <- ugplot_default_remote_servers()
+      remote_servers(servers)
+    }
+    choices <- stats::setNames(servers$name, servers$name)
+    selected <- selected %||% isolate(input$remote_server_name) %||% servers$name[[1]]
+    if (!(selected %in% servers$name)) {
+      selected <- servers$name[[1]]
+    }
+    updateSelectInput(session, "remote_server_name", choices = choices, selected = selected)
+    updateSelectInput(session, "config_remote_existing", choices = choices, selected = selected)
+  }
+
+  observe({
+    refresh_remote_server_inputs()
+  })
+
+  observeEvent(input$config_remote_existing, {
+    servers <- remote_servers()
+    server <- servers[servers$name == input$config_remote_existing, , drop = FALSE]
+    if (nrow(server) == 1) {
+      updateTextInput(session, "config_remote_name", value = server$name)
+      updateTextInput(session, "config_remote_url", value = server$url)
+      updateTextInput(session, "config_remote_token", value = server$token)
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$config_remote_save, {
+    tryCatch({
+      servers <- ugplot_upsert_remote_server(
+        name = input$config_remote_name,
+        url = input$config_remote_url,
+        token = input$config_remote_token %||% ""
+      )
+      remote_servers(servers)
+      refresh_remote_server_inputs(input$config_remote_name)
+    }, error = function(e) {
+      showModal(modalDialog(title = "Remote server error", e$message, easyClose = TRUE))
+    })
+  })
+
+  observeEvent(input$config_remote_remove, {
+    servers <- ugplot_remove_remote_server(input$config_remote_existing)
+    remote_servers(servers)
+    refresh_remote_server_inputs()
+  })
+
+  output$config_remote_servers_table <- DT::renderDT({
+    DT::datatable(remote_servers(), options = list(pageLength = 5, scrollX = TRUE), rownames = FALSE)
+  })
+
   ml_data_table <- reactiveVal(data.frame())
   ml_table_results <- reactiveVal(data.frame())
   ml_final_summary <- reactiveVal(NULL)
@@ -1495,6 +1643,9 @@ server <- function(input, output, session) {
   table_message_text <- reactiveVal("")
   table_cleaning_message_text <<- reactiveVal("")
   ml_error_message_text <- reactiveVal("")
+  remote_jobs <- reactiveVal(data.frame())
+  remote_job_status_text <- reactiveVal("")
+  remote_result_cache <- reactiveVal(NULL)
 
   defaultpalette <- reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
   transpose_table2 <- reactiveVal(0)
@@ -1595,6 +1746,26 @@ server <- function(input, output, session) {
       )
     }
   })
+
+  output$downloadRemoteJobResult <- downloadHandler(
+    filename = function() {
+      job_id <- input$remote_job_id %||% "job"
+      paste0("ugplot-remote-job-", job_id, ".rds")
+    },
+    content = function(file) {
+      result <- remote_result_cache()
+      if (is.null(result)) {
+        req(nzchar(input$remote_job_id %||% ""))
+        server <- selected_remote_server()
+        result <- ugplot_remote_get_result(
+          server_url = server$url,
+          job_id = input$remote_job_id,
+          token = server$token %||% ""
+        )
+      }
+      saveRDS(result, file)
+    }
+  )
 
   output$downloadMissingScanBestDataset <- downloadHandler(
     filename = function() {
@@ -2854,6 +3025,164 @@ server <- function(input, output, session) {
       rownames = FALSE)
   })
 
+  build_remote_ml_config <- function() {
+    req(input$ml_target)
+    list(
+      runner = "ugplot_run_ml_job",
+      job_name = input$remote_job_name %||% "",
+      target = input$ml_target,
+      category_columns = input$checkbox_group_categories %||% character(0),
+      models = input$ml_checkbox_group %||% character(0),
+      dataset_seed_start = input$ml_dataset_seedi %||% 1,
+      dataset_seed_end = input$ml_dataset_seedf %||% 1,
+      training_seed_start = input$ml_seedi %||% 1,
+      training_seed_end = input$ml_seedf %||% 1,
+      timeout = input$ml_timeout %||% 1200,
+      missing_definition = input$ml_missing_definition %||% c("empty", "na"),
+      zero_exceptions = input$ml_zero_exceptions %||% character(0),
+      missing_strategy = input$ml_missing_strategy %||% "none",
+      imputation_scope = input$ml_imputation_scope %||% "split_separate",
+      missing_threshold_cols = input$ml_missing_threshold_cols %||% 100,
+      missing_threshold_rows = input$ml_missing_threshold_rows %||% 100,
+      performance_mode = input$ml_performance_mode %||% "default",
+      cv_method = input$ml_cv_method %||% "cv",
+      cv_folds = input$ml_cv_folds %||% 10,
+      cv_repeats = input$ml_cv_repeats %||% 1,
+      tune_length = input$ml_tune_length %||% 3,
+      cpu_limit = configured_cpu_limit(),
+      parallel_enabled = isTRUE(input$config_parallel_cubist_models),
+      restart_parallel_each_model = isTRUE(input$config_restart_parallel_each_model),
+      retry_parallel_connection_errors = isTRUE(input$config_retry_parallel_connection_errors)
+    )
+  }
+
+  current_remote_ml_dataset <- function() {
+    req(is.data.frame(changed_table), nrow(changed_table) > 0)
+    selected_rows <- input$row_checkbox_group %||% rownames(changed_table)
+    selected_columns <- input$column_checkbox_group %||% names(changed_table)
+    req(input$ml_target %in% selected_columns)
+    changed_table[selected_rows, selected_columns, drop = FALSE]
+  }
+
+  refresh_remote_jobs <- function() {
+    server <- selected_remote_server()
+    jobs <- ugplot_remote_list_jobs(
+      server_url = server$url,
+      token = server$token %||% ""
+    )
+    remote_jobs(jobs)
+    invisible(jobs)
+  }
+
+  submit_remote_ml_job <- function() {
+    config <- build_remote_ml_config()
+    if (length(config$models) == 0) {
+      stop("Select at least one ML model before sending a remote job.", call. = FALSE)
+    }
+    server <- selected_remote_server()
+    started <- ugplot_remote_create_job(
+      server_url = server$url,
+      dataset = current_remote_ml_dataset(),
+      config = config,
+      token = server$token %||% ""
+    )
+    updateTextInput(session, "remote_job_id", value = started$id %||% "")
+    remote_job_status_text(paste("Remote job submitted:", started$id %||% "unknown"))
+    refresh_remote_jobs()
+    updateTabsetPanel(session, "tabs", selected = "JOBS")
+    invisible(started)
+  }
+
+  observeEvent(input$remote_submit_job, {
+    tryCatch({
+      submit_remote_ml_job()
+    }, error = function(e) {
+      remote_job_status_text(paste("Remote submit failed:", conditionMessage(e)))
+    })
+  })
+
+  observeEvent(input$remote_refresh_jobs, {
+    tryCatch({
+      refresh_remote_jobs()
+      remote_job_status_text("Remote jobs refreshed.")
+    }, error = function(e) {
+      remote_job_status_text(paste("Remote refresh failed:", conditionMessage(e)))
+    })
+  })
+
+  output$remote_jobs_table <- DT::renderDT({
+    jobs <- remote_jobs()
+    if (!is.data.frame(jobs)) {
+      jobs <- data.frame()
+    }
+    DT::datatable(
+      jobs,
+      options = list(pageLength = 8, scrollX = TRUE),
+      rownames = FALSE,
+      selection = "single"
+    )
+  })
+
+  observeEvent(input$remote_jobs_table_rows_selected, {
+    selected <- input$remote_jobs_table_rows_selected
+    jobs <- remote_jobs()
+    if (length(selected) == 1 && is.data.frame(jobs) && nrow(jobs) >= selected && "id" %in% names(jobs)) {
+      updateTextInput(session, "remote_job_id", value = jobs$id[[selected]])
+    }
+  })
+
+  observeEvent(input$remote_job_id, {
+    if (!nzchar(input$remote_job_id %||% "")) {
+      return()
+    }
+    tryCatch({
+      server <- selected_remote_server()
+      status <- ugplot_remote_job_status(
+        server_url = server$url,
+        job_id = input$remote_job_id,
+        token = server$token %||% ""
+      )
+      remote_job_status_text(capture.output(str(status)))
+    }, error = function(e) {
+      remote_job_status_text(paste("Remote status failed:", conditionMessage(e)))
+    })
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$remote_load_result, {
+    tryCatch({
+      req(nzchar(input$remote_job_id %||% ""))
+      server <- selected_remote_server()
+      result <- ugplot_remote_get_result(
+        server_url = server$url,
+        job_id = input$remote_job_id,
+        token = server$token %||% ""
+      )
+      remote_result_cache(result)
+      if (is.data.frame(result$results_table)) {
+        ml_table_results(result$results_table)
+      }
+      if (is.list(result$final_summary)) {
+        ml_final_summary(result$final_summary)
+      }
+      best_model_object(result$best_model %||% NULL)
+      best_model_preprocess(result$best_model_preprocess %||% NULL)
+      if (!is.null(result$best_model) && nzchar(result$best_model_name %||% "")) {
+        all_models_reactive(stats::setNames(list(result$best_model), result$best_model_name))
+      }
+      if (is.list(result$predictions)) {
+        ml_prediction <<- result$predictions
+      }
+      remote_job_status_text(paste("Remote result loaded locally:", input$remote_job_id))
+      updateTabsetPanel(session, "tabs", selected = "MACHINE LEARNING")
+    }, error = function(e) {
+      remote_job_status_text(paste("Remote result load failed:", conditionMessage(e)))
+    })
+  })
+
+  output$remote_job_status <- renderText({
+    remote_job_status_text()
+  })
+
   observeEvent(input$uncheck_all_ml, {
     updateCheckboxGroupInput(session, inputId = "ml_checkbox_group", selected = character(0))
   })
@@ -2952,6 +3281,16 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$play_search_best_model_caret, {
+    if (identical(input$ml_run_target, "remote")) {
+      tryCatch({
+        submit_remote_ml_job()
+      }, error = function(e) {
+        remote_job_status_text(paste("Remote submit failed:", conditionMessage(e)))
+        updateTabsetPanel(session, "tabs", selected = "JOBS")
+      })
+      return(invisible(NULL))
+    }
+
     cpu_limit <- configured_cpu_limit()
     apply_runtime_thread_limit(cpu_limit)
     parallel_enabled <- isTRUE(input$config_parallel_cubist_models)
