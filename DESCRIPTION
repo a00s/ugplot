@@ -41,6 +41,12 @@ Imports:
     R.utils,
     ConsensusClusterPlus,
     gam
+Suggests:
+    callr,
+    jsonlite,
+    plumber,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
 URL: https://github.com/a00s/ugplot
 BugReports: https://github.com/a00s/ugplot/issues
 RoxygenNote: 7.3.2
