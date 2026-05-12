@@ -73,6 +73,7 @@ ugplot_create_job <- function(dataset, config = list(), jobs_dir = ugplot_defaul
 
   status <- list(
     id = job_id,
+    name = config$job_name %||% "",
     type = type,
     state = "queued",
     progress = 0,
@@ -126,6 +127,7 @@ ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir()) {
   rows <- lapply(statuses, function(status) {
     data.frame(
       id = status$id %||% NA_character_,
+      name = status$name %||% NA_character_,
       type = status$type %||% NA_character_,
       state = status$state %||% NA_character_,
       progress = status$progress %||% NA_real_,

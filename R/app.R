@@ -210,7 +210,9 @@ source_local_helper <- function(file_name, function_name = NULL, always_reload =
   invisible(FALSE)
 }
 
+source_local_helper("job_store.R", "ugplot_ensure_dir", always_reload = TRUE)
 source_local_helper("remote_client.R", "ugplot_remote_create_job", always_reload = TRUE)
+source_local_helper("remote_servers.R", "ugplot_read_remote_servers", always_reload = TRUE)
 
 detect_total_cpus <- function() {
   cpu_count <- tryCatch(parallel::detectCores(logical = TRUE), error = function(e) NA_integer_)
@@ -743,8 +745,8 @@ ui <- fluidPage(
               ),
               conditionalPanel(
                 condition = "input.ml_run_target == 'remote'",
-                textInput("remote_server_url", "Server URL", value = "http://127.0.0.1:8080"),
-                textInput("remote_server_token", "Token", value = "")
+                selectInput("remote_server_name", "Remote server", choices = NULL),
+                textInput("remote_job_name", "Job name", value = "")
               ),
               actionButton("play_search_best_model_caret", "RUN"),
               uiOutput("downloadModelUI"),
@@ -935,6 +937,23 @@ ui <- fluidPage(
               step = 1
             ),
             textOutput("config_cpu_summary")
+          )
+        ),
+        tags$hr(),
+        tags$h4("Remote servers"),
+        fluidRow(
+          column(
+            4,
+            selectInput("config_remote_existing", "Configured servers", choices = NULL),
+            textInput("config_remote_name", "Server name", value = ""),
+            textInput("config_remote_url", "Server URL", value = "http://127.0.0.1:8080"),
+            textInput("config_remote_token", "Token", value = ""),
+            actionButton("config_remote_save", "Save server"),
+            actionButton("config_remote_remove", "Remove server")
+          ),
+          column(
+            8,
+            DT::DTOutput("config_remote_servers_table")
           )
         ),
         tags$hr(),
@@ -1489,6 +1508,7 @@ ugPlot <- function(dataset = data.frame()) {
 server <- function(input, output, session) {
   # Define reactive to store the loaded model
   loaded_model <- reactiveVal(NULL)
+  remote_servers <- reactiveVal(ugplot_read_remote_servers())
 
   hideTab(inputId = "tabs", target = "TABLE")
   hideTab(inputId = "tabs", target = "HEATMAP PLOT")
@@ -1531,6 +1551,80 @@ server <- function(input, output, session) {
       "Parallel jobs will use up to ", configured_cpu_limit(), " of ",
       total_system_cpus, " CPU threads."
     )
+  })
+
+  remote_server_choices <- function() {
+    servers <- remote_servers()
+    if (!is.data.frame(servers) || nrow(servers) == 0) {
+      servers <- ugplot_default_remote_servers()
+    }
+    stats::setNames(servers$name, servers$name)
+  }
+
+  selected_remote_server <- function() {
+    servers <- remote_servers()
+    if (!is.data.frame(servers) || nrow(servers) == 0) {
+      servers <- ugplot_default_remote_servers()
+    }
+    selected_name <- input$remote_server_name %||% servers$name[[1]]
+    server <- servers[servers$name == selected_name, , drop = FALSE]
+    if (nrow(server) == 0) {
+      server <- servers[1, , drop = FALSE]
+    }
+    server
+  }
+
+  refresh_remote_server_inputs <- function(selected = NULL) {
+    servers <- remote_servers()
+    if (!is.data.frame(servers) || nrow(servers) == 0) {
+      servers <- ugplot_default_remote_servers()
+      remote_servers(servers)
+    }
+    choices <- stats::setNames(servers$name, servers$name)
+    selected <- selected %||% isolate(input$remote_server_name) %||% servers$name[[1]]
+    if (!(selected %in% servers$name)) {
+      selected <- servers$name[[1]]
+    }
+    updateSelectInput(session, "remote_server_name", choices = choices, selected = selected)
+    updateSelectInput(session, "config_remote_existing", choices = choices, selected = selected)
+  }
+
+  observe({
+    refresh_remote_server_inputs()
+  })
+
+  observeEvent(input$config_remote_existing, {
+    servers <- remote_servers()
+    server <- servers[servers$name == input$config_remote_existing, , drop = FALSE]
+    if (nrow(server) == 1) {
+      updateTextInput(session, "config_remote_name", value = server$name)
+      updateTextInput(session, "config_remote_url", value = server$url)
+      updateTextInput(session, "config_remote_token", value = server$token)
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$config_remote_save, {
+    tryCatch({
+      servers <- ugplot_upsert_remote_server(
+        name = input$config_remote_name,
+        url = input$config_remote_url,
+        token = input$config_remote_token %||% ""
+      )
+      remote_servers(servers)
+      refresh_remote_server_inputs(input$config_remote_name)
+    }, error = function(e) {
+      showModal(modalDialog(title = "Remote server error", e$message, easyClose = TRUE))
+    })
+  })
+
+  observeEvent(input$config_remote_remove, {
+    servers <- ugplot_remove_remote_server(input$config_remote_existing)
+    remote_servers(servers)
+    refresh_remote_server_inputs()
+  })
+
+  output$config_remote_servers_table <- DT::renderDT({
+    DT::datatable(remote_servers(), options = list(pageLength = 5, scrollX = TRUE), rownames = FALSE)
   })
 
   ml_data_table <- reactiveVal(data.frame())
@@ -1662,10 +1756,11 @@ server <- function(input, output, session) {
       result <- remote_result_cache()
       if (is.null(result)) {
         req(nzchar(input$remote_job_id %||% ""))
+        server <- selected_remote_server()
         result <- ugplot_remote_get_result(
-          server_url = input$remote_server_url,
+          server_url = server$url,
           job_id = input$remote_job_id,
-          token = input$remote_server_token %||% ""
+          token = server$token %||% ""
         )
       }
       saveRDS(result, file)
@@ -2934,6 +3029,7 @@ server <- function(input, output, session) {
     req(input$ml_target)
     list(
       runner = "ugplot_run_ml_job",
+      job_name = input$remote_job_name %||% "",
       target = input$ml_target,
       category_columns = input$checkbox_group_categories %||% character(0),
       models = input$ml_checkbox_group %||% character(0),
@@ -2969,9 +3065,10 @@ server <- function(input, output, session) {
   }
 
   refresh_remote_jobs <- function() {
+    server <- selected_remote_server()
     jobs <- ugplot_remote_list_jobs(
-      server_url = input$remote_server_url,
-      token = input$remote_server_token %||% ""
+      server_url = server$url,
+      token = server$token %||% ""
     )
     remote_jobs(jobs)
     invisible(jobs)
@@ -2982,11 +3079,12 @@ server <- function(input, output, session) {
     if (length(config$models) == 0) {
       stop("Select at least one ML model before sending a remote job.", call. = FALSE)
     }
+    server <- selected_remote_server()
     started <- ugplot_remote_create_job(
-      server_url = input$remote_server_url,
+      server_url = server$url,
       dataset = current_remote_ml_dataset(),
       config = config,
-      token = input$remote_server_token %||% ""
+      token = server$token %||% ""
     )
     updateTextInput(session, "remote_job_id", value = started$id %||% "")
     remote_job_status_text(paste("Remote job submitted:", started$id %||% "unknown"))
@@ -3038,10 +3136,11 @@ server <- function(input, output, session) {
       return()
     }
     tryCatch({
+      server <- selected_remote_server()
       status <- ugplot_remote_job_status(
-        server_url = input$remote_server_url,
+        server_url = server$url,
         job_id = input$remote_job_id,
-        token = input$remote_server_token %||% ""
+        token = server$token %||% ""
       )
       remote_job_status_text(capture.output(str(status)))
     }, error = function(e) {
@@ -3052,10 +3151,11 @@ server <- function(input, output, session) {
   observeEvent(input$remote_load_result, {
     tryCatch({
       req(nzchar(input$remote_job_id %||% ""))
+      server <- selected_remote_server()
       result <- ugplot_remote_get_result(
-        server_url = input$remote_server_url,
+        server_url = server$url,
         job_id = input$remote_job_id,
-        token = input$remote_server_token %||% ""
+        token = server$token %||% ""
       )
       remote_result_cache(result)
       if (is.data.frame(result$results_table)) {
