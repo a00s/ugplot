@@ -117,5 +117,22 @@ ugPlotServer <- function(host = "127.0.0.1", port = 8080,
     )
   })
 
+  pr$handle("GET", "/jobs/<job_id>/result-rds", function(job_id, res) {
+    tryCatch({
+      status <- ugplot_read_job_status(job_id, jobs_dir)
+      result_path <- status$result_path
+      if (is.null(result_path) || !file.exists(result_path)) {
+        stop("Result is not available for job: ", job_id, call. = FALSE)
+      }
+      list(
+        filename = paste0("ugplot-job-", job_id, ".rds"),
+        content_base64 = base64enc::base64encode(result_path)
+      )
+    }, error = function(e) {
+      res$status <- 404
+      list(error = conditionMessage(e))
+    })
+  })
+
   pr$run(host = host, port = port)
 }

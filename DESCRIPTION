@@ -43,6 +43,7 @@ Imports:
     gam
 Suggests:
     callr,
+    httr,
     jsonlite,
     plumber,
     testthat (>= 3.0.0)

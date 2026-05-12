@@ -1,5 +1,5 @@
 ugplot_server_r_packages <- function() {
-  c("callr", "jsonlite", "plumber")
+  c("callr", "httr", "jsonlite", "plumber")
 }
 
 ugplot_command_exists <- function(command) {

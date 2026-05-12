@@ -1,6 +1,6 @@
 test_that("server dependency helper reports R package names", {
   packages <- ugplot_test_internal("ugplot_server_r_packages")()
-  expect_true(all(c("callr", "jsonlite", "plumber") %in% packages))
+  expect_true(all(c("callr", "httr", "jsonlite", "plumber") %in% packages))
 })
 
 test_that("system dependency commands are available", {
