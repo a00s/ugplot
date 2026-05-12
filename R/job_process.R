@@ -85,13 +85,45 @@ ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugp
   }
   status <- ugplot_create_job(dataset = dataset, config = config, jobs_dir = jobs_dir)
   lib_paths <- .libPaths()
+  source_dir <- if (file.exists(file.path(getwd(), "R", "app.R"))) normalizePath(getwd(), mustWork = FALSE) else NULL
   process <- callr::r_bg(
-    func = function(job_id, jobs_dir, lib_paths) {
+    func = function(job_id, jobs_dir, lib_paths, source_dir) {
+      mark_startup_failed <- function(message) {
+        status_path <- file.path(jobs_dir, job_id, "status.rds")
+        if (file.exists(status_path)) {
+          status <- readRDS(status_path)
+          status$state <- "failed"
+          status$message <- "Failed"
+          status$error <- message
+          status$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+          saveRDS(status, status_path)
+        }
+        log_path <- file.path(jobs_dir, job_id, "log.txt")
+        cat(
+          paste0(format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"), " Startup failed: ", message, "\n"),
+          file = log_path,
+          append = TRUE
+        )
+      }
+
       .libPaths(lib_paths)
-      library(ugplot)
-      get("ugplot_run_job_from_dir", envir = asNamespace("ugplot"))(job_id, jobs_dir)
+      tryCatch({
+        if (!is.null(source_dir) && file.exists(file.path(source_dir, "R", "app.R"))) {
+          source(file.path(source_dir, "R", "app.R"), local = .GlobalEnv)
+          source(file.path(source_dir, "R", "job_store.R"), local = .GlobalEnv)
+          source(file.path(source_dir, "R", "ml_runner.R"), local = .GlobalEnv)
+          source(file.path(source_dir, "R", "job_process.R"), local = .GlobalEnv)
+          ugplot_run_job_from_dir(job_id, jobs_dir)
+        } else {
+          library(ugplot)
+          get("ugplot_run_job_from_dir", envir = asNamespace("ugplot"))(job_id, jobs_dir)
+        }
+      }, error = function(e) {
+        mark_startup_failed(conditionMessage(e))
+        stop(e)
+      })
     },
-    args = list(job_id = status$id, jobs_dir = jobs_dir, lib_paths = lib_paths),
+    args = list(job_id = status$id, jobs_dir = jobs_dir, lib_paths = lib_paths, source_dir = source_dir),
     supervise = TRUE
   )
   ugplot_update_job_status(
