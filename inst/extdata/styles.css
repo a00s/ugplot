@@ -428,3 +428,32 @@ table.dataTable th.dt-error-column {
   margin: 0;
   color: #6a4a00;
 }
+
+.section-title {
+  margin-bottom: 12px;
+}
+
+.jobs-toolbar,
+.remote-server-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+
+.jobs-toolbar .form-group {
+  margin-bottom: 0;
+}
+
+.remote-server-action {
+  margin-right: 6px;
+}
+
+.remote-server-actions {
+  white-space: nowrap;
+}
+
+.remote-server-remove {
+  color: #b23b3b;
+}

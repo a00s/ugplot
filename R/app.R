@@ -839,18 +839,15 @@ ui <- fluidPage(
     ),
     tabPanel("JOBS",
       fluidPage(
+        tags$h4("Remote jobs", class = "section-title"),
         tags$div(
-          style = "display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;",
-          tags$h4("Remote jobs", style = "margin: 0;"),
-          actionButton("remote_refresh_jobs", "Refresh jobs")
-        ),
-        DT::DTOutput("remote_jobs_table"),
-        tags$div(
-          style = "display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px;",
+          class = "jobs-toolbar",
+          actionButton("remote_refresh_jobs", "Refresh jobs", icon = icon("refresh")),
           textInput("remote_job_id", "Job ID", value = "", width = "360px"),
           actionButton("remote_load_result", "Load result locally"),
           downloadButton("downloadRemoteJobResult", "Download result (RDS)")
         ),
+        DT::DTOutput("remote_jobs_table"),
         verbatimTextOutput("remote_job_status")
       )
     ),
@@ -1001,21 +998,11 @@ ui <- fluidPage(
         ),
         tags$hr(),
         tags$h4("Remote servers"),
-        fluidRow(
-          column(
-            4,
-            selectInput("config_remote_existing", "Configured servers", choices = NULL),
-            textInput("config_remote_name", "Server name", value = ""),
-            textInput("config_remote_url", "Server URL", value = "http://127.0.0.1:8080"),
-            textInput("config_remote_token", "Token", value = ""),
-            actionButton("config_remote_save", "Save server"),
-            actionButton("config_remote_remove", "Remove server")
-          ),
-          column(
-            8,
-            DT::DTOutput("config_remote_servers_table")
-          )
+        tags$div(
+          class = "remote-server-toolbar",
+          actionButton("config_remote_add", "Add server", icon = icon("plus"))
         ),
+        DT::DTOutput("config_remote_servers_table"),
         tags$hr(),
         checkboxInput(
           "config_parallel_cubist_models",
@@ -1560,6 +1547,7 @@ server <- function(input, output, session) {
   # Define reactive to store the loaded model
   loaded_model <- reactiveVal(NULL)
   remote_servers <- reactiveVal(ugplot_read_remote_servers())
+  config_remote_editing_name <- reactiveVal(NULL)
 
   hideTab(inputId = "tabs", target = "TABLE")
   hideTab(inputId = "tabs", target = "HEATMAP PLOT")
@@ -1637,25 +1625,109 @@ server <- function(input, output, session) {
       selected <- servers$name[[1]]
     }
     updateSelectInput(session, "remote_server_name", choices = choices, selected = selected)
-    updateSelectInput(session, "config_remote_existing", choices = choices, selected = selected)
   }
 
   observe({
     refresh_remote_server_inputs()
   })
 
-  observeEvent(input$config_remote_existing, {
-    servers <- remote_servers()
-    server <- servers[servers$name == input$config_remote_existing, , drop = FALSE]
-    if (nrow(server) == 1) {
-      updateTextInput(session, "config_remote_name", value = server$name)
-      updateTextInput(session, "config_remote_url", value = server$url)
-      updateTextInput(session, "config_remote_token", value = server$token)
+  show_remote_server_modal <- function(server = NULL) {
+    is_edit <- is.data.frame(server) && nrow(server) == 1
+    config_remote_editing_name(if (is_edit) server$name[[1]] else NULL)
+    showModal(modalDialog(
+      title = if (is_edit) "Edit remote server" else "Add remote server",
+      textInput("config_remote_name", "Server name", value = if (is_edit) server$name[[1]] else ""),
+      textInput("config_remote_url", "Server URL", value = if (is_edit) server$url[[1]] else "http://127.0.0.1:8080"),
+      passwordInput("config_remote_token", "Token", value = if (is_edit) server$token[[1]] else ""),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("config_remote_save", if (is_edit) "Save changes" else "Add server", icon = icon("save"))
+      ),
+      easyClose = TRUE
+    ))
+  }
+
+  remote_server_action_button <- function(action, name, label, icon_name, class_name) {
+    if (!requireNamespace("jsonlite", quietly = TRUE)) {
+      return("")
     }
-  }, ignoreInit = TRUE)
+    payload <- jsonlite::toJSON(
+      list(action = action, name = name),
+      auto_unbox = TRUE
+    )
+    payload <- htmltools::htmlEscape(payload, attribute = TRUE)
+    sprintf(
+      paste0(
+        "<button type=\"button\" class=\"btn btn-default btn-sm remote-server-action %s\" ",
+        "onclick=\"Shiny.setInputValue('config_remote_action', Object.assign(%s, {nonce: Math.random()}), {priority: 'event'})\">",
+        "<i class=\"fa fa-%s\"></i> %s</button>"
+      ),
+      class_name,
+      payload,
+      icon_name,
+      label
+    )
+  }
+
+  remote_servers_table_data <- function() {
+    servers <- remote_servers()
+    if (!is.data.frame(servers) || nrow(servers) == 0) {
+      servers <- data.frame(name = character(0), url = character(0), token = character(0), stringsAsFactors = FALSE)
+    }
+    token_status <- ifelse(nzchar(servers$token %||% ""), "Set", "")
+    actions <- vapply(servers$name, function(server_name) {
+      paste(
+        remote_server_action_button("edit", server_name, "Edit", "pencil", "remote-server-edit"),
+        remote_server_action_button("remove", server_name, "Remove", "trash", "remote-server-remove")
+      )
+    }, character(1))
+    data.frame(
+      name = servers$name,
+      url = servers$url,
+      token = token_status,
+      actions = actions,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+  }
+
+  observeEvent(input$config_remote_add, {
+    show_remote_server_modal()
+  })
+
+  observeEvent(input$config_remote_action, {
+    action <- input$config_remote_action$action %||% ""
+    server_name <- input$config_remote_action$name %||% ""
+    servers <- remote_servers()
+    server <- servers[servers$name == server_name, , drop = FALSE]
+    if (nrow(server) != 1) {
+      showModal(modalDialog(title = "Remote server error", "Server not found.", easyClose = TRUE))
+      return()
+    }
+    if (identical(action, "edit")) {
+      show_remote_server_modal(server)
+      return()
+    }
+    if (identical(action, "remove")) {
+      showModal(modalDialog(
+        title = "Remove remote server",
+        paste("Remove", server_name, "from configured servers?"),
+        footer = tagList(
+          modalButton("Cancel"),
+          actionButton("config_remote_confirm_remove", "Remove", icon = icon("trash"), class = "btn-danger")
+        ),
+        easyClose = TRUE
+      ))
+      config_remote_editing_name(server_name)
+    }
+  })
 
   observeEvent(input$config_remote_save, {
     tryCatch({
+      previous_name <- config_remote_editing_name()
+      if (!is.null(previous_name) && !identical(previous_name, input$config_remote_name)) {
+        ugplot_remove_remote_server(previous_name)
+      }
       servers <- ugplot_upsert_remote_server(
         name = input$config_remote_name,
         url = input$config_remote_url,
@@ -1663,19 +1735,40 @@ server <- function(input, output, session) {
       )
       remote_servers(servers)
       refresh_remote_server_inputs(input$config_remote_name)
+      config_remote_editing_name(NULL)
+      removeModal()
     }, error = function(e) {
       showModal(modalDialog(title = "Remote server error", e$message, easyClose = TRUE))
     })
   })
 
-  observeEvent(input$config_remote_remove, {
-    servers <- ugplot_remove_remote_server(input$config_remote_existing)
+  observeEvent(input$config_remote_confirm_remove, {
+    server_name <- config_remote_editing_name()
+    req(nzchar(server_name %||% ""))
+    servers <- ugplot_remove_remote_server(server_name)
     remote_servers(servers)
     refresh_remote_server_inputs()
+    config_remote_editing_name(NULL)
+    removeModal()
   })
 
   output$config_remote_servers_table <- DT::renderDT({
-    DT::datatable(remote_servers(), options = list(pageLength = 5, scrollX = TRUE), rownames = FALSE)
+    DT::datatable(
+      remote_servers_table_data(),
+      options = list(
+        dom = "t",
+        paging = FALSE,
+        searching = FALSE,
+        info = FALSE,
+        lengthChange = FALSE,
+        scrollX = TRUE,
+        columnDefs = list(
+          list(targets = 3, orderable = FALSE, searchable = FALSE, className = "remote-server-actions")
+        )
+      ),
+      rownames = FALSE,
+      escape = FALSE
+    )
   })
 
   ml_data_table <- reactiveVal(data.frame())
