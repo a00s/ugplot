@@ -2,6 +2,128 @@ ugplot_server_r_packages <- function() {
   c("callr", "httr", "jsonlite", "plumber")
 }
 
+ugplot_installed_r_packages <- function() {
+  rownames(utils::installed.packages())
+}
+
+ugplot_model_dependency_status <- function(models = NULL, exclude_models = character()) {
+  if (!requireNamespace("caret", quietly = TRUE)) {
+    stop("Package 'caret' is required to inspect model dependencies.", call. = FALSE)
+  }
+
+  all_models <- caret::getModelInfo()
+  model_names <- names(all_models)
+  if (!is.null(models)) {
+    models <- unique(as.character(models))
+    unknown_models <- setdiff(models, model_names)
+    model_names <- intersect(models, model_names)
+  } else {
+    unknown_models <- character(0)
+  }
+  model_names <- setdiff(model_names, exclude_models)
+
+  model_rows <- lapply(model_names, function(model_name) {
+    libraries <- all_models[[model_name]]$library
+    if (is.null(libraries)) {
+      libraries <- character(0)
+    }
+    libraries <- unique(as.character(libraries))
+    missing_libraries <- libraries[
+      !vapply(libraries, requireNamespace, logical(1), quietly = TRUE)
+    ]
+    data.frame(
+      model = model_name,
+      packages = paste(libraries, collapse = ", "),
+      missing_packages = paste(missing_libraries, collapse = ", "),
+      installed = length(missing_libraries) == 0,
+      stringsAsFactors = FALSE
+    )
+  })
+  models_table <- if (length(model_rows) > 0) {
+    do.call(rbind, model_rows)
+  } else {
+    data.frame(
+      model = character(0),
+      packages = character(0),
+      missing_packages = character(0),
+      installed = logical(0),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  missing_by_model <- models_table[!models_table$installed, c("model", "missing_packages"), drop = FALSE]
+  packages_to_install <- unique(unlist(strsplit(missing_by_model$missing_packages, ",[[:space:]]*")))
+  packages_to_install <- packages_to_install[nzchar(packages_to_install)]
+
+  list(
+    models_installed = models_table$model[models_table$installed],
+    models_missing = models_table$model[!models_table$installed],
+    packages_to_install = packages_to_install,
+    missing_by_model = missing_by_model,
+    models = models_table,
+    unknown_models = unknown_models
+  )
+}
+
+ugplot_print_model_dependency_status <- function(status) {
+  message(
+    "caret models installed: ", length(status$models_installed),
+    " | missing dependencies: ", length(status$models_missing)
+  )
+  if (length(status$packages_to_install) > 0) {
+    message("Packages to install: ", paste(status$packages_to_install, collapse = ", "))
+  } else {
+    message("All inspected caret model dependencies are available.")
+  }
+  if (length(status$unknown_models) > 0) {
+    message("Unknown caret models ignored: ", paste(status$unknown_models, collapse = ", "))
+  }
+  invisible(status)
+}
+
+#' Check caret model dependencies used by ugPlot
+#'
+#' Lists caret models whose required R packages are not installed in the
+#' current R library.
+#'
+#' @param models Optional character vector of caret model names. Defaults to all
+#'   caret models.
+#' @param exclude_models Optional character vector of caret model names to skip.
+#' @return Invisibly returns dependency status tables and package names.
+#' @export
+ugPlotCheckModelDeps <- function(models = NULL, exclude_models = character()) {
+  status <- ugplot_model_dependency_status(models = models, exclude_models = exclude_models)
+  ugplot_print_model_dependency_status(status)
+  invisible(status)
+}
+
+#' Install caret model dependencies used by ugPlot
+#'
+#' Installs the R packages required by missing caret models in the current R
+#' library. Run this on the machine that will execute the jobs, including the
+#' ugPlot server host.
+#'
+#' @param models Optional character vector of caret model names. Defaults to all
+#'   caret models.
+#' @param install Whether to install missing packages.
+#' @param dependencies Passed to \code{install.packages()}.
+#' @param exclude_models Optional character vector of caret model names to skip.
+#' @return Invisibly returns dependency status after the attempted installation.
+#' @export
+ugPlotInstallModelDeps <- function(models = NULL, install = TRUE, dependencies = TRUE,
+                                   exclude_models = character()) {
+  status <- ugplot_model_dependency_status(models = models, exclude_models = exclude_models)
+  ugplot_print_model_dependency_status(status)
+
+  if (install && length(status$packages_to_install) > 0) {
+    utils::install.packages(status$packages_to_install, dependencies = dependencies)
+    status <- ugplot_model_dependency_status(models = models, exclude_models = exclude_models)
+    ugplot_print_model_dependency_status(status)
+  }
+
+  invisible(status)
+}
+
 ugplot_command_exists <- function(command) {
   nzchar(Sys.which(command))
 }
@@ -96,9 +218,12 @@ ugplot_assert_server_system_deps <- function() {
 #'
 #' @param install Whether to install missing R packages.
 #' @param dependencies Passed to \code{install.packages()}.
+#' @param install_model_deps Whether to install packages required by missing
+#'   caret models too. Defaults to \code{FALSE} because this can install many
+#'   packages.
 #' @return Invisibly returns a list with system and R dependency status.
 #' @export
-ugPlotInstallServerDeps <- function(install = TRUE, dependencies = TRUE) {
+ugPlotInstallServerDeps <- function(install = TRUE, dependencies = TRUE, install_model_deps = FALSE) {
   system_missing <- ugplot_missing_server_system_deps()
   if (length(system_missing) > 0) {
     commands <- paste0("  ", ugplot_server_system_dependency_commands(), collapse = "\n")
@@ -123,5 +248,10 @@ ugPlotInstallServerDeps <- function(install = TRUE, dependencies = TRUE) {
     message("ugPlotServer dependencies are available.")
   }
 
-  invisible(list(system_missing = character(0), r_missing = r_missing))
+  model_deps <- NULL
+  if (isTRUE(install_model_deps)) {
+    model_deps <- ugPlotInstallModelDeps(install = install, dependencies = dependencies)
+  }
+
+  invisible(list(system_missing = character(0), r_missing = r_missing, model_deps = model_deps))
 }

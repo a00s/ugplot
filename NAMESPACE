@@ -1,4 +1,6 @@
 export("ugPlot")
+export("ugPlotCheckModelDeps")
+export("ugPlotInstallModelDeps")
 export("ugPlotInstallServerDeps")
 export("ugPlotServer")
 export("ugPlotServerStart")

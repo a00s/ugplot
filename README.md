@@ -45,6 +45,50 @@ Run in R:
 library(ugplot)
 ugPlot()
 ```
+
+### 3) Running a remote job server
+
+Use this when you want the Shiny app on one machine and the model training jobs on another machine, or when you want long jobs to keep running outside the browser session.
+
+Run these commands on the server machine:
+
+```r
+library(ugplot)
+
+# Install the packages needed by the HTTP job server.
+ugPlotInstallServerDeps()
+
+# Optional: inspect caret model dependencies available on this server.
+ugPlotCheckModelDeps()
+
+# Optional: install packages for every caret model that is missing dependencies.
+# This can install many R packages, so run it on the server before starting jobs.
+ugPlotInstallModelDeps()
+
+# One-command server setup including model dependencies:
+# ugPlotInstallServerDeps(install_model_deps = TRUE)
+
+ugPlotServerStart(
+  host = "0.0.0.0",
+  port = 8080,
+  token = "change-this-token"
+)
+```
+
+Manage the background server from R:
+
+```r
+ugPlotServerStatus()
+ugPlotServerStop()
+```
+
+Then, in the ugPlot app:
+
+1. Open **CONFIGURATIONS**.
+2. Add the server URL, for example `http://server-address:8080`.
+3. Add the same token used in `ugPlotServerStart()`.
+4. In **MACHINE LEARNING**, choose **Run target → Remote server**.
+5. Submit the job and monitor it in **JOBS**.
 ---
 
 # How-To Manual
@@ -238,6 +282,13 @@ Also available on this page:
 
 - **Download dataset with current thresholds (CSV)** for reproducibility.
 - Side-by-side panels for installed vs missing models.
+
+For a remote ugPlot server, install the missing model libraries on the server machine, not only in the R session running the browser app:
+
+```r
+ugPlotCheckModelDeps()
+ugPlotInstallModelDeps()
+```
 
 ### 5.4 Interpreting output
 

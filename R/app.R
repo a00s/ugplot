@@ -197,13 +197,14 @@ source_local_helper <- function(file_name, function_name = NULL, always_reload =
   if (!always_reload && !is.null(function_name) && exists(function_name, mode = "function", inherits = TRUE)) {
     return(invisible(TRUE))
   }
+  target_env <- parent.frame()
   candidate_paths <- c(
     file.path("R", file_name),
     file_name
   )
   for (candidate_path in candidate_paths) {
     if (file.exists(candidate_path)) {
-      source(candidate_path, local = FALSE)
+      source(candidate_path, local = target_env)
       return(invisible(TRUE))
     }
   }
@@ -211,8 +212,71 @@ source_local_helper <- function(file_name, function_name = NULL, always_reload =
 }
 
 source_local_helper("job_store.R", "ugplot_ensure_dir", always_reload = TRUE)
+source_local_helper("server_deps.R", "ugPlotInstallModelDeps", always_reload = TRUE)
 source_local_helper("remote_client.R", "ugplot_remote_create_job", always_reload = TRUE)
 source_local_helper("remote_servers.R", "ugplot_read_remote_servers", always_reload = TRUE)
+
+ugplot_cleanup_global_session_objects <- function() {
+  objects_to_remove <- c(
+    "dff",
+    "changed_table",
+    "ml_available",
+    "ml_not_available",
+    "ml_prediction",
+    "df_pre",
+    "source_local_helper",
+    "ugplot_cleanup_global_session_objects",
+    "ugplot_default_jobs_dir",
+    "ugplot_new_job_id",
+    "ugplot_ensure_dir",
+    "ugplot_validate_job_id",
+    "ugplot_job_dir",
+    "ugplot_status_path",
+    "ugplot_write_rds_atomic",
+    "ugplot_read_rds_or_null",
+    "ugplot_create_job",
+    "ugplot_read_job_status",
+    "ugplot_write_job_status",
+    "ugplot_update_job_status",
+    "ugplot_list_jobs",
+    "ugplot_append_job_log",
+    "ugplot_read_job_result",
+    "ugplot_server_r_packages",
+    "ugplot_installed_r_packages",
+    "ugplot_model_dependency_status",
+    "ugplot_print_model_dependency_status",
+    "ugPlotCheckModelDeps",
+    "ugPlotInstallModelDeps",
+    "ugplot_command_exists",
+    "ugplot_has_header",
+    "ugplot_has_pkg_config_package",
+    "ugplot_detect_linux_package_manager",
+    "ugplot_server_system_dependency_commands",
+    "ugplot_missing_server_system_deps",
+    "ugplot_assert_server_system_deps",
+    "ugPlotInstallServerDeps",
+    "ugplot_remote_url",
+    "ugplot_remote_request",
+    "ugplot_remote_parse",
+    "ugplot_remote_create_job",
+    "ugplot_remote_list_jobs",
+    "ugplot_remote_job_status",
+    "ugplot_remote_get_result",
+    "ugplot_remote_servers_path",
+    "ugplot_default_remote_servers",
+    "ugplot_read_remote_servers",
+    "ugplot_write_remote_servers",
+    "ugplot_upsert_remote_server",
+    "ugplot_remove_remote_server"
+  )
+  existing_objects <- objects_to_remove[
+    vapply(objects_to_remove, exists, logical(1), envir = globalenv(), inherits = FALSE)
+  ]
+  if (length(existing_objects) > 0) {
+    rm(list = existing_objects, envir = globalenv())
+  }
+  invisible(existing_objects)
+}
 
 detect_total_cpus <- function() {
   cpu_count <- tryCatch(parallel::detectCores(logical = TRUE), error = function(e) NA_integer_)
@@ -775,23 +839,19 @@ ui <- fluidPage(
     ),
     tabPanel("JOBS",
       fluidPage(
-        fluidRow(
-          column(
-            4,
-            actionButton("remote_refresh_jobs", "Refresh jobs")
-          ),
-          column(
-            8,
-            tags$h4("Remote jobs"),
-            DT::DTOutput("remote_jobs_table"),
-            tags$div(style = "display: flex; gap: 8px; align-items: center; flex-wrap: wrap;",
-              textInput("remote_job_id", "Job ID", value = "", width = "360px"),
-              actionButton("remote_load_result", "Load result locally"),
-              downloadButton("downloadRemoteJobResult", "Download result (RDS)")
-            ),
-            verbatimTextOutput("remote_job_status")
-          )
-        )
+        tags$div(
+          style = "display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;",
+          tags$h4("Remote jobs", style = "margin: 0;"),
+          actionButton("remote_refresh_jobs", "Refresh jobs")
+        ),
+        DT::DTOutput("remote_jobs_table"),
+        tags$div(
+          style = "display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px;",
+          textInput("remote_job_id", "Job ID", value = "", width = "360px"),
+          actionButton("remote_load_result", "Load result locally"),
+          downloadButton("downloadRemoteJobResult", "Download result (RDS)")
+        ),
+        verbatimTextOutput("remote_job_status")
       )
     ),
     # MODEL ANALYSIS (vertical layout)
@@ -984,18 +1044,9 @@ ui <- fluidPage(
 # --- Helper functions (defined globally) ---
 
 load_ml_list <- function() {
-  all_models <- getModelInfo()
-  ml_available <<- list()
-  ml_not_available <<- list()
-  for (model_name in names(all_models)) {
-    if (any(!all_models[[model_name]]$library %in% installed.packages())) {
-      ml_not_available <<- c(ml_not_available, model_name)
-    } else {
-      if (!(model_name %in% slow_models)) {
-        ml_available <<- c(ml_available, model_name)
-      }
-    }
-  }
+  model_deps <- ugplot_model_dependency_status()
+  ml_available <<- setdiff(model_deps$models_installed, slow_models)
+  ml_not_available <<- model_deps$models_missing
   removeUI(selector = "#ml_checkbox_group")
   insertUI(
     selector = "#dynamic_machine_learning",
@@ -3250,18 +3301,9 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$install_missing_modules, {
-    all_models <- getModelInfo()
     models_to_install <- input$ml_missing_checkbox_group
-    for (model_name in models_to_install) {
-      model_info <- getModelInfo(model_name, regex = FALSE)[[model_name]]
-      model_libraries <- model_info$library
-      for (librarytoinst in model_libraries) {
-        if (!(librarytoinst %in% installed.packages())) {
-          install.packages(librarytoinst, dependencies = TRUE)
-        } else {
-          print("Library already installed.")
-        }
-      }
+    if (length(models_to_install) > 0) {
+      ugPlotInstallModelDeps(models = models_to_install, dependencies = TRUE)
     }
     if (identical(input$ml_missing_strategy, "missforest") &&
       !("missForest" %in% rownames(installed.packages()))) {
@@ -3274,6 +3316,7 @@ server <- function(input, output, session) {
       }
       BiocManager::install("methyLImp2", ask = FALSE, update = FALSE)
     }
+    load_ml_list()
   })
 
   observe({
@@ -5555,11 +5598,7 @@ observeEvent(input$model_file, {
   })
 
   session$onSessionEnded(function() {
-    objects_to_remove <- c("dff", "changed_table", "ml_available", "ml_not_available", "ml_prediction", "df_pre")
-    existing_objects <- objects_to_remove[vapply(objects_to_remove, exists, logical(1), envir = globalenv(), inherits = FALSE)]
-    if (length(existing_objects) > 0) {
-      rm(list = existing_objects, envir = globalenv())
-    }
+    ugplot_cleanup_global_session_objects()
   })
 
   load_dataset_into_table(session)
