@@ -21,6 +21,7 @@ ugplot_model_dependency_status <- function(models = NULL, exclude_models = chara
     unknown_models <- character(0)
   }
   model_names <- setdiff(model_names, exclude_models)
+  installed_packages <- ugplot_installed_r_packages()
 
   model_rows <- lapply(model_names, function(model_name) {
     libraries <- all_models[[model_name]]$library
@@ -28,9 +29,7 @@ ugplot_model_dependency_status <- function(models = NULL, exclude_models = chara
       libraries <- character(0)
     }
     libraries <- unique(as.character(libraries))
-    missing_libraries <- libraries[
-      !vapply(libraries, requireNamespace, logical(1), quietly = TRUE)
-    ]
+    missing_libraries <- setdiff(libraries, installed_packages)
     data.frame(
       model = model_name,
       packages = paste(libraries, collapse = ", "),

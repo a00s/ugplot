@@ -38,3 +38,36 @@ test_that("job runner records progress and result", {
   expect_equal(result$summary$rows, 4)
   expect_equal(result$summary$columns, 2)
 })
+
+test_that("job listing marks dead background processes as failed", {
+  local_env <- new.env(parent = globalenv())
+  local_env$`%||%` <- function(lhs, rhs) {
+    if (is.null(lhs)) rhs else lhs
+  }
+  job_store_path <- file.path("R", "job_store.R")
+  if (!file.exists(job_store_path)) {
+    job_store_path <- file.path("..", "..", "R", "job_store.R")
+  }
+  sys.source(job_store_path, envir = local_env)
+
+  jobs_dir <- tempfile("ugplot-jobs-")
+  dataset <- data.frame(x = 1:3)
+  create_job <- local_env$ugplot_create_job
+  write_job_status <- local_env$ugplot_write_job_status
+  read_job_status <- local_env$ugplot_read_job_status
+  list_jobs <- local_env$ugplot_list_jobs
+
+  status <- create_job(dataset, config = list(runner = "ugplot_run_placeholder_job"), jobs_dir = jobs_dir)
+  status$state <- "running"
+  status$progress <- 0.25
+  status$message <- "Running"
+  status$pid <- 2147483647L
+  write_job_status(status$id, status, jobs_dir)
+
+  refreshed <- read_job_status(status$id, jobs_dir)
+  listed <- list_jobs(jobs_dir)
+
+  expect_equal(refreshed$state, "failed")
+  expect_match(refreshed$message, "Background process stopped")
+  expect_equal(listed$state, "failed")
+})

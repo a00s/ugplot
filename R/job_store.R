@@ -55,6 +55,15 @@ ugplot_read_rds_or_null <- function(path) {
   readRDS(path)
 }
 
+ugplot_process_alive <- function(pid) {
+  pid <- suppressWarnings(as.integer(pid))
+  if (is.na(pid) || pid <= 0) {
+    return(FALSE)
+  }
+  result <- tryCatch(tools::pskill(pid, signal = 0), error = function(e) FALSE)
+  isTRUE(result)
+}
+
 ugplot_create_job <- function(dataset, config = list(), jobs_dir = ugplot_default_jobs_dir(), type = "ml") {
   if (!is.data.frame(dataset)) {
     stop("dataset must be a data.frame.", call. = FALSE)
@@ -93,7 +102,7 @@ ugplot_read_job_status <- function(job_id, jobs_dir = ugplot_default_jobs_dir())
   if (is.null(status)) {
     stop("Job not found: ", job_id, call. = FALSE)
   }
-  status
+  ugplot_refresh_job_status(status, jobs_dir)
 }
 
 ugplot_write_job_status <- function(job_id, status, jobs_dir = ugplot_default_jobs_dir()) {
@@ -110,6 +119,21 @@ ugplot_update_job_status <- function(job_id, jobs_dir = ugplot_default_jobs_dir(
     status[[name]] <- updates[[name]]
   }
   ugplot_write_job_status(job_id, status, jobs_dir)
+}
+
+ugplot_refresh_job_status <- function(status, jobs_dir = ugplot_default_jobs_dir()) {
+  state <- status$state %||% ""
+  pid <- status$pid %||% NA_integer_
+  should_check_pid <- state %in% c("queued", "running") && !is.na(suppressWarnings(as.integer(pid)))
+  if (!should_check_pid || ugplot_process_alive(pid)) {
+    return(status)
+  }
+
+  status$state <- "failed"
+  status$message <- "Background process stopped before finishing"
+  status$error <- "The job process is no longer running. The server may have restarted or crashed."
+  status$progress <- status$progress %||% 0
+  ugplot_write_job_status(status$id, status, jobs_dir)
 }
 
 ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir()) {
