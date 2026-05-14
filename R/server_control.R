@@ -188,7 +188,7 @@ ugPlotServerStart <- function(host = "127.0.0.1", port = 8080,
     ),
     stdout = log_file,
     stderr = log_file,
-    supervise = TRUE
+    supervise = FALSE
   )
 
   state <- list(
