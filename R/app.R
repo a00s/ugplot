@@ -864,15 +864,7 @@ ui <- fluidPage(
           tags$div(style = "display: none;",
             textInput("remote_job_id", "Job ID", value = "", width = "360px"),
             downloadButton("downloadRemoteJobResult", "Download result (RDS)")
-          ),
-          tags$script(HTML(
-            "Shiny.addCustomMessageHandler('clickDownloadRemoteResult', function(id) {
-              setTimeout(function() {
-                var link = document.getElementById(id);
-                if (link) { link.click(); }
-              }, 250);
-            });"
-          ))
+          )
         ),
         DT::DTOutput("remote_jobs_table"),
         verbatimTextOutput("remote_job_status")
@@ -3356,7 +3348,6 @@ server <- function(input, output, session) {
         paste0(
           "<div class='remote-job-actions'>",
           "<button type='button' class='btn btn-default btn-sm' onclick=\"Shiny.setInputValue('remote_load_result_row', '", job_id, "', {priority: 'event'});\"", load_disabled, ">Load</button>",
-          "<button type='button' class='btn btn-default btn-sm' onclick=\"Shiny.setInputValue('remote_download_result_row', '", job_id, "', {priority: 'event'});\"", load_disabled, ">RDS</button>",
           "<button type='button' class='btn btn-danger btn-sm' onclick=\"Shiny.setInputValue('remote_stop_job_row', '", job_id, "', {priority: 'event'});\"", stop_disabled, ">Stop</button>",
           "</div>"
         )
@@ -3438,17 +3429,6 @@ server <- function(input, output, session) {
       load_remote_result_locally(input$remote_load_result_row)
     }, error = function(e) {
       remote_job_status_text(paste("Remote result load failed:", conditionMessage(e)))
-    })
-  })
-
-  observeEvent(input$remote_download_result_row, {
-    tryCatch({
-      job_id <- input$remote_download_result_row
-      updateTextInput(session, "remote_job_id", value = job_id)
-      load_remote_result_locally(job_id, switch_to_ml = FALSE)
-      session$sendCustomMessage("clickDownloadRemoteResult", "downloadRemoteJobResult")
-    }, error = function(e) {
-      remote_job_status_text(paste("Remote result download failed:", conditionMessage(e)))
     })
   })
 
