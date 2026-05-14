@@ -99,3 +99,37 @@ test_that("stopped jobs keep partial results available", {
   expect_true(file.exists(stopped$result_path))
   expect_equal(readRDS(stopped$result_path)$results_table$x, 1)
 })
+
+test_that("running jobs that exceed timeout are stopped with partial result", {
+  local_env <- new.env(parent = globalenv())
+  local_env$`%||%` <- function(lhs, rhs) {
+    if (is.null(lhs)) rhs else lhs
+  }
+  job_store_path <- file.path("R", "job_store.R")
+  if (!file.exists(job_store_path)) {
+    job_store_path <- file.path("..", "..", "R", "job_store.R")
+  }
+  sys.source(job_store_path, envir = local_env)
+  local_env$ugplot_process_alive <- function(pid) TRUE
+  local_env$ugplot_terminate_process <- function(pid) TRUE
+
+  jobs_dir <- tempfile("ugplot-jobs-")
+  status <- local_env$ugplot_create_job(
+    data.frame(x = 1:3),
+    config = list(runner = "ugplot_run_placeholder_job", timeout = 1),
+    jobs_dir = jobs_dir
+  )
+  local_env$ugplot_write_job_partial_result(status$id, list(results_table = data.frame(x = 2)), jobs_dir)
+  status <- local_env$ugplot_read_job_status(status$id, jobs_dir)
+  status$state <- "running"
+  status$pid <- 2147483647L
+  status$updated_at <- format(Sys.time() - 120, "%Y-%m-%d %H:%M:%S %z")
+  local_env$ugplot_write_rds_atomic(status, local_env$ugplot_status_path(status$id, jobs_dir))
+
+  refreshed <- local_env$ugplot_refresh_job_status(status, jobs_dir)
+
+  expect_equal(refreshed$state, "stopped")
+  expect_match(refreshed$message, "Timed out")
+  expect_true(file.exists(refreshed$result_path))
+  expect_equal(readRDS(refreshed$result_path)$results_table$x, 2)
+})

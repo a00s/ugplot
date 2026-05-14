@@ -68,6 +68,51 @@ ugplot_process_alive <- function(pid) {
   isTRUE(result)
 }
 
+ugplot_terminate_process <- function(pid) {
+  tools::pskill(as.integer(pid), signal = tools::SIGTERM)
+  Sys.sleep(0.5)
+  if (ugplot_process_alive(pid)) {
+    tools::pskill(as.integer(pid), signal = tools::SIGKILL)
+  }
+  invisible(TRUE)
+}
+
+ugplot_status_time <- function(value) {
+  parsed <- tryCatch(
+    as.POSIXct(value, format = "%Y-%m-%d %H:%M:%S %z"),
+    error = function(e) as.POSIXct(NA)
+  )
+  if (is.na(parsed)) {
+    parsed <- tryCatch(as.POSIXct(value), error = function(e) as.POSIXct(NA))
+  }
+  parsed
+}
+
+ugplot_job_timeout_seconds <- function(status) {
+  timeout <- suppressWarnings(as.numeric(status$timeout %||% NA_real_))
+  if (length(timeout) == 0 || is.na(timeout) || timeout <= 0) {
+    return(NA_real_)
+  }
+  max(1, timeout)
+}
+
+ugplot_running_job_timed_out <- function(status) {
+  if (!identical(status$state %||% "", "running")) {
+    return(FALSE)
+  }
+  timeout <- ugplot_job_timeout_seconds(status)
+  if (is.na(timeout)) {
+    return(FALSE)
+  }
+  updated_at <- ugplot_status_time(status$updated_at %||% NA_character_)
+  if (is.na(updated_at)) {
+    return(FALSE)
+  }
+  grace <- max(30, min(300, timeout * 0.1))
+  age <- as.numeric(difftime(Sys.time(), updated_at, units = "secs"))
+  is.finite(age) && age > (timeout + grace)
+}
+
 ugplot_create_job <- function(dataset, config = list(), jobs_dir = ugplot_default_jobs_dir(), type = "ml") {
   if (!is.data.frame(dataset)) {
     stop("dataset must be a data.frame.", call. = FALSE)
@@ -96,7 +141,8 @@ ugplot_create_job <- function(dataset, config = list(), jobs_dir = ugplot_defaul
     pid = NA_integer_,
     error = NULL,
     result_path = NULL,
-    partial_result_path = NULL
+    partial_result_path = NULL,
+    timeout = suppressWarnings(as.numeric(config$timeout %||% NA_real_))
   )
   ugplot_write_job_status(job_id, status, jobs_dir)
   status
@@ -151,11 +197,7 @@ ugplot_stop_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
   }
 
   if (!is.na(pid) && ugplot_process_alive(pid)) {
-    tools::pskill(pid, signal = tools::SIGTERM)
-    Sys.sleep(0.5)
-    if (ugplot_process_alive(pid)) {
-      tools::pskill(pid, signal = tools::SIGKILL)
-    }
+    ugplot_terminate_process(pid)
   }
 
   partial_path <- status$partial_result_path %||% ugplot_result_path(job_id, jobs_dir, partial = TRUE)
@@ -175,7 +217,24 @@ ugplot_refresh_job_status <- function(status, jobs_dir = ugplot_default_jobs_dir
   state <- status$state %||% ""
   pid <- status$pid %||% NA_integer_
   should_check_pid <- state %in% c("queued", "running") && !is.na(suppressWarnings(as.integer(pid)))
-  if (!should_check_pid || ugplot_process_alive(pid)) {
+  if (!should_check_pid) {
+    return(status)
+  }
+
+  if (ugplot_process_alive(pid)) {
+    if (!ugplot_running_job_timed_out(status)) {
+      return(status)
+    }
+    ugplot_terminate_process(pid)
+    partial_path <- status$partial_result_path %||% ugplot_result_path(status$id, jobs_dir, partial = TRUE)
+    has_partial <- !is.null(partial_path) && file.exists(partial_path)
+    status$state <- if (has_partial) "stopped" else "failed"
+    status$message <- if (has_partial) "Timed out; partial result is available" else "Timed out"
+    status$error <- paste0("The job process exceeded the configured timeout without a progress update.")
+    if (has_partial) {
+      status$result_path <- partial_path
+    }
+    ugplot_write_job_status(status$id, status, jobs_dir)
     return(status)
   }
 
