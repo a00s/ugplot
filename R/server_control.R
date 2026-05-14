@@ -4,6 +4,16 @@ ugplot_server_state_dir <- function() {
   state_dir
 }
 
+ugplot_first_non_null <- function(...) {
+  values <- list(...)
+  for (value in values) {
+    if (!is.null(value)) {
+      return(value)
+    }
+  }
+  NULL
+}
+
 ugplot_server_state_path <- function(name = "default") {
   safe_name <- gsub("[^A-Za-z0-9._-]+", "_", name)
   file.path(ugplot_server_state_dir(), paste0(safe_name, ".rds"))
@@ -18,6 +28,67 @@ ugplot_process_alive <- function(pid) {
   isTRUE(result)
 }
 
+ugplot_port_listener_pids <- function(port) {
+  port <- suppressWarnings(as.integer(port))
+  if (is.na(port) || port <= 0) {
+    return(integer())
+  }
+
+  pids <- integer()
+
+  if (.Platform$OS.type == "unix") {
+    if (nzchar(Sys.which("lsof"))) {
+      output <- tryCatch(
+        suppressWarnings(
+          system2("lsof", c("-nP", paste0("-iTCP:", port), "-sTCP:LISTEN", "-t"),
+            stdout = TRUE, stderr = FALSE
+          )
+        ),
+        error = function(e) character()
+      )
+      pids <- c(pids, suppressWarnings(as.integer(output)))
+    }
+
+    if (length(pids) == 0 && nzchar(Sys.which("ss"))) {
+      output <- tryCatch(
+        suppressWarnings(system2("ss", c("-ltnp", paste0("sport = :", port)), stdout = TRUE, stderr = FALSE)),
+        error = function(e) character()
+      )
+      pid_matches <- regmatches(output, gregexpr("pid=[0-9]+", output))
+      pid_values <- sub("^pid=", "", unlist(pid_matches, use.names = FALSE))
+      pids <- c(pids, suppressWarnings(as.integer(pid_values)))
+    }
+
+    if (length(pids) == 0 && nzchar(Sys.which("fuser"))) {
+      output <- tryCatch(
+        suppressWarnings(system2("fuser", c("-n", "tcp", as.character(port)), stdout = TRUE, stderr = FALSE)),
+        error = function(e) character()
+      )
+      pids <- c(pids, suppressWarnings(as.integer(strsplit(paste(output, collapse = " "), "[[:space:]]+")[[1]])))
+    }
+  }
+
+  pids <- unique(pids[!is.na(pids) & pids > 0])
+  pids[vapply(pids, ugplot_process_alive, logical(1))]
+}
+
+ugplot_server_state_from_port <- function(port, name = "default") {
+  pids <- ugplot_port_listener_pids(port)
+  if (length(pids) == 0) {
+    return(NULL)
+  }
+  list(
+    name = name,
+    pid = pids[[1]],
+    pids = pids,
+    host = NA_character_,
+    port = as.integer(port),
+    url = paste0("http://127.0.0.1:", as.integer(port)),
+    discovered_by = "port",
+    running = TRUE
+  )
+}
+
 ugplot_read_server_state <- function(name = "default") {
   state_path <- ugplot_server_state_path(name)
   if (!file.exists(state_path)) {
@@ -29,6 +100,37 @@ ugplot_read_server_state <- function(name = "default") {
 ugplot_write_server_state <- function(state, name = "default") {
   saveRDS(state, ugplot_server_state_path(name))
   invisible(state)
+}
+
+ugplot_register_server_state <- function(host = "127.0.0.1", port = 8080,
+                                         jobs_dir = ugplot_default_jobs_dir(),
+                                         token = "", name = "default",
+                                         pid = Sys.getpid(), log_file = NA_character_,
+                                         started_by = "ugPlotServer") {
+  state <- list(
+    name = name,
+    pid = as.integer(pid),
+    host = host,
+    port = as.integer(port),
+    url = paste0("http://", host, ":", as.integer(port)),
+    jobs_dir = jobs_dir,
+    token_set = nzchar(token),
+    log_file = log_file,
+    started_by = started_by,
+    started_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+  )
+  ugplot_write_server_state(state, name)
+}
+
+ugplot_mark_server_state_stopped <- function(name = "default") {
+  state <- ugplot_read_server_state(name)
+  if (is.null(state)) {
+    return(invisible(FALSE))
+  }
+  state$running <- FALSE
+  state$stopped_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+  ugplot_write_server_state(state, name)
+  invisible(TRUE)
 }
 
 #' Start a ugplot job server in the background
@@ -60,7 +162,7 @@ ugPlotServerStart <- function(host = "127.0.0.1", port = 8080,
   source_dir <- if (file.exists(file.path(getwd(), "R", "app.R"))) normalizePath(getwd(), mustWork = FALSE) else NULL
   log_file <- file.path(ugplot_server_state_dir(), paste0(gsub("[^A-Za-z0-9._-]+", "_", name), ".log"))
   process <- callr::r_bg(
-    func = function(host, port, jobs_dir, token, lib_paths, source_dir) {
+    func = function(host, port, jobs_dir, token, name, lib_paths, source_dir) {
       .libPaths(lib_paths)
       if (!is.null(source_dir) && file.exists(file.path(source_dir, "R", "server_api.R"))) {
         source(file.path(source_dir, "R", "app.R"), local = .GlobalEnv)
@@ -69,10 +171,10 @@ ugPlotServerStart <- function(host = "127.0.0.1", port = 8080,
         source(file.path(source_dir, "R", "ml_runner.R"), local = .GlobalEnv)
         source(file.path(source_dir, "R", "server_deps.R"), local = .GlobalEnv)
         source(file.path(source_dir, "R", "server_api.R"), local = .GlobalEnv)
-        ugPlotServer(host = host, port = port, jobs_dir = jobs_dir, token = token)
+        ugPlotServer(host = host, port = port, jobs_dir = jobs_dir, token = token, name = name)
       } else {
         library(ugplot)
-        ugPlotServer(host = host, port = port, jobs_dir = jobs_dir, token = token)
+        ugPlotServer(host = host, port = port, jobs_dir = jobs_dir, token = token, name = name)
       }
     },
     args = list(
@@ -80,6 +182,7 @@ ugPlotServerStart <- function(host = "127.0.0.1", port = 8080,
       port = port,
       jobs_dir = jobs_dir,
       token = token,
+      name = name,
       lib_paths = lib_paths,
       source_dir = source_dir
     ),
@@ -106,14 +209,33 @@ ugPlotServerStart <- function(host = "127.0.0.1", port = 8080,
 #' Get background ugplot job server status
 #'
 #' @param name Local server handle name.
+#' @param port Optional port used to discover a server when no live state file is
+#'   available. Defaults to the saved state port, or 8080 when there is no state.
 #' @return A list with server metadata and running state.
 #' @export
-ugPlotServerStatus <- function(name = "default") {
+ugPlotServerStatus <- function(name = "default", port = NULL) {
   state <- ugplot_read_server_state(name)
   if (is.null(state)) {
-    state <- list(name = name, running = FALSE, message = "No background server state found.")
+    lookup_port <- ugplot_first_non_null(port, 8080L)
+    state <- ugplot_server_state_from_port(lookup_port, name)
+    if (is.null(state)) {
+      state <- list(name = name, port = lookup_port, running = FALSE, message = "No background server state found.")
+    } else {
+      state$message <- "Server process discovered by listening port; state file was missing."
+    }
   } else {
     state$running <- ugplot_process_alive(state$pid)
+    lookup_port <- ugplot_first_non_null(port, state$port, 8080L)
+    if (!isTRUE(state$running)) {
+      discovered <- ugplot_server_state_from_port(lookup_port, name)
+      if (!is.null(discovered)) {
+        state$running <- TRUE
+        state$pid <- discovered$pid
+        state$pids <- discovered$pids
+        state$discovered_by <- discovered$discovered_by
+        state$message <- "Saved PID was not running; server process discovered by listening port."
+      }
+    }
   }
   print(state)
   invisible(state)
@@ -122,23 +244,41 @@ ugPlotServerStatus <- function(name = "default") {
 #' Stop a background ugplot job server
 #'
 #' @param name Local server handle name.
+#' @param port Optional port used to discover and stop a server when no live
+#'   state file is available. Defaults to the saved state port, or 8080 when
+#'   there is no state.
 #' @return Invisibly returns TRUE when a process was stopped.
 #' @export
-ugPlotServerStop <- function(name = "default") {
+ugPlotServerStop <- function(name = "default", port = NULL) {
   state <- ugplot_read_server_state(name)
+  lookup_port <- ugplot_first_non_null(port, if (!is.null(state)) state$port else NULL, 8080L)
   if (is.null(state)) {
-    message("No background ugPlotServer state found.")
-    return(invisible(FALSE))
+    state <- ugplot_server_state_from_port(lookup_port, name)
+    if (is.null(state)) {
+      message("No background ugPlotServer state found.")
+      return(invisible(FALSE))
+    }
   }
-  if (!ugplot_process_alive(state$pid)) {
+  pids <- unique(c(ugplot_first_non_null(state$pid, integer()), ugplot_first_non_null(state$pids, integer())))
+  pids <- pids[vapply(pids, ugplot_process_alive, logical(1))]
+  if (length(pids) == 0) {
+    discovered <- ugplot_server_state_from_port(lookup_port, name)
+    pids <- ugplot_first_non_null(discovered$pids, integer())
+  }
+  pids <- unique(pids[vapply(pids, ugplot_process_alive, logical(1))])
+  if (length(pids) == 0) {
     message("ugPlotServer is not running.")
     return(invisible(FALSE))
   }
-  tools::pskill(as.integer(state$pid), signal = tools::SIGTERM)
-  Sys.sleep(0.5)
-  if (ugplot_process_alive(state$pid)) {
-    tools::pskill(as.integer(state$pid), signal = tools::SIGKILL)
+  for (pid in pids) {
+    tools::pskill(as.integer(pid), signal = tools::SIGTERM)
   }
-  message("ugPlotServer stopped (pid ", state$pid, ").")
+  Sys.sleep(0.5)
+  still_running <- pids[vapply(pids, ugplot_process_alive, logical(1))]
+  for (pid in still_running) {
+    tools::pskill(as.integer(pid), signal = tools::SIGKILL)
+  }
+  ugplot_mark_server_state_stopped(name)
+  message("ugPlotServer stopped (pid ", paste(pids, collapse = ", "), ").")
   invisible(TRUE)
 }

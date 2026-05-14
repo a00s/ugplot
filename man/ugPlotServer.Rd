@@ -6,7 +6,9 @@ ugPlotServer(
   host = "127.0.0.1",
   port = 8080,
   jobs_dir = ugplot_default_jobs_dir(),
-  token = ""
+  token = "",
+  name = "default",
+  register = TRUE
 )
 }
 \arguments{
@@ -17,6 +19,11 @@ ugPlotServer(
 \item{jobs_dir}{Directory used to persist datasets, status and results.}
 
 \item{token}{Optional bearer token. Defaults to no authentication.}
+
+\item{name}{Local server handle name used by status/stop when the server is
+started directly.}
+
+\item{register}{Whether to write a local state file for status/stop.}
 }
 \value{
 The plumber server result.

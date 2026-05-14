@@ -102,11 +102,14 @@ ugplot_read_rds_base64 <- function(value) {
 #' @param port Port to listen on.
 #' @param jobs_dir Directory used to persist datasets, status and results.
 #' @param token Optional bearer token. Defaults to no authentication.
+#' @param name Local server handle name used by status/stop when the server is
+#'   started directly.
+#' @param register Whether to write a local state file for status/stop.
 #' @return The plumber server result.
 #' @export
 ugPlotServer <- function(host = "127.0.0.1", port = 8080,
                          jobs_dir = ugplot_default_jobs_dir(),
-                         token = "") {
+                         token = "", name = "default", register = TRUE) {
   ugplot_assert_server_system_deps()
   if (!requireNamespace("plumber", quietly = TRUE)) {
     stop("Package 'plumber' is required to start ugPlotServer(). Run ugPlotInstallServerDeps().", call. = FALSE)
@@ -116,6 +119,23 @@ ugPlotServer <- function(host = "127.0.0.1", port = 8080,
   }
 
   ugplot_ensure_dir(jobs_dir)
+  if (isTRUE(register) && exists("ugplot_register_server_state", mode = "function", inherits = TRUE)) {
+    ugplot_register_server_state(
+      host = host,
+      port = port,
+      jobs_dir = jobs_dir,
+      token = token,
+      name = name,
+      pid = Sys.getpid(),
+      started_by = "ugPlotServer"
+    )
+    on.exit({
+      if (exists("ugplot_mark_server_state_stopped", mode = "function", inherits = TRUE)) {
+        ugplot_mark_server_state_stopped(name)
+      }
+    }, add = TRUE)
+  }
+
   pr <- plumber::pr()
 
   pr$filter("auth", function(req, res) {
