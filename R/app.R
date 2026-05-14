@@ -3286,6 +3286,11 @@ server <- function(input, output, session) {
       server_url = server$url,
       token = server$token %||% ""
     )
+    if (is.data.frame(jobs) && nrow(jobs) > 0) {
+      jobs$server <- server$name[[1]]
+      preferred_columns <- c("server", "id", "name", "type", "state", "progress", "message", "created_at", "updated_at", "pid")
+      jobs <- jobs[, c(intersect(preferred_columns, names(jobs)), setdiff(names(jobs), preferred_columns)), drop = FALSE]
+    }
     remote_jobs(jobs)
     invisible(jobs)
   }
@@ -3331,12 +3336,16 @@ server <- function(input, output, session) {
     if (!is.data.frame(jobs)) {
       jobs <- data.frame()
     }
+    raw_jobs <- jobs
+    for (date_column in intersect(c("created_at", "updated_at"), names(jobs))) {
+      jobs[[date_column]] <- sub("[[:space:]][+-][0-9]{4}$", "", as.character(jobs[[date_column]]))
+    }
     character_columns <- names(jobs)[vapply(jobs, is.character, logical(1))]
     for (column_name in character_columns) {
       jobs[[column_name]] <- htmltools::htmlEscape(jobs[[column_name]])
     }
-    if (nrow(jobs) > 0 && "id" %in% names(jobs)) {
-      job_ids <- as.character(jobs$id)
+    if (nrow(jobs) > 0 && "id" %in% names(raw_jobs)) {
+      job_ids <- as.character(raw_jobs$id)
       states <- if ("state" %in% names(jobs)) as.character(jobs$state) else rep("", length(job_ids))
       can_load <- states %in% c("finished", "stopped", "failed")
       can_stop <- states %in% c("queued", "running")
