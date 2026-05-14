@@ -471,3 +471,15 @@ table.dataTable th.dt-error-column {
   color: #6b7280;
   font-size: 13px;
 }
+
+.remote-job-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.remote-job-actions .btn {
+  padding: 4px 8px;
+  line-height: 1.2;
+}

@@ -73,6 +73,12 @@ ugplot_remote_job_status <- function(server_url, job_id, token = "") {
   ugplot_remote_parse(response)
 }
 
+ugplot_remote_stop_job <- function(server_url, job_id, token = "") {
+  request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/stop"), token)
+  response <- httr::POST(request$url, request$headers)
+  ugplot_remote_parse(response)
+}
+
 ugplot_remote_get_result <- function(server_url, job_id, token = "") {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/result-rds"), token)
   response <- httr::GET(request$url, request$headers)

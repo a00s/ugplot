@@ -168,6 +168,16 @@ ugPlotServer <- function(host = "127.0.0.1", port = 8080,
     )
   })
 
+  pr$handle("POST", "/jobs/<job_id>/stop", function(job_id, res) {
+    tryCatch(
+      ugplot_stop_job(job_id, jobs_dir),
+      error = function(e) {
+        res$status <- 404
+        list(error = conditionMessage(e))
+      }
+    )
+  })
+
   pr$handle("POST", "/jobs", function(req, res) {
     tryCatch({
       dataset <- ugplot_request_dataset(req)
@@ -194,7 +204,7 @@ ugPlotServer <- function(host = "127.0.0.1", port = 8080,
   pr$handle("GET", "/jobs/<job_id>/result-rds", function(job_id, res) {
     tryCatch({
       status <- ugplot_read_job_status(job_id, jobs_dir)
-      result_path <- status$result_path
+      result_path <- status$result_path %||% status$partial_result_path
       if (is.null(result_path) || !file.exists(result_path)) {
         stop("Result is not available for job: ", job_id, call. = FALSE)
       }

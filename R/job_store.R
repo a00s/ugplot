@@ -37,6 +37,10 @@ ugplot_status_path <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
   file.path(ugplot_job_dir(job_id, jobs_dir), "status.rds")
 }
 
+ugplot_result_path <- function(job_id, jobs_dir = ugplot_default_jobs_dir(), partial = FALSE) {
+  file.path(ugplot_job_dir(job_id, jobs_dir), if (isTRUE(partial)) "partial-result.rds" else "result.rds")
+}
+
 ugplot_write_rds_atomic <- function(object, path) {
   ugplot_ensure_dir(dirname(path))
   tmp_path <- paste0(path, ".tmp-", Sys.getpid(), "-", as.integer(stats::runif(1, 1, 1e9)))
@@ -91,7 +95,8 @@ ugplot_create_job <- function(dataset, config = list(), jobs_dir = ugplot_defaul
     updated_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
     pid = NA_integer_,
     error = NULL,
-    result_path = NULL
+    result_path = NULL,
+    partial_result_path = NULL
   )
   ugplot_write_job_status(job_id, status, jobs_dir)
   status
@@ -119,6 +124,51 @@ ugplot_update_job_status <- function(job_id, jobs_dir = ugplot_default_jobs_dir(
     status[[name]] <- updates[[name]]
   }
   ugplot_write_job_status(job_id, status, jobs_dir)
+}
+
+ugplot_write_job_partial_result <- function(job_id, result, jobs_dir = ugplot_default_jobs_dir()) {
+  partial_path <- ugplot_result_path(job_id, jobs_dir, partial = TRUE)
+  ugplot_write_rds_atomic(result, partial_path)
+  ugplot_update_job_status(
+    job_id,
+    jobs_dir,
+    partial_result_path = partial_path,
+    partial_saved_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+  )
+  invisible(partial_path)
+}
+
+ugplot_stop_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+  if (is.null(status)) {
+    stop("Job not found: ", job_id, call. = FALSE)
+  }
+  state <- status$state %||% ""
+  pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
+
+  if (state %in% c("finished", "failed", "stopped")) {
+    return(status)
+  }
+
+  if (!is.na(pid) && ugplot_process_alive(pid)) {
+    tools::pskill(pid, signal = tools::SIGTERM)
+    Sys.sleep(0.5)
+    if (ugplot_process_alive(pid)) {
+      tools::pskill(pid, signal = tools::SIGKILL)
+    }
+  }
+
+  partial_path <- status$partial_result_path %||% ugplot_result_path(job_id, jobs_dir, partial = TRUE)
+  has_partial <- !is.null(partial_path) && file.exists(partial_path)
+  ugplot_update_job_status(
+    job_id,
+    jobs_dir,
+    state = "stopped",
+    message = if (has_partial) "Stopped; partial result is available" else "Stopped",
+    error = NULL,
+    result_path = if (has_partial) partial_path else status$result_path
+  )
+  ugplot_read_job_status(job_id, jobs_dir)
 }
 
 ugplot_refresh_job_status <- function(status, jobs_dir = ugplot_default_jobs_dir()) {
@@ -174,7 +224,7 @@ ugplot_append_job_log <- function(job_id, message, jobs_dir = ugplot_default_job
 
 ugplot_read_job_result <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
   status <- ugplot_read_job_status(job_id, jobs_dir)
-  result_path <- status$result_path
+  result_path <- status$result_path %||% status$partial_result_path
   if (is.null(result_path) || !file.exists(result_path)) {
     stop("Result is not available for job: ", job_id, call. = FALSE)
   }

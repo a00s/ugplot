@@ -264,6 +264,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_list_jobs",
     "ugplot_remote_model_deps",
     "ugplot_remote_job_status",
+    "ugplot_remote_stop_job",
     "ugplot_remote_get_result",
     "ugplot_remote_servers_path",
     "ugplot_default_remote_servers",
@@ -860,9 +861,18 @@ ui <- fluidPage(
         tags$div(
           class = "jobs-toolbar",
           actionButton("remote_refresh_jobs", "Refresh jobs", icon = icon("refresh")),
-          textInput("remote_job_id", "Job ID", value = "", width = "360px"),
-          actionButton("remote_load_result", "Load result locally"),
-          downloadButton("downloadRemoteJobResult", "Download result (RDS)")
+          tags$div(style = "display: none;",
+            textInput("remote_job_id", "Job ID", value = "", width = "360px"),
+            downloadButton("downloadRemoteJobResult", "Download result (RDS)")
+          ),
+          tags$script(HTML(
+            "Shiny.addCustomMessageHandler('clickDownloadRemoteResult', function(id) {
+              setTimeout(function() {
+                var link = document.getElementById(id);
+                if (link) { link.click(); }
+              }, 250);
+            });"
+          ))
         ),
         DT::DTOutput("remote_jobs_table"),
         verbatimTextOutput("remote_job_status")
@@ -1851,6 +1861,7 @@ server <- function(input, output, session) {
   remote_jobs <- reactiveVal(data.frame())
   remote_job_status_text <- reactiveVal("")
   remote_result_cache <- reactiveVal(NULL)
+  remote_result_cache_job_id <- reactiveVal("")
 
   defaultpalette <- reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
   transpose_table2 <- reactiveVal(0)
@@ -1959,7 +1970,7 @@ server <- function(input, output, session) {
     },
     content = function(file) {
       result <- remote_result_cache()
-      if (is.null(result)) {
+      if (is.null(result) || !identical(remote_result_cache_job_id(), input$remote_job_id %||% "")) {
         req(nzchar(input$remote_job_id %||% ""))
         server <- selected_remote_server()
         result <- ugplot_remote_get_result(
@@ -3320,11 +3331,39 @@ server <- function(input, output, session) {
     if (!is.data.frame(jobs)) {
       jobs <- data.frame()
     }
+    character_columns <- names(jobs)[vapply(jobs, is.character, logical(1))]
+    for (column_name in character_columns) {
+      jobs[[column_name]] <- htmltools::htmlEscape(jobs[[column_name]])
+    }
+    if (nrow(jobs) > 0 && "id" %in% names(jobs)) {
+      job_ids <- as.character(jobs$id)
+      states <- if ("state" %in% names(jobs)) as.character(jobs$state) else rep("", length(job_ids))
+      can_load <- states %in% c("finished", "stopped", "failed")
+      can_stop <- states %in% c("queued", "running")
+      actions <- vapply(seq_along(job_ids), function(i) {
+        job_id <- htmltools::htmlEscape(job_ids[[i]], attribute = TRUE)
+        load_disabled <- if (isTRUE(can_load[[i]])) "" else " disabled"
+        stop_disabled <- if (isTRUE(can_stop[[i]])) "" else " disabled"
+        paste0(
+          "<div class='remote-job-actions'>",
+          "<button type='button' class='btn btn-default btn-sm' onclick=\"Shiny.setInputValue('remote_load_result_row', '", job_id, "', {priority: 'event'});\"", load_disabled, ">Load</button>",
+          "<button type='button' class='btn btn-default btn-sm' onclick=\"Shiny.setInputValue('remote_download_result_row', '", job_id, "', {priority: 'event'});\"", load_disabled, ">RDS</button>",
+          "<button type='button' class='btn btn-danger btn-sm' onclick=\"Shiny.setInputValue('remote_stop_job_row', '", job_id, "', {priority: 'event'});\"", stop_disabled, ">Stop</button>",
+          "</div>"
+        )
+      }, character(1))
+      jobs$Actions <- actions
+    }
+    table_options <- list(pageLength = 8, scrollX = TRUE)
+    if ("Actions" %in% names(jobs)) {
+      table_options$columnDefs <- list(list(orderable = FALSE, targets = which(names(jobs) == "Actions") - 1L))
+    }
     DT::datatable(
       jobs,
-      options = list(pageLength = 8, scrollX = TRUE),
+      options = table_options,
       rownames = FALSE,
-      selection = "single"
+      selection = "single",
+      escape = FALSE
     )
   })
 
@@ -3353,34 +3392,71 @@ server <- function(input, output, session) {
     })
   }, ignoreInit = TRUE)
 
-  observeEvent(input$remote_load_result, {
-    tryCatch({
-      req(nzchar(input$remote_job_id %||% ""))
-      server <- selected_remote_server()
-      result <- ugplot_remote_get_result(
-        server_url = server$url,
-        job_id = input$remote_job_id,
-        token = server$token %||% ""
-      )
-      remote_result_cache(result)
-      if (is.data.frame(result$results_table)) {
-        ml_table_results(result$results_table)
-      }
-      if (is.list(result$final_summary)) {
-        ml_final_summary(result$final_summary)
-      }
-      best_model_object(result$best_model %||% NULL)
-      best_model_preprocess(result$best_model_preprocess %||% NULL)
-      if (!is.null(result$best_model) && nzchar(result$best_model_name %||% "")) {
-        all_models_reactive(stats::setNames(list(result$best_model), result$best_model_name))
-      }
-      if (is.list(result$predictions)) {
-        ml_prediction <<- result$predictions
-      }
-      remote_job_status_text(paste("Remote result loaded locally:", input$remote_job_id))
+  load_remote_result_locally <- function(job_id, switch_to_ml = TRUE) {
+    req(nzchar(job_id %||% ""))
+    server <- selected_remote_server()
+    result <- ugplot_remote_get_result(
+      server_url = server$url,
+      job_id = job_id,
+      token = server$token %||% ""
+    )
+    remote_result_cache(result)
+    remote_result_cache_job_id(job_id)
+    if (is.data.frame(result$results_table)) {
+      ml_table_results(result$results_table)
+    }
+    if (is.list(result$final_summary)) {
+      ml_final_summary(result$final_summary)
+    }
+    best_model_object(result$best_model %||% NULL)
+    best_model_preprocess(result$best_model_preprocess %||% NULL)
+    if (!is.null(result$best_model) && nzchar(result$best_model_name %||% "")) {
+      all_models_reactive(stats::setNames(list(result$best_model), result$best_model_name))
+    }
+    if (is.list(result$predictions)) {
+      ml_prediction <<- result$predictions
+    }
+    remote_job_status_text(paste("Remote result loaded locally:", job_id))
+    if (isTRUE(switch_to_ml)) {
       updateTabsetPanel(session, "tabs", selected = "MACHINE LEARNING")
+    }
+    invisible(result)
+  }
+
+  observeEvent(input$remote_load_result_row, {
+    tryCatch({
+      updateTextInput(session, "remote_job_id", value = input$remote_load_result_row)
+      load_remote_result_locally(input$remote_load_result_row)
     }, error = function(e) {
       remote_job_status_text(paste("Remote result load failed:", conditionMessage(e)))
+    })
+  })
+
+  observeEvent(input$remote_download_result_row, {
+    tryCatch({
+      job_id <- input$remote_download_result_row
+      updateTextInput(session, "remote_job_id", value = job_id)
+      load_remote_result_locally(job_id, switch_to_ml = FALSE)
+      session$sendCustomMessage("clickDownloadRemoteResult", "downloadRemoteJobResult")
+    }, error = function(e) {
+      remote_job_status_text(paste("Remote result download failed:", conditionMessage(e)))
+    })
+  })
+
+  observeEvent(input$remote_stop_job_row, {
+    tryCatch({
+      job_id <- input$remote_stop_job_row
+      server <- selected_remote_server()
+      status <- ugplot_remote_stop_job(
+        server_url = server$url,
+        job_id = job_id,
+        token = server$token %||% ""
+      )
+      updateTextInput(session, "remote_job_id", value = job_id)
+      refresh_remote_jobs()
+      remote_job_status_text(paste("Remote job stopped:", job_id, "-", status$message %||% ""))
+    }, error = function(e) {
+      remote_job_status_text(paste("Remote stop failed:", conditionMessage(e)))
     })
   })
 

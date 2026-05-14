@@ -63,8 +63,10 @@ ugplot_ml_classify_error <- function(error_message) {
 #' @param dataset Data frame containing target and predictor columns.
 #' @param config List with target, models, seeds and preprocessing options.
 #' @param progress_callback Function called with progress and message.
+#' @param partial_callback Function called with recoverable partial results.
 #' @return A list containing results, summary, best model and predictions.
-ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = function(...) NULL) {
+ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = function(...) NULL,
+                              partial_callback = function(...) NULL) {
   if (!is.data.frame(dataset)) {
     stop("dataset must be a data.frame.", call. = FALSE)
   }
@@ -127,6 +129,76 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
   metric_values <- list()
   mae_values <- list()
   rmse_values <- list()
+
+  current_result <- function(partial = FALSE) {
+    metric_name <- if (is.factor(X_base[[target_name]])) "Accuracy" else "R2"
+    robust_stats_rows <- lapply(models, function(model_name) {
+      values <- metric_values[[model_name]]
+      values <- values[is.finite(values)]
+      data.frame(
+        Model = model_name,
+        MeanMetric = if (length(values) > 0) round(mean(values), 4) else NA_real_,
+        MedianMetric = if (length(values) > 0) round(stats::median(values), 4) else NA_real_,
+        IQRMetric = if (length(values) > 1) round(stats::IQR(values), 4) else NA_real_,
+        MinMetric = if (length(values) > 0) round(min(values), 4) else NA_real_,
+        MaxMetric = if (length(values) > 0) round(max(values), 4) else NA_real_,
+        RangeMetric = if (length(values) > 1) round(diff(range(values)), 4) else NA_real_,
+        stringsAsFactors = FALSE
+      )
+    })
+    robust_stats <- do.call(rbind, robust_stats_rows)
+    if (is.data.frame(robust_stats) && nrow(robust_stats) > 0) {
+      robust_stats <- robust_stats[order(-robust_stats$MedianMetric, robust_stats$Model), , drop = FALSE]
+    }
+
+    best_model_metrics <- metric_values[[best_model_name]]
+    best_model_metrics <- best_model_metrics[is.finite(best_model_metrics)]
+    best_model_mae <- mae_values[[best_model_name]]
+    best_model_mae <- best_model_mae[is.finite(best_model_mae)]
+    best_model_rmse <- rmse_values[[best_model_name]]
+    best_model_rmse <- best_model_rmse[is.finite(best_model_rmse)]
+    status_values <- if ("Status" %in% names(results)) as.character(results$Status) else character(0)
+    final_summary <- list(
+      best_model = best_model_name,
+      best_model_label = best_model_label,
+      dataset_seed = if (!is.na(best_dataset_seed)) best_dataset_seed else "N/A",
+      training_seed = if (!is.na(best_training_seed)) best_training_seed else "N/A",
+      metric_name = metric_name,
+      metric_value = if (is.finite(best_result)) best_result else NA_real_,
+      best_model_min = if (length(best_model_metrics) > 0) round(min(best_model_metrics), 4) else "N/A",
+      best_model_max = if (length(best_model_metrics) > 0) round(max(best_model_metrics), 4) else "N/A",
+      best_model_mean = if (length(best_model_metrics) > 0) round(mean(best_model_metrics), 4) else "N/A",
+      best_model_median = if (length(best_model_metrics) > 0) round(stats::median(best_model_metrics), 4) else "N/A",
+      best_model_iqr = if (length(best_model_metrics) > 1) round(stats::IQR(best_model_metrics), 4) else "N/A",
+      best_model_range = if (length(best_model_metrics) > 1) round(diff(range(best_model_metrics)), 4) else "N/A",
+      best_model_mae_median = if (length(best_model_mae) > 0) round(stats::median(best_model_mae), 4) else "N/A",
+      best_model_mae_iqr = if (length(best_model_mae) > 1) round(stats::IQR(best_model_mae), 4) else "N/A",
+      best_model_rmse_median = if (length(best_model_rmse) > 0) round(stats::median(best_model_rmse), 4) else "N/A",
+      best_model_rmse_iqr = if (length(best_model_rmse) > 1) round(stats::IQR(best_model_rmse), 4) else "N/A",
+      mae = if (identical(metric_name, "R2")) best_mae else NA_real_,
+      rmse = if (identical(metric_name, "R2")) best_rmse else NA_real_,
+      total_elapsed_seconds = round(proc.time()[["elapsed"]] - start_time, 3),
+      completed_runs = completed_runs,
+      total_runs = total_runs,
+      ok_runs = sum(status_values == "OK", na.rm = TRUE),
+      timeout_runs = sum(status_values == "TIMEOUT", na.rm = TRUE),
+      incompatible_runs = sum(status_values == "INCOMPATIBLE", na.rm = TRUE),
+      invalid_metric_runs = sum(status_values == "INVALID_METRICS", na.rm = TRUE),
+      error_runs = sum(status_values == "ERROR", na.rm = TRUE),
+      model_robust_stats = robust_stats
+    )
+
+    list(
+      results_table = results,
+      final_summary = final_summary,
+      best_model = best_model_object,
+      best_model_name = best_model_name,
+      best_model_preprocess = best_preprocess,
+      predictions = predictions,
+      partial = isTRUE(partial),
+      updated_at = as.character(Sys.time())
+    )
+  }
 
   cl <- NULL
   start_cluster <- function() {
@@ -391,72 +463,12 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
         }
         completed_runs <- completed_runs + 1L
         progress_callback(progress = completed_runs / total_runs, message = paste("Finished", model_name))
+        partial_callback(current_result(partial = TRUE))
       }
     }
   }
 
-  metric_name <- if (is.factor(X_base[[target_name]])) "Accuracy" else "R2"
-  robust_stats_rows <- lapply(models, function(model_name) {
-    values <- metric_values[[model_name]]
-    values <- values[is.finite(values)]
-    data.frame(
-      Model = model_name,
-      MeanMetric = if (length(values) > 0) round(mean(values), 4) else NA_real_,
-      MedianMetric = if (length(values) > 0) round(stats::median(values), 4) else NA_real_,
-      IQRMetric = if (length(values) > 1) round(stats::IQR(values), 4) else NA_real_,
-      MinMetric = if (length(values) > 0) round(min(values), 4) else NA_real_,
-      MaxMetric = if (length(values) > 0) round(max(values), 4) else NA_real_,
-      RangeMetric = if (length(values) > 1) round(diff(range(values)), 4) else NA_real_,
-      stringsAsFactors = FALSE
-    )
-  })
-  robust_stats <- do.call(rbind, robust_stats_rows)
-  if (is.data.frame(robust_stats) && nrow(robust_stats) > 0) {
-    robust_stats <- robust_stats[order(-robust_stats$MedianMetric, robust_stats$Model), , drop = FALSE]
-  }
-
-  best_model_metrics <- metric_values[[best_model_name]]
-  best_model_metrics <- best_model_metrics[is.finite(best_model_metrics)]
-  best_model_mae <- mae_values[[best_model_name]]
-  best_model_mae <- best_model_mae[is.finite(best_model_mae)]
-  best_model_rmse <- rmse_values[[best_model_name]]
-  best_model_rmse <- best_model_rmse[is.finite(best_model_rmse)]
-  status_values <- if ("Status" %in% names(results)) as.character(results$Status) else character(0)
-  final_summary <- list(
-    best_model = best_model_name,
-    best_model_label = best_model_label,
-    dataset_seed = if (!is.na(best_dataset_seed)) best_dataset_seed else "N/A",
-    training_seed = if (!is.na(best_training_seed)) best_training_seed else "N/A",
-    metric_name = metric_name,
-    metric_value = if (is.finite(best_result)) best_result else NA_real_,
-    best_model_min = if (length(best_model_metrics) > 0) round(min(best_model_metrics), 4) else "N/A",
-    best_model_max = if (length(best_model_metrics) > 0) round(max(best_model_metrics), 4) else "N/A",
-    best_model_mean = if (length(best_model_metrics) > 0) round(mean(best_model_metrics), 4) else "N/A",
-    best_model_median = if (length(best_model_metrics) > 0) round(stats::median(best_model_metrics), 4) else "N/A",
-    best_model_iqr = if (length(best_model_metrics) > 1) round(stats::IQR(best_model_metrics), 4) else "N/A",
-    best_model_range = if (length(best_model_metrics) > 1) round(diff(range(best_model_metrics)), 4) else "N/A",
-    best_model_mae_median = if (length(best_model_mae) > 0) round(stats::median(best_model_mae), 4) else "N/A",
-    best_model_mae_iqr = if (length(best_model_mae) > 1) round(stats::IQR(best_model_mae), 4) else "N/A",
-    best_model_rmse_median = if (length(best_model_rmse) > 0) round(stats::median(best_model_rmse), 4) else "N/A",
-    best_model_rmse_iqr = if (length(best_model_rmse) > 1) round(stats::IQR(best_model_rmse), 4) else "N/A",
-    mae = if (identical(metric_name, "R2")) best_mae else NA_real_,
-    rmse = if (identical(metric_name, "R2")) best_rmse else NA_real_,
-    total_elapsed_seconds = round(proc.time()[["elapsed"]] - start_time, 3),
-    ok_runs = sum(status_values == "OK", na.rm = TRUE),
-    timeout_runs = sum(status_values == "TIMEOUT", na.rm = TRUE),
-    incompatible_runs = sum(status_values == "INCOMPATIBLE", na.rm = TRUE),
-    invalid_metric_runs = sum(status_values == "INVALID_METRICS", na.rm = TRUE),
-    error_runs = sum(status_values == "ERROR", na.rm = TRUE),
-    model_robust_stats = robust_stats
-  )
-
-  list(
-    results_table = results,
-    final_summary = final_summary,
-    best_model = best_model_object,
-    best_model_name = best_model_name,
-    best_model_preprocess = best_preprocess,
-    predictions = predictions,
-    finished_at = as.character(Sys.time())
-  )
+  result <- current_result(partial = FALSE)
+  result$finished_at <- as.character(Sys.time())
+  result
 }

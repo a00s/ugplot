@@ -71,3 +71,31 @@ test_that("job listing marks dead background processes as failed", {
   expect_match(refreshed$message, "Background process stopped")
   expect_equal(listed$state, "failed")
 })
+
+test_that("stopped jobs keep partial results available", {
+  local_env <- new.env(parent = globalenv())
+  local_env$`%||%` <- function(lhs, rhs) {
+    if (is.null(lhs)) rhs else lhs
+  }
+  job_store_path <- file.path("R", "job_store.R")
+  if (!file.exists(job_store_path)) {
+    job_store_path <- file.path("..", "..", "R", "job_store.R")
+  }
+  sys.source(job_store_path, envir = local_env)
+
+  jobs_dir <- tempfile("ugplot-jobs-")
+  dataset <- data.frame(x = 1:3)
+  status <- local_env$ugplot_create_job(dataset, config = list(runner = "ugplot_run_placeholder_job"), jobs_dir = jobs_dir)
+  local_env$ugplot_write_job_partial_result(status$id, list(results_table = data.frame(x = 1)), jobs_dir)
+  status <- local_env$ugplot_read_job_status(status$id, jobs_dir)
+
+  status$state <- "running"
+  status$pid <- 2147483647L
+  local_env$ugplot_write_job_status(status$id, status, jobs_dir)
+
+  stopped <- local_env$ugplot_stop_job(status$id, jobs_dir)
+
+  expect_equal(stopped$state, "stopped")
+  expect_true(file.exists(stopped$result_path))
+  expect_equal(readRDS(stopped$result_path)$results_table$x, 1)
+})

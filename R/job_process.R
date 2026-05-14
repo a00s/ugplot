@@ -51,11 +51,18 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
     }
     do.call(ugplot_update_job_status, c(list(job_id = job_id, jobs_dir = jobs_dir), updates))
   }
+  partial_callback <- function(result) {
+    ugplot_write_job_partial_result(job_id, result, jobs_dir)
+  }
 
   tryCatch({
     runner_fun <- get(runner, mode = "function")
-    result <- runner_fun(dataset = dataset, config = config, progress_callback = progress_callback)
-    result_path <- file.path(job_dir, "result.rds")
+    runner_args <- list(dataset = dataset, config = config, progress_callback = progress_callback)
+    if ("partial_callback" %in% names(formals(runner_fun))) {
+      runner_args$partial_callback <- partial_callback
+    }
+    result <- do.call(runner_fun, runner_args)
+    result_path <- ugplot_result_path(job_id, jobs_dir)
     saveRDS(result, result_path)
     ugplot_update_job_status(
       job_id,
