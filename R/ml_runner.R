@@ -54,6 +54,68 @@ ugplot_ml_classify_error <- function(error_message) {
   }
 }
 
+ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctrl,
+                                         tune_length, timeout, model_libraries,
+                                         parallel_enabled = FALSE, cpu_limit = 1L,
+                                         lib_paths = .libPaths()) {
+  if (!requireNamespace("callr", quietly = TRUE)) {
+    stop("Package 'callr' is required to enforce remote model timeouts.", call. = FALSE)
+  }
+
+  callr::r(
+    func = function(train_set, target_name, model_name, ctrl, tune_length,
+                    model_libraries, parallel_enabled, cpu_limit, lib_paths) {
+      .libPaths(lib_paths)
+      Sys.setenv(
+        OMP_NUM_THREADS = cpu_limit,
+        MKL_NUM_THREADS = cpu_limit,
+        OPENBLAS_NUM_THREADS = cpu_limit,
+        VECLIB_MAXIMUM_THREADS = cpu_limit,
+        NUMEXPR_NUM_THREADS = cpu_limit,
+        UGPLOT_CPU_LIMIT = cpu_limit
+      )
+      for (lib in model_libraries) {
+        suppressPackageStartupMessages(library(lib, character.only = TRUE))
+      }
+
+      cl <- NULL
+      if (isTRUE(parallel_enabled)) {
+        cl <- parallel::makeCluster(cpu_limit)
+        doParallel::registerDoParallel(cl)
+      }
+      on.exit({
+        if (!is.null(cl)) {
+          try(parallel::stopCluster(cl), silent = TRUE)
+        }
+        foreach::registerDoSEQ()
+      }, add = TRUE)
+
+      ctrl$allowParallel <- isTRUE(parallel_enabled)
+      caret::train(
+        stats::as.formula(paste(target_name, "~ .")),
+        data = train_set,
+        method = model_name,
+        trControl = ctrl,
+        tuneLength = tune_length
+      )
+    },
+    args = list(
+      train_set = train_set,
+      target_name = target_name,
+      model_name = model_name,
+      ctrl = ctrl,
+      tune_length = tune_length,
+      model_libraries = model_libraries,
+      parallel_enabled = isTRUE(parallel_enabled),
+      cpu_limit = max(1L, as.integer(cpu_limit)),
+      lib_paths = lib_paths
+    ),
+    timeout = timeout,
+    stdout = NULL,
+    stderr = NULL
+  )
+}
+
 #' Run a ugplot machine learning job
 #'
 #' Executes a caret model search from a dataset and plain list configuration.
@@ -200,26 +262,6 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
     )
   }
 
-  cl <- NULL
-  start_cluster <- function() {
-    stop_cluster()
-    cl <<- parallel::makeCluster(cpu_limit)
-    doParallel::registerDoParallel(cl)
-    invisible(cl)
-  }
-  stop_cluster <- function() {
-    if (!is.null(cl)) {
-      try(parallel::stopCluster(cl), silent = TRUE)
-      cl <<- NULL
-    }
-    foreach::registerDoSEQ()
-    invisible(NULL)
-  }
-  if (parallel_enabled && !restart_parallel_each_model) {
-    start_cluster()
-  }
-  on.exit(stop_cluster(), add = TRUE)
-
   cv_settings <- ugplot_ml_cv_settings(config)
   missing_definition <- config$missing_definition %||% c("empty", "na")
   zero_exceptions <- config$zero_exceptions %||% character(0)
@@ -339,33 +381,30 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
         run_error <- ""
         model <- tryCatch({
           train_once <- function() {
-            if (parallel_enabled && restart_parallel_each_model && isTRUE(ctrl$allowParallel)) {
-              start_cluster()
-              on.exit(stop_cluster(), add = TRUE)
-            }
-            R.utils::withTimeout(
-              caret::train(
-                stats::as.formula(paste(target_name, "~ .")),
-                data = train_set,
-                method = model_name,
-                trControl = ctrl,
-                tuneLength = cv_settings$tune_length
-              ),
+            ugplot_ml_train_with_timeout(
+              train_set = train_set,
+              target_name = target_name,
+              model_name = model_name,
+              ctrl = ctrl,
+              tune_length = cv_settings$tune_length,
               timeout = timeout,
-              onTimeout = "error"
+              model_libraries = model_info$library,
+              parallel_enabled = parallel_enabled,
+              cpu_limit = cpu_limit,
+              lib_paths = .libPaths()
             )
           }
           tryCatch(train_once(), error = function(e) {
             connection_error <- grepl("error (writing|reading) to connection|serialize|unserialize|SOCK", conditionMessage(e), ignore.case = TRUE)
             if (parallel_enabled && retry_parallel_connection_errors && connection_error) {
-              stop_cluster()
-              if (!restart_parallel_each_model) {
-                start_cluster()
-              }
               return(train_once())
             }
             stop(e)
           })
+        }, callr_timeout_error = function(e) {
+          run_status <<- "TIMEOUT"
+          run_error <<- paste0("Timed out after ", timeout, " seconds")
+          NULL
         }, TimeoutException = function(e) {
           run_status <<- "TIMEOUT"
           run_error <<- paste0("Timed out after ", timeout, " seconds")
