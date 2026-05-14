@@ -107,7 +107,7 @@ ugplot_read_rds_base64 <- function(value) {
 #' @param register Whether to write a local state file for status/stop.
 #' @return The plumber server result.
 #' @export
-ugPlotServer <- function(host = "127.0.0.1", port = 8080,
+ugPlotServer <- function(host = "0.0.0.0", port = 8080,
                          jobs_dir = ugplot_default_jobs_dir(),
                          token = "", name = "default", register = TRUE) {
   ugplot_assert_server_system_deps()

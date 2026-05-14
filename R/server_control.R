@@ -102,7 +102,7 @@ ugplot_write_server_state <- function(state, name = "default") {
   invisible(state)
 }
 
-ugplot_register_server_state <- function(host = "127.0.0.1", port = 8080,
+ugplot_register_server_state <- function(host = "0.0.0.0", port = 8080,
                                          jobs_dir = ugplot_default_jobs_dir(),
                                          token = "", name = "default",
                                          pid = Sys.getpid(), log_file = NA_character_,
@@ -145,7 +145,7 @@ ugplot_mark_server_state_stopped <- function(name = "default") {
 #' @param name Local server handle name used by status/stop.
 #' @return Invisibly returns the server state.
 #' @export
-ugPlotServerStart <- function(host = "127.0.0.1", port = 8080,
+ugPlotServerStart <- function(host = "0.0.0.0", port = 8080,
                               jobs_dir = ugplot_default_jobs_dir(),
                               token = "", name = "default") {
   if (!requireNamespace("callr", quietly = TRUE)) {

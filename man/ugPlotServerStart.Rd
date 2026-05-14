@@ -3,7 +3,7 @@
 \title{Start a ugplot job server in the background}
 \usage{
 ugPlotServerStart(
-  host = "127.0.0.1",
+  host = "0.0.0.0",
   port = 8080,
   jobs_dir = ugplot_default_jobs_dir(),
   token = "",
