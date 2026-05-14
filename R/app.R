@@ -262,6 +262,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_parse",
     "ugplot_remote_create_job",
     "ugplot_remote_list_jobs",
+    "ugplot_remote_model_deps",
     "ugplot_remote_job_status",
     "ugplot_remote_get_result",
     "ugplot_remote_servers_path",
@@ -794,17 +795,11 @@ ui <- fluidPage(
               )
             ),
             verbatimTextOutput("console_output"),
-            column(
-              width = 6,
-              tags$h4("Models installed", style = "margin-top: 10px;"),
-              tags$div(class = "table-list-filter",
-                textInput("filter_ml_models", NULL, placeholder = "Search models", width = "100%")),
-              div(class = "scrollable-table", div(id = "dynamic_machine_learning")),
-              actionButton("uncheck_all_ml", "Uncheck all"),
-              actionButton("check_all_ml", "Check all"),
+            tags$div(
+              class = "ml-model-source-controls",
               radioButtons(
                 "ml_run_target",
-                "Run target",
+                "Model source / run target",
                 choices = c("Local" = "local", "Remote server" = "remote"),
                 selected = "local",
                 inline = TRUE
@@ -814,6 +809,16 @@ ui <- fluidPage(
                 selectInput("remote_server_name", "Remote server", choices = NULL),
                 textInput("remote_job_name", "Job name", value = "")
               ),
+              textOutput("ml_model_source_status")
+            ),
+            column(
+              width = 6,
+              tags$h4("Models installed", style = "margin-top: 10px;"),
+              tags$div(class = "table-list-filter",
+                textInput("filter_ml_models", NULL, placeholder = "Search models", width = "100%")),
+              div(class = "scrollable-table", div(id = "dynamic_machine_learning")),
+              actionButton("uncheck_all_ml", "Uncheck all"),
+              actionButton("check_all_ml", "Check all"),
               actionButton("play_search_best_model_caret", "RUN"),
               uiOutput("downloadModelUI"),
               tags$br(),
@@ -827,7 +832,17 @@ ui <- fluidPage(
               div(class = "scrollable-table", div(id = "dynamic_machine_learning_missing")),
               actionButton("uncheck_all_ml_missing", "Uncheck all"),
               actionButton("check_all_ml_missing", "Check all"),
-              actionButton("install_missing_modules", "Install libraries")
+              conditionalPanel(
+                condition = "input.ml_run_target == 'local'",
+                actionButton("install_missing_modules", "Install libraries")
+              ),
+              conditionalPanel(
+                condition = "input.ml_run_target == 'remote'",
+                tags$p(
+                  class = "ml-remote-install-note",
+                  "Install missing model libraries on the selected server, then refresh the model source."
+                )
+              )
             ),
             div(style = "width: 100%; overflow-x: auto;", uiOutput("ml_error_message")),
             div(style = "overflow-x: auto; width: 100%;", uiOutput("dynamic_ml_plot")),
@@ -1032,8 +1047,10 @@ ui <- fluidPage(
 
 # --- Helper functions (defined globally) ---
 
-load_ml_list <- function() {
-  model_deps <- ugplot_model_dependency_status()
+load_ml_list <- function(model_deps = NULL) {
+  if (is.null(model_deps)) {
+    model_deps <- ugplot_model_dependency_status()
+  }
   ml_available <<- setdiff(model_deps$models_installed, slow_models)
   ml_not_available <<- model_deps$models_missing
   removeUI(selector = "#ml_checkbox_group")
@@ -1550,6 +1567,7 @@ server <- function(input, output, session) {
   loaded_model <- reactiveVal(NULL)
   remote_servers <- reactiveVal(ugplot_read_remote_servers())
   config_remote_editing_name <- reactiveVal(NULL)
+  ml_model_source_status_text <- reactiveVal("")
 
   hideTab(inputId = "tabs", target = "TABLE")
   hideTab(inputId = "tabs", target = "HEATMAP PLOT")
@@ -1632,6 +1650,47 @@ server <- function(input, output, session) {
   observe({
     refresh_remote_server_inputs()
   })
+
+  load_selected_ml_list <- function() {
+    if (identical(input$ml_run_target %||% "local", "remote")) {
+      server <- selected_remote_server()
+      model_deps <- ugplot_remote_model_deps(
+        server_url = server$url,
+        token = server$token %||% ""
+      )
+      load_ml_list(model_deps)
+      ml_model_source_status_text(paste("Models loaded from remote server:", server$name))
+      return(invisible(model_deps))
+    }
+
+    model_deps <- ugplot_model_dependency_status()
+    load_ml_list(model_deps)
+    ml_model_source_status_text("Models loaded from this R session.")
+    invisible(model_deps)
+  }
+
+  output$ml_model_source_status <- renderText({
+    ml_model_source_status_text()
+  })
+
+  observeEvent(input$ml_run_target, {
+    tryCatch({
+      load_selected_ml_list()
+    }, error = function(e) {
+      ml_model_source_status_text(paste("Could not load model list:", conditionMessage(e)))
+    })
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$remote_server_name, {
+    if (!identical(input$ml_run_target %||% "local", "remote")) {
+      return()
+    }
+    tryCatch({
+      load_selected_ml_list()
+    }, error = function(e) {
+      ml_model_source_status_text(paste("Could not load remote model list:", conditionMessage(e)))
+    })
+  }, ignoreInit = TRUE)
 
   show_remote_server_modal <- function(server = NULL) {
     is_edit <- is.data.frame(server) && nrow(server) == 1
@@ -3411,7 +3470,7 @@ server <- function(input, output, session) {
       }
       BiocManager::install("methyLImp2", ask = FALSE, update = FALSE)
     }
-    load_ml_list()
+    load_selected_ml_list()
   })
 
   observe({
@@ -5698,7 +5757,12 @@ observeEvent(input$model_file, {
 
   load_dataset_into_table(session)
   update_scramble_selector()
-  load_ml_list()
+  tryCatch({
+    load_selected_ml_list()
+  }, error = function(e) {
+    ml_model_source_status_text(paste("Could not load model list:", conditionMessage(e)))
+    load_ml_list()
+  })
 
 }  # End of server function
 

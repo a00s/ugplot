@@ -134,6 +134,10 @@ ugPlotServer <- function(host = "127.0.0.1", port = 8080,
     ugplot_list_jobs(jobs_dir)
   })
 
+  pr$handle("GET", "/models/dependencies", function() {
+    ugplot_model_dependency_status()
+  })
+
   pr$handle("GET", "/jobs/<job_id>", function(job_id, res) {
     tryCatch(
       ugplot_read_job_status(job_id, jobs_dir),

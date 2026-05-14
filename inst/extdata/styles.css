@@ -457,3 +457,17 @@ table.dataTable th.dt-error-column {
 .remote-server-remove {
   color: #b23b3b;
 }
+
+.ml-model-source-controls {
+  margin: 12px 0 14px 0;
+}
+
+.ml-model-source-controls .form-group {
+  max-width: 520px;
+}
+
+.ml-remote-install-note {
+  margin-top: 8px;
+  color: #6b7280;
+  font-size: 13px;
+}
