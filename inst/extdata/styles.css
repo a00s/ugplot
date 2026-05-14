@@ -458,6 +458,13 @@ table.dataTable th.dt-error-column {
   color: #b23b3b;
 }
 
+.remote-server-test-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 0 4px 0;
+}
+
 .ml-model-source-controls {
   margin: 12px 0 14px 0;
 }

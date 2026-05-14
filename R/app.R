@@ -261,6 +261,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_request",
     "ugplot_remote_parse",
     "ugplot_remote_create_job",
+    "ugplot_remote_health",
     "ugplot_remote_list_jobs",
     "ugplot_remote_model_deps",
     "ugplot_remote_job_status",
@@ -1569,6 +1570,7 @@ server <- function(input, output, session) {
   loaded_model <- reactiveVal(NULL)
   remote_servers <- reactiveVal(ugplot_read_remote_servers())
   config_remote_editing_name <- reactiveVal(NULL)
+  config_remote_test_status <- reactiveVal("")
   ml_model_source_status_text <- reactiveVal("")
 
   hideTab(inputId = "tabs", target = "TABLE")
@@ -1614,6 +1616,10 @@ server <- function(input, output, session) {
     )
   })
 
+  output$config_remote_test_status <- renderText({
+    config_remote_test_status()
+  })
+
   remote_server_choices <- function() {
     servers <- remote_servers()
     if (!is.data.frame(servers) || nrow(servers) == 0) {
@@ -1633,6 +1639,14 @@ server <- function(input, output, session) {
       server <- servers[1, , drop = FALSE]
     }
     server
+  }
+
+  selected_remote_cpu_limit <- function(server = selected_remote_server()) {
+    cpu_limit <- suppressWarnings(as.integer(server$cpu_limit[[1]] %||% configured_cpu_limit()))
+    if (is.na(cpu_limit) || cpu_limit < 1L) {
+      cpu_limit <- configured_cpu_limit()
+    }
+    cpu_limit
   }
 
   refresh_remote_server_inputs <- function(selected = NULL) {
@@ -1697,11 +1711,30 @@ server <- function(input, output, session) {
   show_remote_server_modal <- function(server = NULL) {
     is_edit <- is.data.frame(server) && nrow(server) == 1
     config_remote_editing_name(if (is_edit) server$name[[1]] else NULL)
+    config_remote_test_status("")
+    current_cpu_limit <- suppressWarnings(as.integer(if (is_edit && "cpu_limit" %in% names(server)) server$cpu_limit[[1]] else default_system_cpu_limit))
+    if (is.na(current_cpu_limit) || current_cpu_limit < 1L) {
+      current_cpu_limit <- default_system_cpu_limit
+    }
+    cpu_slider_max <- max(total_system_cpus, current_cpu_limit)
     showModal(modalDialog(
       title = if (is_edit) "Edit remote server" else "Add remote server",
       textInput("config_remote_name", "Server name", value = if (is_edit) server$name[[1]] else ""),
       textInput("config_remote_url", "Server URL", value = if (is_edit) server$url[[1]] else "http://127.0.0.1:8080"),
       passwordInput("config_remote_token", "Token", value = if (is_edit) server$token[[1]] else ""),
+      sliderInput(
+        "config_remote_cpu_limit",
+        "CPUs to use on this server",
+        min = 1,
+        max = cpu_slider_max,
+        value = min(current_cpu_limit, cpu_slider_max),
+        step = 1
+      ),
+      tags$div(
+        class = "remote-server-test-row",
+        actionButton("config_remote_test", "Test connection", icon = icon("plug")),
+        textOutput("config_remote_test_status", inline = TRUE)
+      ),
       footer = tagList(
         modalButton("Cancel"),
         actionButton("config_remote_save", if (is_edit) "Save changes" else "Add server", icon = icon("save"))
@@ -1748,6 +1781,7 @@ server <- function(input, output, session) {
       name = servers$name,
       url = servers$url,
       token = token_status,
+      cpus = servers$cpu_limit,
       actions = actions,
       stringsAsFactors = FALSE,
       check.names = FALSE
@@ -1756,6 +1790,32 @@ server <- function(input, output, session) {
 
   observeEvent(input$config_remote_add, {
     show_remote_server_modal()
+  })
+
+  observeEvent(input$config_remote_test, {
+    tryCatch({
+      health <- ugplot_remote_health(
+        server_url = input$config_remote_url,
+        token = input$config_remote_token %||% ""
+      )
+      cpus <- suppressWarnings(as.integer(health$cpus %||% NA_integer_))
+      if (is.na(cpus) || cpus < 1L) {
+        stop("Server did not return CPU information.", call. = FALSE)
+      }
+      default_limit <- suppressWarnings(as.integer(health$default_cpu_limit %||% max(1L, cpus - 1L)))
+      if (is.na(default_limit) || default_limit < 1L) {
+        default_limit <- max(1L, cpus - 1L)
+      }
+      updateSliderInput(
+        session,
+        "config_remote_cpu_limit",
+        max = cpus,
+        value = min(default_limit, cpus)
+      )
+      config_remote_test_status(paste0("Connected. Available CPUs: ", cpus, ". Suggested: ", min(default_limit, cpus), "."))
+    }, error = function(e) {
+      config_remote_test_status(paste("Connection failed:", conditionMessage(e)))
+    })
   })
 
   observeEvent(input$config_remote_action, {
@@ -1794,7 +1854,8 @@ server <- function(input, output, session) {
       servers <- ugplot_upsert_remote_server(
         name = input$config_remote_name,
         url = input$config_remote_url,
-        token = input$config_remote_token %||% ""
+        token = input$config_remote_token %||% "",
+        cpu_limit = input$config_remote_cpu_limit %||% 1L
       )
       remote_servers(servers)
       refresh_remote_server_inputs(input$config_remote_name)
@@ -1826,7 +1887,7 @@ server <- function(input, output, session) {
         lengthChange = FALSE,
         scrollX = TRUE,
         columnDefs = list(
-          list(targets = 3, orderable = FALSE, searchable = FALSE, className = "remote-server-actions")
+          list(targets = 4, orderable = FALSE, searchable = FALSE, className = "remote-server-actions")
         )
       ),
       rownames = FALSE,
@@ -3257,7 +3318,7 @@ server <- function(input, output, session) {
       cv_folds = input$ml_cv_folds %||% 10,
       cv_repeats = input$ml_cv_repeats %||% 1,
       tune_length = input$ml_tune_length %||% 3,
-      cpu_limit = configured_cpu_limit(),
+      cpu_limit = selected_remote_cpu_limit(),
       parallel_enabled = isTRUE(input$config_parallel_cubist_models),
       restart_parallel_each_model = isTRUE(input$config_restart_parallel_each_model),
       retry_parallel_connection_errors = isTRUE(input$config_retry_parallel_connection_errors)

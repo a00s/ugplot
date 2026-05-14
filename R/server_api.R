@@ -147,7 +147,16 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
   })
 
   pr$handle("GET", "/health", function() {
-    list(status = "ok", jobs_dir = jobs_dir)
+    total_cpus <- tryCatch(parallel::detectCores(logical = TRUE), error = function(e) NA_integer_)
+    if (is.na(total_cpus) || total_cpus < 1L) {
+      total_cpus <- 1L
+    }
+    list(
+      status = "ok",
+      jobs_dir = jobs_dir,
+      cpus = as.integer(total_cpus),
+      default_cpu_limit = max(1L, as.integer(total_cpus) - 1L)
+    )
   })
 
   pr$handle("GET", "/jobs", function() {

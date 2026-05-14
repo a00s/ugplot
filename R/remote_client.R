@@ -48,6 +48,12 @@ ugplot_remote_create_job <- function(server_url, dataset, config, token = "") {
   ugplot_remote_parse(response)
 }
 
+ugplot_remote_health <- function(server_url, token = "") {
+  request <- ugplot_remote_request(server_url, "health", token)
+  response <- httr::GET(request$url, request$headers)
+  ugplot_remote_parse(response)
+}
+
 ugplot_remote_list_jobs <- function(server_url, token = "") {
   request <- ugplot_remote_request(server_url, "jobs", token)
   response <- httr::GET(request$url, request$headers)
