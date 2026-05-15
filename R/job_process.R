@@ -86,11 +86,10 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
   })
 }
 
-ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugplot_default_jobs_dir()) {
+ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
   if (!requireNamespace("callr", quietly = TRUE)) {
     stop("Package 'callr' is required to start background jobs.", call. = FALSE)
   }
-  status <- ugplot_create_job(dataset = dataset, config = config, jobs_dir = jobs_dir)
   lib_paths <- .libPaths()
   source_dir <- if (file.exists(file.path(getwd(), "R", "app.R"))) normalizePath(getwd(), mustWork = FALSE) else NULL
   process <- callr::r_bg(
@@ -130,14 +129,46 @@ ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugp
         stop(e)
       })
     },
-    args = list(job_id = status$id, jobs_dir = jobs_dir, lib_paths = lib_paths, source_dir = source_dir),
+    args = list(job_id = job_id, jobs_dir = jobs_dir, lib_paths = lib_paths, source_dir = source_dir),
     supervise = TRUE
   )
   ugplot_update_job_status(
-    status$id,
+    job_id,
     jobs_dir,
     pid = process$get_pid(),
     message = "Started background process"
   )
-  list(job = ugplot_read_job_status(status$id, jobs_dir), process = process)
+  list(job = ugplot_read_job_status(job_id, jobs_dir), process = process)
+}
+
+ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugplot_default_jobs_dir()) {
+  config$use_callr_timeout <- FALSE
+  status <- ugplot_create_job(dataset = dataset, config = config, jobs_dir = jobs_dir)
+  ugplot_launch_background_job(status$id, jobs_dir)
+}
+
+ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+  if (is.null(status)) {
+    stop("Job not found: ", job_id, call. = FALSE)
+  }
+  job_dir <- ugplot_job_dir(job_id, jobs_dir)
+  if (!file.exists(file.path(job_dir, "dataset.rds")) || !file.exists(file.path(job_dir, "config.rds"))) {
+    stop("Job dataset/config is not available for resume.", call. = FALSE)
+  }
+  config_path <- file.path(job_dir, "config.rds")
+  config <- readRDS(config_path)
+  config$use_callr_timeout <- FALSE
+  saveRDS(config, config_path)
+  pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
+  if ((status$state %||% "") %in% c("queued", "running") && !is.na(pid) && ugplot_process_alive(pid)) {
+    stop("Job is already running.", call. = FALSE)
+  }
+  status$state <- "queued"
+  status$message <- "Queued for resume"
+  status$error <- NULL
+  status$pid <- NA_integer_
+  status$resumable <- FALSE
+  ugplot_write_job_status(job_id, status, jobs_dir)
+  ugplot_launch_background_job(job_id, jobs_dir)
 }

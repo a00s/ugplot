@@ -232,17 +232,29 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_validate_job_id",
     "ugplot_job_dir",
     "ugplot_status_path",
+    "ugplot_result_path",
     "ugplot_write_rds_atomic",
     "ugplot_read_rds_or_null",
     "ugplot_process_alive",
+    "ugplot_terminate_process",
+    "ugplot_status_time",
+    "ugplot_job_timeout_seconds",
+    "ugplot_running_job_timed_out",
     "ugplot_create_job",
     "ugplot_read_job_status",
     "ugplot_write_job_status",
     "ugplot_update_job_status",
+    "ugplot_write_job_partial_result",
+    "ugplot_stop_job",
+    "ugplot_delete_job",
+    "ugplot_job_resumable",
     "ugplot_refresh_job_status",
     "ugplot_list_jobs",
     "ugplot_append_job_log",
     "ugplot_read_job_result",
+    "ugplot_read_job_bundle",
+    "ugplot_launch_background_job",
+    "ugplot_resume_background_job",
     "ugplot_server_r_packages",
     "ugplot_installed_r_packages",
     "ugplot_model_dependency_status",
@@ -266,7 +278,10 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_model_deps",
     "ugplot_remote_job_status",
     "ugplot_remote_stop_job",
+    "ugplot_remote_resume_job",
+    "ugplot_remote_delete_job",
     "ugplot_remote_get_result",
+    "ugplot_remote_get_job_bundle",
     "ugplot_remote_servers_path",
     "ugplot_default_remote_servers",
     "ugplot_read_remote_servers",
@@ -868,7 +883,10 @@ ui <- fluidPage(
           )
         ),
         DT::DTOutput("remote_jobs_table"),
-        verbatimTextOutput("remote_job_status")
+        verbatimTextOutput("remote_job_status"),
+        uiOutput("remote_job_running_summary"),
+        verbatimTextOutput("remote_job_running_details"),
+        div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("remote_job_results_output"))
       )
     ),
     # MODEL ANALYSIS (vertical layout)
@@ -1913,6 +1931,9 @@ server <- function(input, output, session) {
   ml_error_message_text <- reactiveVal("")
   remote_jobs <- reactiveVal(data.frame())
   remote_job_status_text <- reactiveVal("")
+  remote_job_preview_status <- reactiveVal(NULL)
+  remote_job_preview_result <- reactiveVal(NULL)
+  remote_server_capabilities <- reactiveVal(list())
   remote_result_cache <- reactiveVal(NULL)
   remote_result_cache_job_id <- reactiveVal("")
 
@@ -2260,8 +2281,7 @@ server <- function(input, output, session) {
     tags$span(ml_error_message_text(), style = "color: black; font-size: 12px;")
   })
 
-  output$ml_final_status <- renderUI({
-    summary_data <- ml_final_summary()
+  ml_final_summary_ui <- function(summary_data) {
     if (is.null(summary_data)) {
       return(NULL)
     }
@@ -2317,6 +2337,10 @@ server <- function(input, output, session) {
         )
       )
     }
+  }
+
+  output$ml_final_status <- renderUI({
+    ml_final_summary_ui(ml_final_summary())
   })
 
   observeEvent(input$ml_toggle_seeds, {
@@ -3260,6 +3284,10 @@ server <- function(input, output, session) {
   all_models_reactive <- reactiveVal(list())
   output$ml_table_results_output <- DT::renderDT({
     ml_results <- ml_table_results()
+    ml_results_datatable(ml_results)
+  })
+
+  ml_results_datatable <- function(ml_results) {
     if (!is.data.frame(ml_results)) {
       ml_results <- data.frame()
     }
@@ -3292,7 +3320,7 @@ server <- function(input, output, session) {
         )
       ),
       rownames = FALSE)
-  })
+  }
 
   build_remote_ml_config <- function() {
     req(input$ml_target)
@@ -3320,6 +3348,7 @@ server <- function(input, output, session) {
       tune_length = input$ml_tune_length %||% 3,
       cpu_limit = selected_remote_cpu_limit(),
       parallel_enabled = isTRUE(input$config_parallel_cubist_models),
+      use_callr_timeout = FALSE,
       restart_parallel_each_model = isTRUE(input$config_restart_parallel_each_model),
       retry_parallel_connection_errors = isTRUE(input$config_retry_parallel_connection_errors)
     )
@@ -3335,17 +3364,179 @@ server <- function(input, output, session) {
 
   refresh_remote_jobs <- function() {
     server <- selected_remote_server()
+    capabilities <- tryCatch({
+      health <- ugplot_remote_health(server_url = server$url, token = server$token %||% "")
+      health$capabilities %||% list()
+    }, error = function(e) list())
+    remote_server_capabilities(capabilities)
     jobs <- ugplot_remote_list_jobs(
       server_url = server$url,
       token = server$token %||% ""
     )
     if (is.data.frame(jobs) && nrow(jobs) > 0) {
       jobs$server <- server$name[[1]]
-      preferred_columns <- c("server", "id", "name", "type", "state", "progress", "message", "created_at", "updated_at", "pid")
+      preferred_columns <- c("server", "id", "name", "type", "state", "progress", "message", "target", "models", "created_at", "updated_at", "pid")
       jobs <- jobs[, c(intersect(preferred_columns, names(jobs)), setdiff(names(jobs), preferred_columns)), drop = FALSE]
     }
     remote_jobs(jobs)
     invisible(jobs)
+  }
+
+  remote_server_supports <- function(capability) {
+    capabilities <- remote_server_capabilities()
+    isTRUE(capabilities[[capability]] %||% FALSE)
+  }
+
+  remote_job_progress_label <- function(progress) {
+    progress_value <- suppressWarnings(as.numeric(progress))
+    if (length(progress_value) == 0 || !is.finite(progress_value[[1]])) {
+      return("N/A")
+    }
+    paste0(round(max(0, min(1, progress_value[[1]])) * 100), "%")
+  }
+
+  remote_status_summary_text <- function(status) {
+    if (!is.list(status)) {
+      return("")
+    }
+    paste0(
+      "Job ", status$id %||% "",
+      " | state: ", status$state %||% "unknown",
+      " | progress: ", remote_job_progress_label(status$progress %||% NA_real_),
+      " | ", status$message %||% ""
+    )
+  }
+
+  remote_status_has_result <- function(status) {
+    if (!is.list(status)) {
+      return(FALSE)
+    }
+    paths <- c(status$result_path %||% "", status$partial_result_path %||% "")
+    any(nzchar(as.character(unlist(paths, use.names = FALSE))))
+  }
+
+  apply_remote_ml_result <- function(result, job_id) {
+    remote_result_cache(result)
+    remote_result_cache_job_id(job_id)
+    if (is.data.frame(result$results_table)) {
+      ml_table_results(result$results_table)
+    }
+    if (is.list(result$final_summary)) {
+      ml_final_summary(result$final_summary)
+    }
+    best_model_object(result$best_model %||% NULL)
+    best_model_preprocess(result$best_model_preprocess %||% NULL)
+    if (!is.null(result$best_model) && nzchar(result$best_model_name %||% "")) {
+      all_models_reactive(stats::setNames(list(result$best_model), result$best_model_name))
+    }
+    if (is.list(result$predictions)) {
+      ml_prediction <<- result$predictions
+    }
+    invisible(result)
+  }
+
+  refresh_remote_job_preview <- function(job_id, switch_to_ml = FALSE) {
+    req(nzchar(job_id %||% ""))
+    server <- selected_remote_server()
+    status <- ugplot_remote_job_status(
+      server_url = server$url,
+      job_id = job_id,
+      token = server$token %||% ""
+    )
+    remote_job_preview_status(status)
+    status_text <- remote_status_summary_text(status)
+
+    if (remote_status_has_result(status)) {
+      result <- ugplot_remote_get_result(
+        server_url = server$url,
+        job_id = job_id,
+        token = server$token %||% ""
+      )
+      remote_job_preview_result(result)
+      status_text <- paste(status_text, "| partial/results loaded")
+      if (isTRUE(switch_to_ml)) {
+        apply_remote_ml_result(result, job_id)
+        updateTabsetPanel(session, "tabs", selected = "MACHINE LEARNING")
+      }
+    } else {
+      remote_job_preview_result(NULL)
+      status_text <- paste(status_text, "| no partial result yet")
+    }
+
+    remote_job_status_text(status_text)
+    invisible(status)
+  }
+
+  load_remote_job_bundle_locally <- function(job_id) {
+    req(nzchar(job_id %||% ""))
+    server <- selected_remote_server()
+    if (!remote_server_supports("job_bundle")) {
+      result <- ugplot_remote_get_result(
+        server_url = server$url,
+        job_id = job_id,
+        token = server$token %||% ""
+      )
+      remote_job_preview_result(result)
+      apply_remote_ml_result(result, job_id)
+      remote_job_status_text(paste(
+        "Remote result loaded locally, but the server does not expose the saved dataset/config.",
+        "Restart ugPlotServer on the remote machine after updating ugplot to enable full Load."
+      ))
+      updateTabsetPanel(session, "tabs", selected = "MACHINE LEARNING")
+      return(invisible(result))
+    }
+    bundle <- ugplot_remote_get_job_bundle(
+      server_url = server$url,
+      job_id = job_id,
+      token = server$token %||% ""
+    )
+    dataset <- bundle$dataset
+    if (!is.data.frame(dataset)) {
+      stop("Remote job bundle did not include a data.frame dataset.", call. = FALSE)
+    }
+    config <- bundle$config %||% list()
+
+    dff <<- dataset
+    df_pre <<- dataset
+    changed_table <<- dataset
+    original_dataset_filename(paste0("remote-job-", job_id))
+    reset_missing_strategy_ui()
+    scrambled_columns(character(0))
+    scramble_original_columns(list())
+    heatmap_recorded_plot(NULL)
+    hide("downloadHeatmapPlotTiff")
+    updateTextAreaInput(session, "textarea_columns", value = paste(names(dataset), collapse = "\n"))
+    updateTextAreaInput(session, "textarea_rows", value = paste(rownames(dataset), collapse = "\n"))
+    load_dataset_into_table(session)
+    refresh_counter(refresh_counter() + 1)
+    update_scramble_selector()
+
+    target <- config$target %||% config$target_name %||% ""
+    if (nzchar(target) && target %in% names(dataset)) {
+      updateSelectizeInput(session, "ml_target", choices = c("", names(dataset)), selected = target, server = TRUE)
+    }
+    category_columns <- intersect(config$category_columns %||% character(0), names(dataset))
+    updateCheckboxGroupInput(session, "checkbox_group_categories", selected = category_columns)
+    models <- intersect(config$models %||% config$model_names %||% character(0), ml_available)
+    if (length(models) > 0) {
+      updateCheckboxGroupInput(session, "ml_checkbox_group", selected = models)
+    }
+
+    remote_job_preview_status(bundle$status %||% NULL)
+    if (is.list(bundle$result)) {
+      remote_job_preview_result(bundle$result)
+      apply_remote_ml_result(bundle$result, job_id)
+    } else {
+      remote_job_preview_result(NULL)
+      ml_table_results(data.frame())
+      ml_final_summary(NULL)
+      best_model_object(NULL)
+      best_model_preprocess(NULL)
+      ml_prediction <<- list()
+    }
+    remote_job_status_text(paste("Remote job loaded locally:", job_id))
+    updateTabsetPanel(session, "tabs", selected = "MACHINE LEARNING")
+    invisible(bundle)
   }
 
   submit_remote_ml_job <- function() {
@@ -3393,6 +3584,9 @@ server <- function(input, output, session) {
     for (date_column in intersect(c("created_at", "updated_at"), names(jobs))) {
       jobs[[date_column]] <- sub("[[:space:]][+-][0-9]{4}$", "", as.character(jobs[[date_column]]))
     }
+    if ("progress" %in% names(jobs)) {
+      jobs$progress <- vapply(jobs$progress, remote_job_progress_label, character(1))
+    }
     character_columns <- names(jobs)[vapply(jobs, is.character, logical(1))]
     for (column_name in character_columns) {
       jobs[[column_name]] <- htmltools::htmlEscape(jobs[[column_name]])
@@ -3400,18 +3594,31 @@ server <- function(input, output, session) {
     if (nrow(jobs) > 0 && "id" %in% names(raw_jobs)) {
       job_ids <- as.character(raw_jobs$id)
       states <- if ("state" %in% names(jobs)) as.character(jobs$state) else rep("", length(job_ids))
-      can_load <- states %in% c("finished", "stopped", "failed")
       can_stop <- states %in% c("queued", "running")
+      can_delete <- remote_server_supports("delete_job") & !states %in% c("queued", "running")
+      can_resume <- if ("resumable" %in% names(raw_jobs)) {
+        remote_server_supports("resume_job") & tolower(as.character(raw_jobs$resumable)) %in% c("true", "1", "yes")
+      } else {
+        rep(FALSE, length(states))
+      }
+      if ("resumable" %in% names(jobs)) {
+        jobs$resumable <- NULL
+      }
       actions <- vapply(seq_along(job_ids), function(i) {
         job_id <- htmltools::htmlEscape(job_ids[[i]], attribute = TRUE)
-        load_disabled <- if (isTRUE(can_load[[i]])) "" else " disabled"
-        stop_disabled <- if (isTRUE(can_stop[[i]])) "" else " disabled"
-        paste0(
-          "<div class='remote-job-actions'>",
-          "<button type='button' class='btn btn-default btn-sm' onclick=\"Shiny.setInputValue('remote_load_result_row', '", job_id, "', {priority: 'event'});\"", load_disabled, ">Load</button>",
-          "<button type='button' class='btn btn-danger btn-sm' onclick=\"Shiny.setInputValue('remote_stop_job_row', '", job_id, "', {priority: 'event'});\"", stop_disabled, ">Stop</button>",
-          "</div>"
+        buttons <- c(
+          paste0("<button type='button' class='btn btn-default btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_load_result_row', '", job_id, "', {priority: 'event'});\">Load</button>")
         )
+        if (isTRUE(can_stop[[i]])) {
+          buttons <- c(buttons, paste0("<button type='button' class='btn btn-danger btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_stop_job_row', '", job_id, "', {priority: 'event'});\">Stop</button>"))
+        }
+        if (isTRUE(can_resume[[i]])) {
+          buttons <- c(buttons, paste0("<button type='button' class='btn btn-success btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_resume_job_row', '", job_id, "', {priority: 'event'});\">Resume</button>"))
+        }
+        if (isTRUE(can_delete[[i]])) {
+          buttons <- c(buttons, paste0("<button type='button' class='btn btn-danger btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_delete_job_request', '", job_id, "', {priority: 'event'});\">Delete</button>"))
+        }
+        paste0("<div class='remote-job-actions'>", paste(buttons, collapse = ""), "</div>")
       }, character(1))
       jobs$Actions <- actions
     }
@@ -3432,7 +3639,13 @@ server <- function(input, output, session) {
     selected <- input$remote_jobs_table_rows_selected
     jobs <- remote_jobs()
     if (length(selected) == 1 && is.data.frame(jobs) && nrow(jobs) >= selected && "id" %in% names(jobs)) {
-      updateTextInput(session, "remote_job_id", value = jobs$id[[selected]])
+      job_id <- jobs$id[[selected]]
+      updateTextInput(session, "remote_job_id", value = job_id)
+      tryCatch({
+        refresh_remote_job_preview(job_id, switch_to_ml = FALSE)
+      }, error = function(e) {
+        remote_job_status_text(paste("Remote status failed:", conditionMessage(e)))
+      })
     }
   })
 
@@ -3441,13 +3654,7 @@ server <- function(input, output, session) {
       return()
     }
     tryCatch({
-      server <- selected_remote_server()
-      status <- ugplot_remote_job_status(
-        server_url = server$url,
-        job_id = input$remote_job_id,
-        token = server$token %||% ""
-      )
-      remote_job_status_text(capture.output(str(status)))
+      refresh_remote_job_preview(input$remote_job_id, switch_to_ml = FALSE)
     }, error = function(e) {
       remote_job_status_text(paste("Remote status failed:", conditionMessage(e)))
     })
@@ -3461,22 +3668,7 @@ server <- function(input, output, session) {
       job_id = job_id,
       token = server$token %||% ""
     )
-    remote_result_cache(result)
-    remote_result_cache_job_id(job_id)
-    if (is.data.frame(result$results_table)) {
-      ml_table_results(result$results_table)
-    }
-    if (is.list(result$final_summary)) {
-      ml_final_summary(result$final_summary)
-    }
-    best_model_object(result$best_model %||% NULL)
-    best_model_preprocess(result$best_model_preprocess %||% NULL)
-    if (!is.null(result$best_model) && nzchar(result$best_model_name %||% "")) {
-      all_models_reactive(stats::setNames(list(result$best_model), result$best_model_name))
-    }
-    if (is.list(result$predictions)) {
-      ml_prediction <<- result$predictions
-    }
+    apply_remote_ml_result(result, job_id)
     remote_job_status_text(paste("Remote result loaded locally:", job_id))
     if (isTRUE(switch_to_ml)) {
       updateTabsetPanel(session, "tabs", selected = "MACHINE LEARNING")
@@ -3487,7 +3679,7 @@ server <- function(input, output, session) {
   observeEvent(input$remote_load_result_row, {
     tryCatch({
       updateTextInput(session, "remote_job_id", value = input$remote_load_result_row)
-      load_remote_result_locally(input$remote_load_result_row)
+      load_remote_job_bundle_locally(input$remote_load_result_row)
     }, error = function(e) {
       remote_job_status_text(paste("Remote result load failed:", conditionMessage(e)))
     })
@@ -3510,8 +3702,109 @@ server <- function(input, output, session) {
     })
   })
 
+  observeEvent(input$remote_resume_job_row, {
+    tryCatch({
+      job_id <- input$remote_resume_job_row
+      server <- selected_remote_server()
+      status <- ugplot_remote_resume_job(
+        server_url = server$url,
+        job_id = job_id,
+        token = server$token %||% ""
+      )
+      updateTextInput(session, "remote_job_id", value = job_id)
+      refresh_remote_jobs()
+      remote_job_status_text(paste("Remote job resumed:", job_id, "-", status$message %||% ""))
+    }, error = function(e) {
+      remote_job_status_text(paste("Remote resume failed:", conditionMessage(e)))
+    })
+  })
+
+  observeEvent(input$remote_delete_job_request, {
+    job_id <- input$remote_delete_job_request
+    showModal(modalDialog(
+      title = "Delete remote job",
+      tags$p("Delete this job from the remote server?"),
+      tags$code(job_id),
+      easyClose = TRUE,
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("remote_delete_job_confirm", "Delete", class = "btn-danger")
+      )
+    ))
+  })
+
+  observeEvent(input$remote_delete_job_confirm, {
+    tryCatch({
+      job_id <- input$remote_delete_job_request
+      server <- selected_remote_server()
+      ugplot_remote_delete_job(
+        server_url = server$url,
+        job_id = job_id,
+        token = server$token %||% ""
+      )
+      if (identical(remote_result_cache_job_id(), job_id)) {
+        remote_result_cache(NULL)
+        remote_result_cache_job_id("")
+      }
+      if (identical(input$remote_job_id %||% "", job_id)) {
+        updateTextInput(session, "remote_job_id", value = "")
+        remote_job_preview_status(NULL)
+        remote_job_preview_result(NULL)
+      }
+      refresh_remote_jobs()
+      remote_job_status_text(paste("Remote job deleted:", job_id))
+      removeModal()
+    }, error = function(e) {
+      remote_job_status_text(paste("Remote delete failed:", conditionMessage(e)))
+      removeModal()
+    })
+  })
+
   output$remote_job_status <- renderText({
     remote_job_status_text()
+  })
+
+  output$remote_job_running_summary <- renderUI({
+    result <- remote_job_preview_result()
+    if (!is.list(result) || !is.list(result$final_summary)) {
+      return(NULL)
+    }
+    ml_final_summary_ui(result$final_summary)
+  })
+
+  output$remote_job_running_details <- renderText({
+    result <- remote_job_preview_result()
+    status <- remote_job_preview_status()
+    if (!is.list(result) || !is.data.frame(result$results_table)) {
+      return("")
+    }
+    results <- result$results_table
+    metric_name <- if ("R2" %in% names(results)) {
+      "R2"
+    } else if ("Accuracy" %in% names(results)) {
+      "Accuracy"
+    } else {
+      NULL
+    }
+    if (is.null(metric_name)) {
+      return(remote_status_summary_text(status))
+    }
+    ok_rows <- if ("Status" %in% names(results)) as.character(results$Status) == "OK" else rep(TRUE, nrow(results))
+    metric_values <- suppressWarnings(as.numeric(results[[metric_name]][ok_rows]))
+    paste(
+      remote_status_summary_text(status),
+      format_running_stability_signal(metric_values, metric_name = metric_name),
+      format_running_metric_distribution(metric_values, metric_name = metric_name),
+      sep = "\n\n"
+    )
+  })
+
+  output$remote_job_results_output <- DT::renderDT({
+    result <- remote_job_preview_result()
+    if (!is.list(result) || !is.data.frame(result$results_table)) {
+      return(NULL)
+    }
+    ml_results_datatable(result$results_table)
   })
 
   observeEvent(input$uncheck_all_ml, {

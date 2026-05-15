@@ -85,6 +85,22 @@ ugplot_remote_stop_job <- function(server_url, job_id, token = "") {
   ugplot_remote_parse(response)
 }
 
+ugplot_remote_resume_job <- function(server_url, job_id, token = "") {
+  request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/resume"), token)
+  response <- httr::POST(request$url, request$headers)
+  ugplot_remote_parse(response)
+}
+
+ugplot_remote_delete_job <- function(server_url, job_id, token = "", force = FALSE) {
+  path <- paste0("jobs/", job_id)
+  if (isTRUE(force)) {
+    path <- paste0(path, "?force=true")
+  }
+  request <- ugplot_remote_request(server_url, path, token)
+  response <- httr::DELETE(request$url, request$headers)
+  ugplot_remote_parse(response)
+}
+
 ugplot_remote_get_result <- function(server_url, job_id, token = "") {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/result-rds"), token)
   response <- httr::GET(request$url, request$headers)
@@ -100,4 +116,21 @@ ugplot_remote_get_result <- function(server_url, job_id, token = "") {
   writeBin(raw_result, result_file)
   on.exit(unlink(result_file), add = TRUE)
   readRDS(result_file)
+}
+
+ugplot_remote_get_job_bundle <- function(server_url, job_id, token = "") {
+  request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/bundle-rds"), token)
+  response <- httr::GET(request$url, request$headers)
+  parsed <- ugplot_remote_parse(response)
+  content_base64 <- parsed$content_base64
+  content_base64 <- as.character(unlist(content_base64, use.names = FALSE))
+  content_base64 <- content_base64[nzchar(content_base64)]
+  if (length(content_base64) == 0) {
+    stop("Remote job bundle response did not include RDS content.", call. = FALSE)
+  }
+  bundle_file <- tempfile(fileext = ".rds")
+  raw_bundle <- base64enc::base64decode(content_base64[[1]])
+  writeBin(raw_bundle, bundle_file)
+  on.exit(unlink(bundle_file), add = TRUE)
+  readRDS(bundle_file)
 }

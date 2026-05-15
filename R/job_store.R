@@ -156,6 +156,35 @@ ugplot_read_job_status <- function(job_id, jobs_dir = ugplot_default_jobs_dir())
   ugplot_refresh_job_status(status, jobs_dir)
 }
 
+ugplot_job_resumable <- function(status, jobs_dir = ugplot_default_jobs_dir()) {
+  if (!is.list(status) || is.null(status$id)) {
+    return(FALSE)
+  }
+  state <- status$state %||% ""
+  if (state %in% c("queued", "running", "finished")) {
+    return(FALSE)
+  }
+  job_dir <- ugplot_job_dir(status$id, jobs_dir)
+  file.exists(file.path(job_dir, "dataset.rds")) && file.exists(file.path(job_dir, "config.rds"))
+}
+
+ugplot_job_config_summary <- function(status, jobs_dir = ugplot_default_jobs_dir()) {
+  empty_summary <- list(target = "", models = "")
+  if (!is.list(status) || is.null(status$id)) {
+    return(empty_summary)
+  }
+  config_path <- file.path(ugplot_job_dir(status$id, jobs_dir), "config.rds")
+  if (!file.exists(config_path)) {
+    return(empty_summary)
+  }
+  config <- tryCatch(readRDS(config_path), error = function(e) list())
+  models <- config$models %||% config$model_names %||% character(0)
+  list(
+    target = as.character(config$target %||% config$target_name %||% ""),
+    models = paste(as.character(models), collapse = ", ")
+  )
+}
+
 ugplot_write_job_status <- function(job_id, status, jobs_dir = ugplot_default_jobs_dir()) {
   status$id <- job_id
   status$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
@@ -213,16 +242,45 @@ ugplot_stop_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
   ugplot_read_job_status(job_id, jobs_dir)
 }
 
+ugplot_delete_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir(), force = FALSE) {
+  job_id <- ugplot_validate_job_id(job_id)
+  job_dir <- ugplot_job_dir(job_id, jobs_dir)
+  if (!dir.exists(job_dir)) {
+    stop("Job not found: ", job_id, call. = FALSE)
+  }
+
+  status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+  state <- status$state %||% ""
+  pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
+  is_active <- state %in% c("queued", "running") && !is.na(pid) && ugplot_process_alive(pid)
+  if (is_active && !isTRUE(force)) {
+    stop("Stop the job before deleting it.", call. = FALSE)
+  }
+  if (is_active && isTRUE(force)) {
+    ugplot_terminate_process(pid)
+  }
+
+  removed <- unlink(job_dir, recursive = TRUE, force = TRUE)
+  if (!identical(removed, 0L) || dir.exists(job_dir)) {
+    stop("Could not delete job: ", job_id, call. = FALSE)
+  }
+  list(id = job_id, deleted = TRUE)
+}
+
 ugplot_refresh_job_status <- function(status, jobs_dir = ugplot_default_jobs_dir()) {
   state <- status$state %||% ""
   pid <- status$pid %||% NA_integer_
   should_check_pid <- state %in% c("queued", "running") && !is.na(suppressWarnings(as.integer(pid)))
   if (!should_check_pid) {
+    status$resumable <- ugplot_job_resumable(status, jobs_dir)
+    status$config_summary <- ugplot_job_config_summary(status, jobs_dir)
     return(status)
   }
 
   if (ugplot_process_alive(pid)) {
     if (!ugplot_running_job_timed_out(status)) {
+      status$resumable <- FALSE
+      status$config_summary <- ugplot_job_config_summary(status, jobs_dir)
       return(status)
     }
     ugplot_terminate_process(pid)
@@ -235,6 +293,8 @@ ugplot_refresh_job_status <- function(status, jobs_dir = ugplot_default_jobs_dir
       status$result_path <- partial_path
     }
     ugplot_write_job_status(status$id, status, jobs_dir)
+    status$resumable <- ugplot_job_resumable(status, jobs_dir)
+    status$config_summary <- ugplot_job_config_summary(status, jobs_dir)
     return(status)
   }
 
@@ -243,6 +303,9 @@ ugplot_refresh_job_status <- function(status, jobs_dir = ugplot_default_jobs_dir
   status$error <- "The job process is no longer running. The server may have restarted or crashed."
   status$progress <- status$progress %||% 0
   ugplot_write_job_status(status$id, status, jobs_dir)
+  status$resumable <- ugplot_job_resumable(status, jobs_dir)
+  status$config_summary <- ugplot_job_config_summary(status, jobs_dir)
+  status
 }
 
 ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir()) {
@@ -265,9 +328,12 @@ ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir()) {
       state = status$state %||% NA_character_,
       progress = status$progress %||% NA_real_,
       message = status$message %||% NA_character_,
+      target = status$config_summary$target %||% NA_character_,
+      models = status$config_summary$models %||% NA_character_,
       created_at = status$created_at %||% NA_character_,
       updated_at = status$updated_at %||% NA_character_,
       pid = status$pid %||% NA_integer_,
+      resumable = isTRUE(status$resumable %||% ugplot_job_resumable(status, jobs_dir)),
       stringsAsFactors = FALSE
     )
   })
@@ -288,4 +354,23 @@ ugplot_read_job_result <- function(job_id, jobs_dir = ugplot_default_jobs_dir())
     stop("Result is not available for job: ", job_id, call. = FALSE)
   }
   readRDS(result_path)
+}
+
+ugplot_read_job_bundle <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  job_dir <- ugplot_job_dir(job_id, jobs_dir)
+  if (!dir.exists(job_dir)) {
+    stop("Job not found: ", job_id, call. = FALSE)
+  }
+  dataset_path <- file.path(job_dir, "dataset.rds")
+  config_path <- file.path(job_dir, "config.rds")
+  if (!file.exists(dataset_path) || !file.exists(config_path)) {
+    stop("Job dataset/config is not available for job: ", job_id, call. = FALSE)
+  }
+  list(
+    id = job_id,
+    status = ugplot_read_job_status(job_id, jobs_dir),
+    dataset = readRDS(dataset_path),
+    config = readRDS(config_path),
+    result = tryCatch(ugplot_read_job_result(job_id, jobs_dir), error = function(e) NULL)
+  )
 }

@@ -1,26 +1,13 @@
 test_that("remote server config stores CPU limits and migrates old records", {
-  local_env <- new.env(parent = globalenv())
-  local_env$`%||%` <- function(lhs, rhs) {
-    if (is.null(lhs)) rhs else lhs
-  }
-  local_env$ugplot_ensure_dir <- function(path) {
-    dir.create(path, recursive = TRUE, showWarnings = FALSE)
-    invisible(path)
-  }
   config_dir <- tempfile("ugplot-config-")
-  local_env$ugplot_remote_servers_path <- function() {
+  ugplot_test_local_namespace_binding("ugplot_remote_servers_path", function() {
     dir.create(config_dir, recursive = TRUE, showWarnings = FALSE)
     file.path(config_dir, "remote_servers.rds")
-  }
-  remote_servers_path <- file.path("R", "remote_servers.R")
-  if (!file.exists(remote_servers_path)) {
-    remote_servers_path <- file.path("..", "..", "R", "remote_servers.R")
-  }
-  sys.source(remote_servers_path, envir = local_env)
-  local_env$ugplot_remote_servers_path <- function() {
-    dir.create(config_dir, recursive = TRUE, showWarnings = FALSE)
-    file.path(config_dir, "remote_servers.rds")
-  }
+  })
+
+  read_remote_servers <- ugplot_test_internal("ugplot_read_remote_servers")
+  upsert_remote_server <- ugplot_test_internal("ugplot_upsert_remote_server")
+  remote_servers_path <- ugplot_test_internal("ugplot_remote_servers_path")
 
   old_servers <- data.frame(
     name = "Old",
@@ -28,13 +15,13 @@ test_that("remote server config stores CPU limits and migrates old records", {
     token = "",
     stringsAsFactors = FALSE
   )
-  saveRDS(old_servers, local_env$ugplot_remote_servers_path())
-  migrated <- local_env$ugplot_read_remote_servers()
+  saveRDS(old_servers, remote_servers_path())
+  migrated <- read_remote_servers()
 
   expect_true("cpu_limit" %in% names(migrated))
   expect_true(migrated$cpu_limit[[1]] >= 1L)
 
-  saved <- local_env$ugplot_upsert_remote_server(
+  saved <- upsert_remote_server(
     name = "Remote",
     url = "http://remote.test:8080",
     token = "secret",

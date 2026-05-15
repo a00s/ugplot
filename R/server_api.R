@@ -155,7 +155,13 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
       status = "ok",
       jobs_dir = jobs_dir,
       cpus = as.integer(total_cpus),
-      default_cpu_limit = max(1L, as.integer(total_cpus) - 1L)
+      default_cpu_limit = max(1L, as.integer(total_cpus) - 1L),
+      capabilities = list(
+        delete_job = TRUE,
+        resume_job = TRUE,
+        job_bundle = TRUE,
+        job_config_summary = TRUE
+      )
     )
   })
 
@@ -185,6 +191,28 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         list(error = conditionMessage(e))
       }
     )
+  })
+
+  pr$handle("POST", "/jobs/<job_id>/resume", function(job_id, res) {
+    tryCatch({
+      started <- ugplot_resume_background_job(job_id, jobs_dir)
+      res$status <- 202
+      started$job
+    }, error = function(e) {
+      res$status <- 400
+      list(error = conditionMessage(e))
+    })
+  })
+
+  pr$handle("DELETE", "/jobs/<job_id>", function(job_id, req, res) {
+    tryCatch({
+      query <- req$argsQuery %||% list()
+      force <- tolower(as.character(query$force %||% "false")) %in% c("1", "true", "yes")
+      ugplot_delete_job(job_id, jobs_dir, force = force)
+    }, error = function(e) {
+      res$status <- 400
+      list(error = conditionMessage(e))
+    })
   })
 
   pr$handle("POST", "/jobs", function(req, res) {
@@ -220,6 +248,22 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
       list(
         filename = paste0("ugplot-job-", job_id, ".rds"),
         content_base64 = base64enc::base64encode(result_path)
+      )
+    }, error = function(e) {
+      res$status <- 404
+      list(error = conditionMessage(e))
+    })
+  })
+
+  pr$handle("GET", "/jobs/<job_id>/bundle-rds", function(job_id, res) {
+    tryCatch({
+      bundle <- ugplot_read_job_bundle(job_id, jobs_dir)
+      bundle_path <- tempfile(fileext = ".rds")
+      on.exit(unlink(bundle_path), add = TRUE)
+      saveRDS(bundle, bundle_path)
+      list(
+        filename = paste0("ugplot-job-", job_id, "-bundle.rds"),
+        content_base64 = base64enc::base64encode(bundle_path)
       )
     }, error = function(e) {
       res$status <- 404

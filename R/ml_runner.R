@@ -116,6 +116,30 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
   )
 }
 
+ugplot_ml_train_direct <- function(train_set, target_name, model_name, ctrl,
+                                   tune_length, model_libraries,
+                                   parallel_enabled = FALSE, cpu_limit = 1L) {
+  Sys.setenv(
+    OMP_NUM_THREADS = cpu_limit,
+    MKL_NUM_THREADS = cpu_limit,
+    OPENBLAS_NUM_THREADS = cpu_limit,
+    VECLIB_MAXIMUM_THREADS = cpu_limit,
+    NUMEXPR_NUM_THREADS = cpu_limit,
+    UGPLOT_CPU_LIMIT = cpu_limit
+  )
+  for (lib in model_libraries) {
+    suppressPackageStartupMessages(library(lib, character.only = TRUE))
+  }
+  ctrl$allowParallel <- isTRUE(parallel_enabled)
+  caret::train(
+    stats::as.formula(paste(target_name, "~ .")),
+    data = train_set,
+    method = model_name,
+    trControl = ctrl,
+    tuneLength = tune_length
+  )
+}
+
 #' Run a ugplot machine learning job
 #'
 #' Executes a caret model search from a dataset and plain list configuration.
@@ -140,6 +164,7 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
   cpu_limit <- max(1L, as.integer(config$cpu_limit %||% 1L))
   apply_runtime_thread_limit(cpu_limit)
   parallel_enabled <- isTRUE(config$parallel_enabled)
+  use_callr_timeout <- !identical(config$use_callr_timeout, FALSE)
   restart_parallel_each_model <- isTRUE(config$restart_parallel_each_model)
   retry_parallel_connection_errors <- isTRUE(config$retry_parallel_connection_errors)
   timeout <- max(1, ugplot_ml_safe_num(config$timeout, 1200))
@@ -381,18 +406,31 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
         run_error <- ""
         model <- tryCatch({
           train_once <- function() {
-            ugplot_ml_train_with_timeout(
-              train_set = train_set,
-              target_name = target_name,
-              model_name = model_name,
-              ctrl = ctrl,
-              tune_length = cv_settings$tune_length,
-              timeout = timeout,
-              model_libraries = model_info$library,
-              parallel_enabled = parallel_enabled,
-              cpu_limit = cpu_limit,
-              lib_paths = .libPaths()
-            )
+            if (isTRUE(use_callr_timeout)) {
+              ugplot_ml_train_with_timeout(
+                train_set = train_set,
+                target_name = target_name,
+                model_name = model_name,
+                ctrl = ctrl,
+                tune_length = cv_settings$tune_length,
+                timeout = timeout,
+                model_libraries = model_info$library,
+                parallel_enabled = parallel_enabled,
+                cpu_limit = cpu_limit,
+                lib_paths = .libPaths()
+              )
+            } else {
+              ugplot_ml_train_direct(
+                train_set = train_set,
+                target_name = target_name,
+                model_name = model_name,
+                ctrl = ctrl,
+                tune_length = cv_settings$tune_length,
+                model_libraries = model_info$library,
+                parallel_enabled = parallel_enabled,
+                cpu_limit = cpu_limit
+              )
+            }
           }
           tryCatch(train_once(), error = function(e) {
             connection_error <- grepl("error (writing|reading) to connection|serialize|unserialize|SOCK", conditionMessage(e), ignore.case = TRUE)
