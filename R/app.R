@@ -876,13 +876,14 @@ ui <- fluidPage(
         tags$h4("Remote jobs", class = "section-title"),
         tags$div(
           class = "jobs-toolbar",
+          style = "display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;",
           actionButton("remote_refresh_jobs", "Refresh jobs", icon = icon("refresh")),
+          uiOutput("remote_server_connection_status"),
           tags$div(style = "display: none;",
             textInput("remote_job_id", "Job ID", value = "", width = "360px"),
             downloadButton("downloadRemoteJobResult", "Download result (RDS)")
           )
         ),
-        uiOutput("remote_server_connection_status"),
         DT::DTOutput("remote_jobs_table"),
         verbatimTextOutput("remote_job_status"),
         uiOutput("remote_job_running_summary"),
@@ -3477,6 +3478,14 @@ server <- function(input, output, session) {
     if (is.data.frame(jobs) && nrow(jobs) > 0) {
       preferred_columns <- c("server", "id", "name", "type", "state", "progress", "message", "target", "models", "created_at", "updated_at", "pid")
       jobs <- jobs[, c(intersect(preferred_columns, names(jobs)), setdiff(names(jobs), preferred_columns)), drop = FALSE]
+      state_values <- if ("state" %in% names(jobs)) as.character(jobs$state) else rep("", nrow(jobs))
+      active_rank <- ifelse(state_values %in% c("queued", "running"), 0L, 1L)
+      updated_values <- if ("updated_at" %in% names(jobs)) {
+        suppressWarnings(as.POSIXct(as.character(jobs$updated_at), format = "%Y-%m-%d %H:%M:%S %z"))
+      } else {
+        rep(as.POSIXct(NA), nrow(jobs))
+      }
+      jobs <- jobs[order(active_rank, updated_values, decreasing = c(FALSE, TRUE), na.last = TRUE), , drop = FALSE]
     }
     remote_server_capabilities(capabilities_by_server)
     remote_server_connection_state(if (length(server_connection_rows) > 0) do.call(rbind, server_connection_rows) else data.frame())
@@ -3904,19 +3913,19 @@ server <- function(input, output, session) {
       tags$div(
         style = paste0(
           "border-left: 5px solid ", style$border, "; background: ", style$background,
-          "; color: ", style$color, "; padding: 9px 12px; min-width: 180px;",
+          "; color: ", style$color, "; padding: 6px 10px; min-width: 150px;",
           "border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.04);"
         ),
-        tags$div(style = "font-weight: 700; font-size: 13px;", htmltools::htmlEscape(row$server[[1]])),
-        tags$div(style = "font-size: 12px;", style$label),
-        tags$div(style = "font-size: 12px;", paste0(jobs_label, active_label)),
+        tags$div(style = "font-weight: 700; font-size: 12px; line-height: 1.2;", htmltools::htmlEscape(row$server[[1]])),
+        tags$div(style = "font-size: 11px; line-height: 1.25;", style$label),
+        tags$div(style = "font-size: 11px; line-height: 1.25;", paste0(jobs_label, active_label)),
         if (identical(state, "offline")) {
-          tags$div(style = "font-size: 11px; margin-top: 3px; max-width: 360px;", htmltools::htmlEscape(row$message[[1]] %||% "Connection failed"))
+          tags$div(style = "font-size: 10px; margin-top: 2px; max-width: 280px;", htmltools::htmlEscape(row$message[[1]] %||% "Connection failed"))
         }
       )
     })
     tags$div(
-      style = "display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px 0;",
+      style = "display: flex; gap: 8px; flex-wrap: wrap; margin: 0;",
       cards
     )
   })
