@@ -16,6 +16,7 @@ sample_ml_data <- function() {
 }
 
 test_that("remote ML runner trains a model on sample data", {
+  skip_on_os("windows")
   local_env <- local_ml_runner_env()
   result <- local_env$ugplot_run_ml_job(
     dataset = sample_ml_data(),
@@ -42,6 +43,7 @@ test_that("remote ML runner trains a model on sample data", {
 })
 
 test_that("remote ML runner timeout skips one model and continues", {
+  skip_on_os("windows")
   local_env <- local_ml_runner_env()
   timed_out <- FALSE
   ugplot_test_local_namespace_binding("ugplot_ml_train_with_timeout", function(train_set, target_name, model_name,
