@@ -30,7 +30,6 @@ Imports:
     plotly,
     tidyr,
     missForest,
-    methyLImp2,
     caret,
     base64enc,
     ggExtra,
@@ -45,6 +44,7 @@ Suggests:
     callr,
     httr,
     jsonlite,
+    methyLImp2,
     plumber,
     testthat (>= 3.0.0),
     withr

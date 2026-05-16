@@ -1935,7 +1935,7 @@ server <- function(input, output, session) {
   remote_job_preview_status <- reactiveVal(NULL)
   remote_job_preview_result <- reactiveVal(NULL)
   remote_server_capabilities <- reactiveVal(list())
-  remote_server_connection_text <- reactiveVal("")
+  remote_server_connection_state <- reactiveVal(data.frame())
   remote_result_cache <- reactiveVal(NULL)
   remote_result_cache_job_id <- reactiveVal("")
 
@@ -3411,8 +3411,10 @@ server <- function(input, output, session) {
 
     all_jobs <- list()
     capabilities_by_server <- list()
-    connected <- character(0)
-    failed <- character(0)
+    server_connection_rows <- list()
+    add_server_connection_row <- function(row) {
+      server_connection_rows[[length(server_connection_rows) + 1L]] <<- row
+    }
 
     for (i in seq_len(nrow(servers))) {
       server <- servers[i, , drop = FALSE]
@@ -3429,11 +3431,30 @@ server <- function(input, output, session) {
         } else {
           jobs$server <- server_name
         }
-        connected <- c(connected, paste0(server_name, " (", nrow(jobs), " jobs)"))
+        active_count <- if (is.data.frame(jobs) && nrow(jobs) > 0 && "state" %in% names(jobs)) {
+          sum(as.character(jobs$state) %in% c("queued", "running"), na.rm = TRUE)
+        } else {
+          0L
+        }
+        add_server_connection_row(data.frame(
+          server = server_name,
+          state = if (active_count > 0) "active" else "idle",
+          jobs = nrow(jobs),
+          active = active_count,
+          message = if (active_count > 0) paste(active_count, "active") else "idle",
+          stringsAsFactors = FALSE
+        ))
         jobs
       }, error = function(e) {
         capabilities_by_server[[server_name]] <- list()
-        failed <<- c(failed, paste0(server_name, " (", conditionMessage(e), ")"))
+        add_server_connection_row(data.frame(
+          server = server_name,
+          state = "offline",
+          jobs = NA_integer_,
+          active = NA_integer_,
+          message = conditionMessage(e),
+          stringsAsFactors = FALSE
+        ))
         data.frame()
       })
       if (is.data.frame(server_jobs) && nrow(server_jobs) > 0) {
@@ -3458,14 +3479,7 @@ server <- function(input, output, session) {
       jobs <- jobs[, c(intersect(preferred_columns, names(jobs)), setdiff(names(jobs), preferred_columns)), drop = FALSE]
     }
     remote_server_capabilities(capabilities_by_server)
-    connection_text <- paste(
-      c(
-        if (length(connected) > 0) paste("Connected:", paste(connected, collapse = ", ")),
-        if (length(failed) > 0) paste("Failed:", paste(failed, collapse = ", "))
-      ),
-      collapse = " | "
-    )
-    remote_server_connection_text(connection_text)
+    remote_server_connection_state(if (length(server_connection_rows) > 0) do.call(rbind, server_connection_rows) else data.frame())
     remote_jobs(jobs)
     invisible(jobs)
   }
@@ -3872,14 +3886,38 @@ server <- function(input, output, session) {
   })
 
   output$remote_server_connection_status <- renderUI({
-    text <- remote_server_connection_text()
-    if (!nzchar(text %||% "")) {
+    server_state <- remote_server_connection_state()
+    if (!is.data.frame(server_state) || nrow(server_state) == 0) {
       return(NULL)
     }
+    state_styles <- list(
+      active = list(label = "ONLINE - RUNNING", background = "#e8f7eb", border = "#2e9d4d", color = "#1f6f37"),
+      idle = list(label = "ONLINE - IDLE", background = "#f0e9ff", border = "#7a4fd4", color = "#5632a8"),
+      offline = list(label = "OFFLINE", background = "#fdecec", border = "#d9534f", color = "#a5302d")
+    )
+    cards <- lapply(seq_len(nrow(server_state)), function(i) {
+      row <- server_state[i, , drop = FALSE]
+      state <- as.character(row$state %||% "offline")
+      style <- state_styles[[state]] %||% state_styles$offline
+      jobs_label <- if (is.na(row$jobs[[1]])) "no response" else paste0(row$jobs[[1]], " jobs")
+      active_label <- if (!is.na(row$active[[1]]) && row$active[[1]] > 0) paste0(" / ", row$active[[1]], " active") else ""
+      tags$div(
+        style = paste0(
+          "border-left: 5px solid ", style$border, "; background: ", style$background,
+          "; color: ", style$color, "; padding: 9px 12px; min-width: 180px;",
+          "border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.04);"
+        ),
+        tags$div(style = "font-weight: 700; font-size: 13px;", htmltools::htmlEscape(row$server[[1]])),
+        tags$div(style = "font-size: 12px;", style$label),
+        tags$div(style = "font-size: 12px;", paste0(jobs_label, active_label)),
+        if (identical(state, "offline")) {
+          tags$div(style = "font-size: 11px; margin-top: 3px; max-width: 360px;", htmltools::htmlEscape(row$message[[1]] %||% "Connection failed"))
+        }
+      )
+    })
     tags$div(
-      class = "alert alert-info",
-      style = "padding: 8px 12px; margin: 8px 0 12px 0;",
-      tags$span(text)
+      style = "display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px 0;",
+      cards
     )
   })
 
