@@ -165,10 +165,23 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
   config <- readRDS(config_path)
   config$use_callr_timeout <- FALSE
   partial_path <- status$partial_result_path %||% ugplot_result_path(job_id, jobs_dir, partial = TRUE)
+  resume_result <- NULL
   if (!is.null(partial_path) && file.exists(partial_path)) {
     config$resume_result_path <- partial_path
     resume_result <- tryCatch(readRDS(partial_path), error = function(e) NULL)
-    resume_keys <- ugplot_job_completed_run_keys(resume_result)
+    if (is.null(resume_result)) {
+      preview_path <- status$preview_result_path %||% ugplot_preview_result_path(job_id, jobs_dir)
+      if (!is.null(preview_path) && file.exists(preview_path)) {
+        resume_result <- tryCatch(readRDS(preview_path), error = function(e) NULL)
+      }
+    }
+    if (is.list(resume_result) && is.data.frame(resume_result$results_table)) {
+      config$resume_result <- ugplot_job_result_preview(resume_result)
+    }
+    resume_keys <- unique(c(
+      status$resume_completed_keys %||% character(0),
+      ugplot_job_completed_run_keys(resume_result)
+    ))
     if (length(resume_keys) > 0) {
       config$resume_completed_keys <- resume_keys
     }

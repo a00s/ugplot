@@ -45,6 +45,10 @@ ugplot_preview_result_path <- function(job_id, jobs_dir = ugplot_default_jobs_di
   file.path(ugplot_job_dir(job_id, jobs_dir), "preview-result.rds")
 }
 
+ugplot_best_model_path <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  file.path(ugplot_job_dir(job_id, jobs_dir), "best-model.rds")
+}
+
 ugplot_job_result_preview <- function(result) {
   if (!is.list(result)) {
     return(result)
@@ -63,6 +67,31 @@ ugplot_job_result_preview <- function(result) {
     preview$results_table <- preview$results_table[, keep_columns, drop = FALSE]
   }
   preview
+}
+
+ugplot_job_partial_result <- function(result) {
+  if (!is.list(result)) {
+    return(result)
+  }
+  partial_result <- result
+  partial_result$best_model <- NULL
+  partial_result$predictions <- NULL
+  partial_result$partial_model_omitted <- TRUE
+  partial_result
+}
+
+ugplot_attach_job_best_model <- function(result, status) {
+  if (!is.list(result)) {
+    return(result)
+  }
+  best_model_path <- status$best_model_path %||% ""
+  if (nzchar(best_model_path) && file.exists(best_model_path)) {
+    best_model <- tryCatch(readRDS(best_model_path), error = function(e) NULL)
+    if (!is.null(best_model)) {
+      result$best_model <- best_model
+    }
+  }
+  result
 }
 
 ugplot_job_completed_run_keys <- function(result) {
@@ -257,16 +286,38 @@ ugplot_update_job_status <- function(job_id, jobs_dir = ugplot_default_jobs_dir(
 ugplot_write_job_partial_result <- function(job_id, result, jobs_dir = ugplot_default_jobs_dir()) {
   partial_path <- ugplot_result_path(job_id, jobs_dir, partial = TRUE)
   preview_path <- ugplot_preview_result_path(job_id, jobs_dir)
-  ugplot_write_rds_atomic(result, partial_path)
-  ugplot_write_rds_atomic(ugplot_job_result_preview(result), preview_path)
-  ugplot_update_job_status(
-    job_id,
-    jobs_dir,
-    partial_result_path = partial_path,
-    preview_result_path = preview_path,
-    resume_completed_keys = ugplot_job_completed_run_keys(result),
-    partial_saved_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+  best_model_path <- ugplot_best_model_path(job_id, jobs_dir)
+  status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+  completed_keys <- unique(c(
+    status$resume_completed_keys %||% character(0),
+    ugplot_job_completed_run_keys(result)
+  ))
+  best_model_signature <- paste(
+    result$best_model_name %||% "",
+    result$final_summary$dataset_seed %||% "",
+    result$final_summary$training_seed %||% "",
+    sep = "\r"
   )
+  best_model_updates <- list()
+  if (!is.null(result$best_model) &&
+      nzchar(best_model_signature) &&
+      !identical(status$best_model_signature %||% "", best_model_signature)) {
+    ugplot_write_rds_atomic(result$best_model, best_model_path)
+    best_model_updates$best_model_path <- best_model_path
+    best_model_updates$best_model_signature <- best_model_signature
+  }
+  ugplot_write_rds_atomic(ugplot_job_partial_result(result), partial_path)
+  ugplot_write_rds_atomic(ugplot_job_result_preview(result), preview_path)
+  status_updates <- c(
+    list(
+      partial_result_path = partial_path,
+      preview_result_path = preview_path,
+      resume_completed_keys = completed_keys,
+      partial_saved_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    ),
+    best_model_updates
+  )
+  do.call(ugplot_update_job_status, c(list(job_id = job_id, jobs_dir = jobs_dir), status_updates))
   invisible(partial_path)
 }
 
@@ -425,7 +476,7 @@ ugplot_read_job_result <- function(job_id, jobs_dir = ugplot_default_jobs_dir())
   if (is.null(result_path) || !file.exists(result_path)) {
     stop("Result is not available for job: ", job_id, call. = FALSE)
   }
-  readRDS(result_path)
+  ugplot_attach_job_best_model(readRDS(result_path), status)
 }
 
 ugplot_read_job_preview_result <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {

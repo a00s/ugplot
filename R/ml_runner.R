@@ -686,6 +686,8 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
         completed_run_keys <- c(completed_run_keys, current_run_key)
         progress_callback(progress = completed_runs / total_runs, message = paste("Finished", model_name))
         partial_callback(current_result(partial = TRUE))
+        rm(model)
+        gc(verbose = FALSE)
       }
     }
   }

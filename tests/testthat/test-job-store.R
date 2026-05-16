@@ -69,13 +69,17 @@ test_that("stopped jobs keep partial results available", {
   write_job_partial_result <- ugplot_test_internal("ugplot_write_job_partial_result")
   read_job_status <- ugplot_test_internal("ugplot_read_job_status")
   read_job_preview_result <- ugplot_test_internal("ugplot_read_job_preview_result")
+  read_job_result <- ugplot_test_internal("ugplot_read_job_result")
   write_job_status <- ugplot_test_internal("ugplot_write_job_status")
   stop_job <- ugplot_test_internal("ugplot_stop_job")
 
+  best_model <- stats::lm(x ~ 1, data = dataset)
   status <- create_job(dataset, config = list(runner = "ugplot_run_placeholder_job"), jobs_dir = jobs_dir)
   write_job_partial_result(status$id, list(
     results_table = data.frame(Model = "lm", R2 = 0.5, dataset_seed = 1L, training_seed = 1L, Status = "OK"),
-    best_model = stats::lm(x ~ 1, data = dataset)
+    final_summary = list(dataset_seed = 1L, training_seed = 1L),
+    best_model_name = "lm",
+    best_model = best_model
   ), jobs_dir)
   status <- read_job_status(status$id, jobs_dir)
 
@@ -89,10 +93,13 @@ test_that("stopped jobs keep partial results available", {
   expect_true(file.exists(stopped$result_path))
   expect_equal(readRDS(stopped$result_path)$results_table$R2, 0.5)
   expect_true(file.exists(stopped$preview_result_path))
+  expect_true(file.exists(stopped$best_model_path))
   expect_equal(stopped$resume_completed_keys, paste("lm", "1", "1", sep = "\r"))
   preview <- read_job_preview_result(status$id, jobs_dir)
   expect_equal(preview$results_table$R2, 0.5)
   expect_null(preview$best_model)
+  loaded <- read_job_result(status$id, jobs_dir)
+  expect_s3_class(loaded$best_model, "lm")
 })
 
 test_that("running jobs that exceed timeout are stopped with partial result", {
