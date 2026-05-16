@@ -254,6 +254,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_refresh_job_status",
     "ugplot_list_jobs",
     "ugplot_append_job_log",
+    "ugplot_read_job_log",
     "ugplot_read_job_result",
     "ugplot_read_job_preview_result",
     "ugplot_read_job_bundle",
@@ -281,6 +282,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_list_jobs",
     "ugplot_remote_model_deps",
     "ugplot_remote_job_status",
+    "ugplot_remote_job_log",
     "ugplot_remote_stop_job",
     "ugplot_remote_resume_job",
     "ugplot_remote_delete_job",
@@ -891,9 +893,13 @@ ui <- fluidPage(
         ),
         DT::DTOutput("remote_jobs_table"),
         verbatimTextOutput("remote_job_status"),
-        uiOutput("remote_job_running_summary"),
+        tags$div(
+          style = "display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px;",
+          tags$div(style = "flex: 0 0 360px; max-width: 100%;", uiOutput("remote_job_running_summary")),
+          tags$div(style = "flex: 1 1 420px; min-width: 320px; max-width: 620px;", plotlyOutput("remote_job_metric_distribution", height = "260px"))
+        ),
         verbatimTextOutput("remote_job_running_details"),
-        plotOutput("remote_job_metric_distribution", height = "260px")
+        uiOutput("remote_job_log_panel")
       )
     ),
     # MODEL ANALYSIS (vertical layout)
@@ -1948,6 +1954,7 @@ server <- function(input, output, session) {
   ml_error_message_text <- reactiveVal("")
   remote_jobs <- reactiveVal(data.frame())
   remote_job_status_text <- reactiveVal("")
+  remote_job_log_text <- reactiveVal("")
   remote_job_preview_status <- reactiveVal(NULL)
   remote_job_preview_result <- reactiveVal(NULL)
   remote_server_capabilities <- reactiveVal(list())
@@ -3614,6 +3621,16 @@ server <- function(input, output, session) {
       status_text <- paste(status_text, "| no partial result yet")
     }
 
+    log_text <- tryCatch(
+      ugplot_remote_job_log(
+        server_url = server$url,
+        job_id = job_id,
+        token = server$token %||% "",
+        max_lines = 120L
+      ),
+      error = function(e) ""
+    )
+    remote_job_log_text(log_text)
     remote_job_status_text(status_text)
     invisible(status)
   }
@@ -3911,6 +3928,7 @@ server <- function(input, output, session) {
         updateTextInput(session, "remote_job_id", value = "")
         remote_job_preview_status(NULL)
         remote_job_preview_result(NULL)
+        remote_job_log_text("")
       }
       refresh_remote_jobs()
       remote_job_status_text(paste("Remote job deleted:", job_id))
@@ -4004,42 +4022,73 @@ server <- function(input, output, session) {
     )
   })
 
-  output$remote_job_metric_distribution <- renderPlot({
+  output$remote_job_metric_distribution <- plotly::renderPlotly({
     metric_data <- remote_job_metric_values()
     if (is.null(metric_data) || length(metric_data$values) == 0) {
-      plot.new()
-      text(0.5, 0.5, "Waiting for metric results")
-      return(invisible(NULL))
+      return(plotly::plot_ly() |>
+        plotly::layout(
+          annotations = list(
+            text = "Waiting for metric results",
+            x = 0.5,
+            y = 0.5,
+            showarrow = FALSE,
+            xref = "paper",
+            yref = "paper"
+          ),
+          xaxis = list(visible = FALSE),
+          yaxis = list(visible = FALSE),
+          margin = list(l = 35, r = 12, t = 35, b = 35)
+        ))
     }
     values <- metric_data$values
-    hist(
-      values,
-      breaks = "FD",
-      probability = TRUE,
-      col = "#dbeafe",
-      border = "#60a5fa",
-      main = paste(metric_data$metric_name, "distribution"),
-      xlab = metric_data$metric_name,
-      ylab = "Density"
+    plot_obj <- plotly::plot_ly(
+      x = values,
+      type = "histogram",
+      histnorm = "probability density",
+      marker = list(color = "#dbeafe", line = list(color = "#60a5fa", width = 1)),
+      name = "Observed",
+      hovertemplate = paste0(metric_data$metric_name, ": %{x}<br>Density: %{y}<extra></extra>")
     )
     if (length(values) >= 2 && stats::sd(values) > 0) {
-      graphics::curve(
-        stats::dnorm(x, mean = mean(values), sd = stats::sd(values)),
-        add = TRUE,
-        col = "#ef4444",
-        lwd = 2
-      )
-      legend(
-        "topright",
-        legend = c("Observed", "Normal fit"),
-        fill = c("#dbeafe", NA),
-        border = c("#60a5fa", NA),
-        lty = c(NA, 1),
-        col = c("#60a5fa", "#ef4444"),
-        lwd = c(NA, 2),
-        bty = "n"
-      )
+      x_grid <- seq(min(values), max(values), length.out = 160)
+      plot_obj <- plot_obj |>
+        plotly::add_lines(
+          x = x_grid,
+          y = stats::dnorm(x_grid, mean = mean(values), sd = stats::sd(values)),
+          name = "Normal fit",
+          line = list(color = "#ef4444", width = 2),
+          hovertemplate = paste0(metric_data$metric_name, ": %{x:.4f}<br>Density: %{y:.4f}<extra></extra>")
+        )
     }
+    plot_obj |>
+      plotly::layout(
+        title = list(text = paste(metric_data$metric_name, "distribution"), font = list(size = 14)),
+        xaxis = list(title = metric_data$metric_name, zeroline = FALSE),
+        yaxis = list(title = "Density", zeroline = FALSE),
+        bargap = 0.04,
+        margin = list(l = 45, r = 12, t = 45, b = 45),
+        legend = list(orientation = "h", x = 0, y = -0.22)
+      )
+  })
+
+  output$remote_job_log_panel <- renderUI({
+    log_text <- remote_job_log_text()
+    if (!nzchar(trimws(log_text %||% ""))) {
+      return(NULL)
+    }
+    tags$details(
+      style = "margin-top: 8px;",
+      open = TRUE,
+      tags$summary(style = "cursor: pointer; font-weight: 600;", "Job log"),
+      tags$pre(
+        style = paste(
+          "max-height: 260px; overflow: auto; white-space: pre-wrap;",
+          "background: #f7f7f7; border: 1px solid #ddd; border-radius: 4px;",
+          "padding: 10px; font-size: 12px;"
+        ),
+        htmltools::htmlEscape(log_text)
+      )
+    )
   })
 
   observeEvent(input$uncheck_all_ml, {

@@ -404,6 +404,21 @@ ugplot_append_job_log <- function(job_id, message, jobs_dir = ugplot_default_job
   invisible(line)
 }
 
+ugplot_read_job_log <- function(job_id, jobs_dir = ugplot_default_jobs_dir(), max_lines = 200L) {
+  job_dir <- ugplot_job_dir(job_id, jobs_dir)
+  log_paths <- c(
+    file.path(job_dir, "log.txt"),
+    file.path(job_dir, "stdout.log"),
+    file.path(job_dir, "stderr.log")
+  )
+  sections <- lapply(log_paths[file.exists(log_paths)], function(path) {
+    lines <- readLines(path, warn = FALSE)
+    lines <- utils::tail(lines, max(1L, as.integer(max_lines)))
+    c(paste0("== ", basename(path), " =="), lines)
+  })
+  paste(unlist(sections, use.names = FALSE), collapse = "\n")
+}
+
 ugplot_read_job_result <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
   status <- ugplot_read_job_status(job_id, jobs_dir)
   result_path <- status$result_path %||% status$partial_result_path

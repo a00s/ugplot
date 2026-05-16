@@ -184,6 +184,20 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
     )
   })
 
+  pr$handle("GET", "/jobs/<job_id>/log", function(job_id, req, res) {
+    tryCatch({
+      query <- req$argsQuery %||% list()
+      max_lines <- suppressWarnings(as.integer(query$max_lines %||% 200L))
+      if (is.na(max_lines) || max_lines < 1L) {
+        max_lines <- 200L
+      }
+      list(log = ugplot_read_job_log(job_id, jobs_dir, max_lines = max_lines))
+    }, error = function(e) {
+      res$status <- 404
+      list(error = conditionMessage(e))
+    })
+  })
+
   pr$handle("POST", "/jobs/<job_id>/stop", function(job_id, res) {
     tryCatch(
       ugplot_stop_job(job_id, jobs_dir),

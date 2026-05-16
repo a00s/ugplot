@@ -92,6 +92,9 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
   }
   lib_paths <- .libPaths()
   source_dir <- if (file.exists(file.path(getwd(), "R", "app.R"))) normalizePath(getwd(), mustWork = FALSE) else NULL
+  job_dir <- ugplot_job_dir(job_id, jobs_dir)
+  stdout_path <- file.path(job_dir, "stdout.log")
+  stderr_path <- file.path(job_dir, "stderr.log")
   process <- callr::r_bg(
     func = function(job_id, jobs_dir, lib_paths, source_dir) {
       mark_startup_failed <- function(message) {
@@ -130,7 +133,9 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
       })
     },
     args = list(job_id = job_id, jobs_dir = jobs_dir, lib_paths = lib_paths, source_dir = source_dir),
-    supervise = TRUE
+    supervise = TRUE,
+    stdout = stdout_path,
+    stderr = stderr_path
   )
   ugplot_update_job_status(
     job_id,
