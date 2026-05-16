@@ -887,8 +887,7 @@ ui <- fluidPage(
         DT::DTOutput("remote_jobs_table"),
         verbatimTextOutput("remote_job_status"),
         uiOutput("remote_job_running_summary"),
-        verbatimTextOutput("remote_job_running_details"),
-        div(style = "width: 100%; overflow-x: auto;", DT::DTOutput("remote_job_results_output"))
+        verbatimTextOutput("remote_job_running_details")
       )
     ),
     # MODEL ANALYSIS (vertical layout)
@@ -3963,14 +3962,6 @@ server <- function(input, output, session) {
       format_running_metric_distribution(metric_values, metric_name = metric_name),
       sep = "\n\n"
     )
-  })
-
-  output$remote_job_results_output <- DT::renderDT({
-    result <- remote_job_preview_result()
-    if (!is.list(result) || !is.data.frame(result$results_table)) {
-      return(NULL)
-    }
-    ml_results_datatable(result$results_table)
   })
 
   observeEvent(input$uncheck_all_ml, {
