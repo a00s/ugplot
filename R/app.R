@@ -882,6 +882,7 @@ ui <- fluidPage(
             downloadButton("downloadRemoteJobResult", "Download result (RDS)")
           )
         ),
+        uiOutput("remote_server_connection_status"),
         DT::DTOutput("remote_jobs_table"),
         verbatimTextOutput("remote_job_status"),
         uiOutput("remote_job_running_summary"),
@@ -1934,6 +1935,7 @@ server <- function(input, output, session) {
   remote_job_preview_status <- reactiveVal(NULL)
   remote_job_preview_result <- reactiveVal(NULL)
   remote_server_capabilities <- reactiveVal(list())
+  remote_server_connection_text <- reactiveVal("")
   remote_result_cache <- reactiveVal(NULL)
   remote_result_cache_job_id <- reactiveVal("")
 
@@ -2046,7 +2048,7 @@ server <- function(input, output, session) {
       result <- remote_result_cache()
       if (is.null(result) || !identical(remote_result_cache_job_id(), input$remote_job_id %||% "")) {
         req(nzchar(input$remote_job_id %||% ""))
-        server <- selected_remote_server()
+        server <- remote_server_by_name(remote_server_name_for_job(input$remote_job_id))
         result <- ugplot_remote_get_result(
           server_url = server$url,
           job_id = input$remote_job_id,
@@ -3362,28 +3364,123 @@ server <- function(input, output, session) {
     changed_table[selected_rows, selected_columns, drop = FALSE]
   }
 
+  remote_server_by_name <- function(server_name = NULL) {
+    servers <- remote_servers()
+    if (!is.data.frame(servers) || nrow(servers) == 0) {
+      servers <- ugplot_default_remote_servers()
+    }
+    if (is.null(server_name) || !nzchar(server_name %||% "")) {
+      return(selected_remote_server())
+    }
+    server <- servers[servers$name == server_name, , drop = FALSE]
+    if (nrow(server) != 1) {
+      stop("Remote server not found: ", server_name, call. = FALSE)
+    }
+    server
+  }
+
+  remote_job_action_key <- function(server_name, job_id) {
+    paste(server_name %||% "", job_id %||% "", sep = "||")
+  }
+
+  parse_remote_job_action_key <- function(value) {
+    parts <- strsplit(value %||% "", "||", fixed = TRUE)[[1]]
+    if (length(parts) >= 2) {
+      return(list(server = parts[[1]], job_id = paste(parts[-1], collapse = "||")))
+    }
+    list(server = "", job_id = value %||% "")
+  }
+
+  remote_server_name_for_job <- function(job_id) {
+    jobs <- remote_jobs()
+    if (!is.data.frame(jobs) || nrow(jobs) == 0 || !"id" %in% names(jobs) || !"server" %in% names(jobs)) {
+      return(selected_remote_server()$name[[1]])
+    }
+    match_index <- which(as.character(jobs$id) == as.character(job_id))[1]
+    if (length(match_index) == 1 && !is.na(match_index)) {
+      return(as.character(jobs$server[[match_index]]))
+    }
+    selected_remote_server()$name[[1]]
+  }
+
   refresh_remote_jobs <- function() {
-    server <- selected_remote_server()
-    capabilities <- tryCatch({
-      health <- ugplot_remote_health(server_url = server$url, token = server$token %||% "")
-      health$capabilities %||% list()
-    }, error = function(e) list())
-    remote_server_capabilities(capabilities)
-    jobs <- ugplot_remote_list_jobs(
-      server_url = server$url,
-      token = server$token %||% ""
-    )
+    servers <- remote_servers()
+    if (!is.data.frame(servers) || nrow(servers) == 0) {
+      servers <- ugplot_default_remote_servers()
+    }
+
+    all_jobs <- list()
+    capabilities_by_server <- list()
+    connected <- character(0)
+    failed <- character(0)
+
+    for (i in seq_len(nrow(servers))) {
+      server <- servers[i, , drop = FALSE]
+      server_name <- server$name[[1]]
+      server_jobs <- tryCatch({
+        health <- ugplot_remote_health(server_url = server$url, token = server$token %||% "")
+        capabilities_by_server[[server_name]] <- health$capabilities %||% list()
+        jobs <- ugplot_remote_list_jobs(
+          server_url = server$url,
+          token = server$token %||% ""
+        )
+        if (!is.data.frame(jobs) || nrow(jobs) == 0) {
+          jobs <- data.frame(server = character(0), stringsAsFactors = FALSE)
+        } else {
+          jobs$server <- server_name
+        }
+        connected <- c(connected, paste0(server_name, " (", nrow(jobs), " jobs)"))
+        jobs
+      }, error = function(e) {
+        capabilities_by_server[[server_name]] <- list()
+        failed <<- c(failed, paste0(server_name, " (", conditionMessage(e), ")"))
+        data.frame()
+      })
+      if (is.data.frame(server_jobs) && nrow(server_jobs) > 0) {
+        all_jobs[[length(all_jobs) + 1L]] <- server_jobs
+      }
+    }
+
+    jobs <- if (length(all_jobs) > 0) {
+      all_columns <- unique(unlist(lapply(all_jobs, names), use.names = FALSE))
+      normalized_jobs <- lapply(all_jobs, function(job_data) {
+        for (column_name in setdiff(all_columns, names(job_data))) {
+          job_data[[column_name]] <- NA
+        }
+        job_data[, all_columns, drop = FALSE]
+      })
+      do.call(rbind, normalized_jobs)
+    } else {
+      data.frame()
+    }
     if (is.data.frame(jobs) && nrow(jobs) > 0) {
-      jobs$server <- server$name[[1]]
       preferred_columns <- c("server", "id", "name", "type", "state", "progress", "message", "target", "models", "created_at", "updated_at", "pid")
       jobs <- jobs[, c(intersect(preferred_columns, names(jobs)), setdiff(names(jobs), preferred_columns)), drop = FALSE]
     }
+    remote_server_capabilities(capabilities_by_server)
+    connection_text <- paste(
+      c(
+        if (length(connected) > 0) paste("Connected:", paste(connected, collapse = ", ")),
+        if (length(failed) > 0) paste("Failed:", paste(failed, collapse = ", "))
+      ),
+      collapse = " | "
+    )
+    remote_server_connection_text(connection_text)
     remote_jobs(jobs)
     invisible(jobs)
   }
 
-  remote_server_supports <- function(capability) {
+  remote_server_supports <- function(capability, server_name = NULL) {
     capabilities <- remote_server_capabilities()
+    if (!is.null(server_name) && nzchar(server_name %||% "") && is.list(capabilities[[server_name]])) {
+      return(isTRUE(capabilities[[server_name]][[capability]] %||% FALSE))
+    }
+    if (is.null(server_name)) {
+      selected_name <- selected_remote_server()$name[[1]]
+      if (is.list(capabilities[[selected_name]])) {
+        return(isTRUE(capabilities[[selected_name]][[capability]] %||% FALSE))
+      }
+    }
     isTRUE(capabilities[[capability]] %||% FALSE)
   }
 
@@ -3435,9 +3532,9 @@ server <- function(input, output, session) {
     invisible(result)
   }
 
-  refresh_remote_job_preview <- function(job_id, switch_to_ml = FALSE) {
+  refresh_remote_job_preview <- function(job_id, switch_to_ml = FALSE, server_name = NULL) {
     req(nzchar(job_id %||% ""))
-    server <- selected_remote_server()
+    server <- remote_server_by_name(server_name %||% remote_server_name_for_job(job_id))
     status <- ugplot_remote_job_status(
       server_url = server$url,
       job_id = job_id,
@@ -3467,10 +3564,10 @@ server <- function(input, output, session) {
     invisible(status)
   }
 
-  load_remote_job_bundle_locally <- function(job_id) {
+  load_remote_job_bundle_locally <- function(job_id, server_name = NULL) {
     req(nzchar(job_id %||% ""))
-    server <- selected_remote_server()
-    if (!remote_server_supports("job_bundle")) {
+    server <- remote_server_by_name(server_name %||% remote_server_name_for_job(job_id))
+    if (!remote_server_supports("job_bundle", server$name[[1]])) {
       result <- ugplot_remote_get_result(
         server_url = server$url,
         job_id = job_id,
@@ -3593,11 +3690,13 @@ server <- function(input, output, session) {
     }
     if (nrow(jobs) > 0 && "id" %in% names(raw_jobs)) {
       job_ids <- as.character(raw_jobs$id)
+      server_names <- if ("server" %in% names(raw_jobs)) as.character(raw_jobs$server) else rep(selected_remote_server()$name[[1]], length(job_ids))
       states <- if ("state" %in% names(jobs)) as.character(jobs$state) else rep("", length(job_ids))
       can_stop <- states %in% c("queued", "running")
-      can_delete <- remote_server_supports("delete_job") & !states %in% c("queued", "running")
+      can_delete <- vapply(server_names, function(server_name) remote_server_supports("delete_job", server_name), logical(1)) & !states %in% c("queued", "running")
       can_resume <- if ("resumable" %in% names(raw_jobs)) {
-        remote_server_supports("resume_job") & tolower(as.character(raw_jobs$resumable)) %in% c("true", "1", "yes")
+        vapply(server_names, function(server_name) remote_server_supports("resume_job", server_name), logical(1)) &
+          tolower(as.character(raw_jobs$resumable)) %in% c("true", "1", "yes")
       } else {
         rep(FALSE, length(states))
       }
@@ -3606,17 +3705,18 @@ server <- function(input, output, session) {
       }
       actions <- vapply(seq_along(job_ids), function(i) {
         job_id <- htmltools::htmlEscape(job_ids[[i]], attribute = TRUE)
+        action_key <- htmltools::htmlEscape(remote_job_action_key(server_names[[i]], job_ids[[i]]), attribute = TRUE)
         buttons <- c(
-          paste0("<button type='button' class='btn btn-default btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_load_result_row', '", job_id, "', {priority: 'event'});\">Load</button>")
+          paste0("<button type='button' class='btn btn-default btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_load_result_row', '", action_key, "', {priority: 'event'});\">Load</button>")
         )
         if (isTRUE(can_stop[[i]])) {
-          buttons <- c(buttons, paste0("<button type='button' class='btn btn-danger btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_stop_job_row', '", job_id, "', {priority: 'event'});\">Stop</button>"))
+          buttons <- c(buttons, paste0("<button type='button' class='btn btn-danger btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_stop_job_row', '", action_key, "', {priority: 'event'});\">Stop</button>"))
         }
         if (isTRUE(can_resume[[i]])) {
-          buttons <- c(buttons, paste0("<button type='button' class='btn btn-success btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_resume_job_row', '", job_id, "', {priority: 'event'});\">Resume</button>"))
+          buttons <- c(buttons, paste0("<button type='button' class='btn btn-success btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_resume_job_row', '", action_key, "', {priority: 'event'});\">Resume</button>"))
         }
         if (isTRUE(can_delete[[i]])) {
-          buttons <- c(buttons, paste0("<button type='button' class='btn btn-danger btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_delete_job_request', '", job_id, "', {priority: 'event'});\">Delete</button>"))
+          buttons <- c(buttons, paste0("<button type='button' class='btn btn-danger btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_delete_job_request', '", action_key, "', {priority: 'event'});\">Delete</button>"))
         }
         paste0("<div class='remote-job-actions'>", paste(buttons, collapse = ""), "</div>")
       }, character(1))
@@ -3640,9 +3740,10 @@ server <- function(input, output, session) {
     jobs <- remote_jobs()
     if (length(selected) == 1 && is.data.frame(jobs) && nrow(jobs) >= selected && "id" %in% names(jobs)) {
       job_id <- jobs$id[[selected]]
+      server_name <- if ("server" %in% names(jobs)) jobs$server[[selected]] else NULL
       updateTextInput(session, "remote_job_id", value = job_id)
       tryCatch({
-        refresh_remote_job_preview(job_id, switch_to_ml = FALSE)
+        refresh_remote_job_preview(job_id, switch_to_ml = FALSE, server_name = server_name)
       }, error = function(e) {
         remote_job_status_text(paste("Remote status failed:", conditionMessage(e)))
       })
@@ -3660,9 +3761,9 @@ server <- function(input, output, session) {
     })
   }, ignoreInit = TRUE)
 
-  load_remote_result_locally <- function(job_id, switch_to_ml = TRUE) {
+  load_remote_result_locally <- function(job_id, switch_to_ml = TRUE, server_name = NULL) {
     req(nzchar(job_id %||% ""))
-    server <- selected_remote_server()
+    server <- remote_server_by_name(server_name %||% remote_server_name_for_job(job_id))
     result <- ugplot_remote_get_result(
       server_url = server$url,
       job_id = job_id,
@@ -3678,8 +3779,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$remote_load_result_row, {
     tryCatch({
-      updateTextInput(session, "remote_job_id", value = input$remote_load_result_row)
-      load_remote_job_bundle_locally(input$remote_load_result_row)
+      action <- parse_remote_job_action_key(input$remote_load_result_row)
+      updateTextInput(session, "remote_job_id", value = action$job_id)
+      load_remote_job_bundle_locally(action$job_id, server_name = action$server)
     }, error = function(e) {
       remote_job_status_text(paste("Remote result load failed:", conditionMessage(e)))
     })
@@ -3687,8 +3789,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$remote_stop_job_row, {
     tryCatch({
-      job_id <- input$remote_stop_job_row
-      server <- selected_remote_server()
+      action <- parse_remote_job_action_key(input$remote_stop_job_row)
+      job_id <- action$job_id
+      server <- remote_server_by_name(action$server)
       status <- ugplot_remote_stop_job(
         server_url = server$url,
         job_id = job_id,
@@ -3704,8 +3807,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$remote_resume_job_row, {
     tryCatch({
-      job_id <- input$remote_resume_job_row
-      server <- selected_remote_server()
+      action <- parse_remote_job_action_key(input$remote_resume_job_row)
+      job_id <- action$job_id
+      server <- remote_server_by_name(action$server)
       status <- ugplot_remote_resume_job(
         server_url = server$url,
         job_id = job_id,
@@ -3720,10 +3824,12 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$remote_delete_job_request, {
-    job_id <- input$remote_delete_job_request
+    action <- parse_remote_job_action_key(input$remote_delete_job_request)
+    job_id <- action$job_id
     showModal(modalDialog(
       title = "Delete remote job",
       tags$p("Delete this job from the remote server?"),
+      tags$p(strong("Server: "), action$server %||% ""),
       tags$code(job_id),
       easyClose = TRUE,
       footer = tagList(
@@ -3735,8 +3841,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$remote_delete_job_confirm, {
     tryCatch({
-      job_id <- input$remote_delete_job_request
-      server <- selected_remote_server()
+      action <- parse_remote_job_action_key(input$remote_delete_job_request)
+      job_id <- action$job_id
+      server <- remote_server_by_name(action$server)
       ugplot_remote_delete_job(
         server_url = server$url,
         job_id = job_id,
@@ -3762,6 +3869,18 @@ server <- function(input, output, session) {
 
   output$remote_job_status <- renderText({
     remote_job_status_text()
+  })
+
+  output$remote_server_connection_status <- renderUI({
+    text <- remote_server_connection_text()
+    if (!nzchar(text %||% "")) {
+      return(NULL)
+    }
+    tags$div(
+      class = "alert alert-info",
+      style = "padding: 8px 12px; margin: 8px 0 12px 0;",
+      tags$span(text)
+    )
   })
 
   output$remote_job_running_summary <- renderUI({
