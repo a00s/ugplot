@@ -196,4 +196,12 @@ test_that("job status keeps resume metadata and job bundle", {
   expect_equal(bundle$dataset, dataset)
   expect_equal(bundle$config$target, "y")
   expect_true(bundle$status$resumable)
+
+  ugplot_test_local_namespace_binding("ugplot_process_alive", function(pid) TRUE)
+  running <- create_job(dataset, config = list(target = "y"), jobs_dir = jobs_dir)
+  running$state <- "running"
+  running$pid <- 2147483647L
+  write_job_status(running$id, running, jobs_dir)
+
+  expect_error(read_job_bundle(running$id, jobs_dir), "Full job bundle is not available while the job is active")
 })

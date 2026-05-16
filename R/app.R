@@ -3790,6 +3790,7 @@ server <- function(input, output, session) {
       server_names <- if ("server" %in% names(raw_jobs)) as.character(raw_jobs$server) else rep(selected_remote_server()$name[[1]], length(job_ids))
       states <- if ("state" %in% names(jobs)) as.character(jobs$state) else rep("", length(job_ids))
       can_stop <- states %in% c("queued", "running")
+      can_load <- !can_stop
       can_delete <- vapply(server_names, function(server_name) remote_server_supports("delete_job", server_name), logical(1)) & !states %in% c("queued", "running")
       can_resume <- if ("resumable" %in% names(raw_jobs)) {
         vapply(server_names, function(server_name) remote_server_supports("resume_job", server_name), logical(1)) &
@@ -3803,9 +3804,12 @@ server <- function(input, output, session) {
       actions <- vapply(seq_along(job_ids), function(i) {
         job_id <- htmltools::htmlEscape(job_ids[[i]], attribute = TRUE)
         action_key <- htmltools::htmlEscape(remote_job_action_key(server_names[[i]], job_ids[[i]]), attribute = TRUE)
-        buttons <- c(
-          paste0("<button type='button' class='btn btn-default btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_load_result_row', '", action_key, "', {priority: 'event'});\">Load</button>")
-        )
+        buttons <- character()
+        if (isTRUE(can_load[[i]])) {
+          buttons <- c(buttons, paste0("<button type='button' class='btn btn-default btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_load_result_row', '", action_key, "', {priority: 'event'});\">Load</button>"))
+        } else {
+          buttons <- c(buttons, "<button type='button' class='btn btn-default btn-sm' disabled title='Stop or wait for the job before loading the full dataset/results.'>Load</button>")
+        }
         if (isTRUE(can_stop[[i]])) {
           buttons <- c(buttons, paste0("<button type='button' class='btn btn-danger btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_stop_job_row', '", action_key, "', {priority: 'event'});\">Stop</button>"))
         }

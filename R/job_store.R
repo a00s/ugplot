@@ -488,10 +488,14 @@ ugplot_read_job_preview_result <- function(job_id, jobs_dir = ugplot_default_job
   ugplot_job_result_preview(ugplot_read_job_result(job_id, jobs_dir))
 }
 
-ugplot_read_job_bundle <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+ugplot_read_job_bundle <- function(job_id, jobs_dir = ugplot_default_jobs_dir(), allow_active = FALSE) {
   job_dir <- ugplot_job_dir(job_id, jobs_dir)
   if (!dir.exists(job_dir)) {
     stop("Job not found: ", job_id, call. = FALSE)
+  }
+  status <- ugplot_read_job_status(job_id, jobs_dir)
+  if (!isTRUE(allow_active) && status$state %in% c("queued", "running")) {
+    stop("Full job bundle is not available while the job is active. Use preview, or stop/wait before Load.", call. = FALSE)
   }
   dataset_path <- file.path(job_dir, "dataset.rds")
   config_path <- file.path(job_dir, "config.rds")
@@ -500,7 +504,7 @@ ugplot_read_job_bundle <- function(job_id, jobs_dir = ugplot_default_jobs_dir())
   }
   list(
     id = job_id,
-    status = ugplot_read_job_status(job_id, jobs_dir),
+    status = status,
     dataset = readRDS(dataset_path),
     config = readRDS(config_path),
     result = tryCatch(ugplot_read_job_result(job_id, jobs_dir), error = function(e) NULL)

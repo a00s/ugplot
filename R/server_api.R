@@ -297,7 +297,11 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         content_base64 = base64enc::base64encode(bundle_path)
       )
     }, error = function(e) {
-      res$status <- 404
+      if (grepl("while the job is active", conditionMessage(e), fixed = TRUE)) {
+        res$status <- 409
+      } else {
+        res$status <- 404
+      }
       list(error = conditionMessage(e))
     })
   })
