@@ -160,6 +160,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         delete_job = TRUE,
         resume_job = TRUE,
         job_bundle = TRUE,
+        job_preview = TRUE,
         job_config_summary = TRUE
       )
     )
@@ -248,6 +249,22 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
       list(
         filename = paste0("ugplot-job-", job_id, ".rds"),
         content_base64 = base64enc::base64encode(result_path)
+      )
+    }, error = function(e) {
+      res$status <- 404
+      list(error = conditionMessage(e))
+    })
+  })
+
+  pr$handle("GET", "/jobs/<job_id>/preview-rds", function(job_id, res) {
+    tryCatch({
+      preview <- ugplot_read_job_preview_result(job_id, jobs_dir)
+      preview_path <- tempfile(fileext = ".rds")
+      on.exit(unlink(preview_path), add = TRUE)
+      saveRDS(preview, preview_path)
+      list(
+        filename = paste0("ugplot-job-", job_id, "-preview.rds"),
+        content_base64 = base64enc::base64encode(preview_path)
       )
     }, error = function(e) {
       res$status <- 404

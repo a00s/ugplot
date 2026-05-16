@@ -404,7 +404,17 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
   if (is.null(resume_result) && nzchar(resume_result_path) && file.exists(resume_result_path)) {
     resume_result <- tryCatch(readRDS(resume_result_path), error = function(e) NULL)
   }
+  resume_completed_keys <- unique(as.character(config$resume_completed_keys %||% character(0)))
+  resume_completed_keys <- resume_completed_keys[nzchar(resume_completed_keys) & !is.na(resume_completed_keys)]
   restored_resume <- restore_resume_result(resume_result)
+  if (!isTRUE(restored_resume) && length(resume_completed_keys) > 0) {
+    completed_run_keys <- resume_completed_keys
+    completed_runs <- min(length(completed_run_keys), total_runs)
+    progress_callback(
+      progress = completed_runs / total_runs,
+      message = paste("Resuming after", completed_runs, "completed run keys")
+    )
+  }
   if (isTRUE(restored_resume)) {
     progress_callback(
       progress = completed_runs / total_runs,

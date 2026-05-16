@@ -118,6 +118,23 @@ ugplot_remote_get_result <- function(server_url, job_id, token = "") {
   readRDS(result_file)
 }
 
+ugplot_remote_get_job_preview <- function(server_url, job_id, token = "") {
+  request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/preview-rds"), token)
+  response <- httr::GET(request$url, request$headers)
+  parsed <- ugplot_remote_parse(response)
+  content_base64 <- parsed$content_base64
+  content_base64 <- as.character(unlist(content_base64, use.names = FALSE))
+  content_base64 <- content_base64[nzchar(content_base64)]
+  if (length(content_base64) == 0) {
+    stop("Remote preview response did not include RDS content.", call. = FALSE)
+  }
+  preview_file <- tempfile(fileext = ".rds")
+  raw_preview <- base64enc::base64decode(content_base64[[1]])
+  writeBin(raw_preview, preview_file)
+  on.exit(unlink(preview_file), add = TRUE)
+  readRDS(preview_file)
+}
+
 ugplot_remote_get_job_bundle <- function(server_url, job_id, token = "") {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/bundle-rds"), token)
   response <- httr::GET(request$url, request$headers)

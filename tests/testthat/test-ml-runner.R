@@ -147,3 +147,46 @@ test_that("remote ML runner resumes after completed partial rows", {
   expect_equal(nrow(result$results_table), 2L)
   expect_equal(result$final_summary$completed_runs, 2L)
 })
+
+test_that("remote ML runner can resume from completed run keys", {
+  skip_on_os("windows")
+  local_env <- local_ml_runner_env()
+  train_calls <- 0L
+  ugplot_test_local_namespace_binding("ugplot_ml_train_direct", function(train_set, target_name, model_name,
+                                                                         ctrl, tune_length, model_libraries, ...) {
+    train_calls <<- train_calls + 1L
+    suppressWarnings(
+      caret::train(
+        stats::as.formula(paste(target_name, "~ .")),
+        data = train_set,
+        method = model_name,
+        trControl = ctrl,
+        tuneLength = tune_length
+      )
+    )
+  })
+
+  result <- local_env$ugplot_run_ml_job(
+    dataset = sample_ml_data(),
+    config = list(
+      target = "age",
+      models = "lm",
+      dataset_seed_start = 1,
+      dataset_seed_end = 2,
+      training_seed_start = 1,
+      training_seed_end = 1,
+      timeout = 30,
+      performance_mode = "custom",
+      cv_method = "cv",
+      cv_folds = 2,
+      tune_length = 1,
+      cpu_limit = 1,
+      use_callr_timeout = FALSE,
+      resume_completed_keys = paste("lm", "1", "1", sep = "\r")
+    )
+  )
+
+  expect_equal(train_calls, 1L)
+  expect_equal(nrow(result$results_table), 1L)
+  expect_equal(result$final_summary$completed_runs, 2L)
+})

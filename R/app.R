@@ -233,6 +233,9 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_job_dir",
     "ugplot_status_path",
     "ugplot_result_path",
+    "ugplot_preview_result_path",
+    "ugplot_job_result_preview",
+    "ugplot_job_completed_run_keys",
     "ugplot_write_rds_atomic",
     "ugplot_read_rds_or_null",
     "ugplot_process_alive",
@@ -252,6 +255,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_list_jobs",
     "ugplot_append_job_log",
     "ugplot_read_job_result",
+    "ugplot_read_job_preview_result",
     "ugplot_read_job_bundle",
     "ugplot_launch_background_job",
     "ugplot_resume_background_job",
@@ -281,6 +285,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_resume_job",
     "ugplot_remote_delete_job",
     "ugplot_remote_get_result",
+    "ugplot_remote_get_job_preview",
     "ugplot_remote_get_job_bundle",
     "ugplot_remote_servers_path",
     "ugplot_default_remote_servers",
@@ -887,7 +892,8 @@ ui <- fluidPage(
         DT::DTOutput("remote_jobs_table"),
         verbatimTextOutput("remote_job_status"),
         uiOutput("remote_job_running_summary"),
-        verbatimTextOutput("remote_job_running_details")
+        verbatimTextOutput("remote_job_running_details"),
+        plotOutput("remote_job_metric_distribution", height = "260px")
       )
     ),
     # MODEL ANALYSIS (vertical layout)
@@ -3576,16 +3582,32 @@ server <- function(input, output, session) {
     status_text <- remote_status_summary_text(status)
 
     if (remote_status_has_result(status)) {
-      result <- ugplot_remote_get_result(
-        server_url = server$url,
-        job_id = job_id,
-        token = server$token %||% ""
-      )
-      remote_job_preview_result(result)
-      status_text <- paste(status_text, "| partial/results loaded")
       if (isTRUE(switch_to_ml)) {
+        result <- ugplot_remote_get_result(
+          server_url = server$url,
+          job_id = job_id,
+          token = server$token %||% ""
+        )
+        remote_job_preview_result(ugplot_job_result_preview(result))
         apply_remote_ml_result(result, job_id)
         updateTabsetPanel(session, "tabs", selected = "MACHINE LEARNING")
+        status_text <- paste(status_text, "| full result loaded")
+      } else {
+        result <- if (remote_server_supports("job_preview", server$name[[1]])) {
+          ugplot_remote_get_job_preview(
+            server_url = server$url,
+            job_id = job_id,
+            token = server$token %||% ""
+          )
+        } else {
+          ugplot_job_result_preview(ugplot_remote_get_result(
+            server_url = server$url,
+            job_id = job_id,
+            token = server$token %||% ""
+          ))
+        }
+        remote_job_preview_result(result)
+        status_text <- paste(status_text, "| preview loaded")
       }
     } else {
       remote_job_preview_result(NULL)
@@ -3947,11 +3969,10 @@ server <- function(input, output, session) {
     ml_final_summary_ui(result$final_summary)
   })
 
-  output$remote_job_running_details <- renderText({
+  remote_job_metric_values <- reactive({
     result <- remote_job_preview_result()
-    status <- remote_job_preview_status()
     if (!is.list(result) || !is.data.frame(result$results_table)) {
-      return("")
+      return(NULL)
     }
     results <- result$results_table
     metric_name <- if ("R2" %in% names(results)) {
@@ -3962,16 +3983,63 @@ server <- function(input, output, session) {
       NULL
     }
     if (is.null(metric_name)) {
-      return(remote_status_summary_text(status))
+      return(NULL)
     }
     ok_rows <- if ("Status" %in% names(results)) as.character(results$Status) == "OK" else rep(TRUE, nrow(results))
-    metric_values <- suppressWarnings(as.numeric(results[[metric_name]][ok_rows]))
+    values <- suppressWarnings(as.numeric(results[[metric_name]][ok_rows]))
+    values <- values[is.finite(values)]
+    list(metric_name = metric_name, values = values)
+  })
+
+  output$remote_job_running_details <- renderText({
+    status <- remote_job_preview_status()
+    metric_data <- remote_job_metric_values()
+    if (is.null(metric_data)) {
+      return("")
+    }
     paste(
       remote_status_summary_text(status),
-      format_running_stability_signal(metric_values, metric_name = metric_name),
-      format_running_metric_distribution(metric_values, metric_name = metric_name),
+      format_running_stability_signal(metric_data$values, metric_name = metric_data$metric_name),
       sep = "\n\n"
     )
+  })
+
+  output$remote_job_metric_distribution <- renderPlot({
+    metric_data <- remote_job_metric_values()
+    if (is.null(metric_data) || length(metric_data$values) == 0) {
+      plot.new()
+      text(0.5, 0.5, "Waiting for metric results")
+      return(invisible(NULL))
+    }
+    values <- metric_data$values
+    hist(
+      values,
+      breaks = "FD",
+      probability = TRUE,
+      col = "#dbeafe",
+      border = "#60a5fa",
+      main = paste(metric_data$metric_name, "distribution"),
+      xlab = metric_data$metric_name,
+      ylab = "Density"
+    )
+    if (length(values) >= 2 && stats::sd(values) > 0) {
+      graphics::curve(
+        stats::dnorm(x, mean = mean(values), sd = stats::sd(values)),
+        add = TRUE,
+        col = "#ef4444",
+        lwd = 2
+      )
+      legend(
+        "topright",
+        legend = c("Observed", "Normal fit"),
+        fill = c("#dbeafe", NA),
+        border = c("#60a5fa", NA),
+        lty = c(NA, 1),
+        col = c("#60a5fa", "#ef4444"),
+        lwd = c(NA, 2),
+        bty = "n"
+      )
+    }
   })
 
   observeEvent(input$uncheck_all_ml, {

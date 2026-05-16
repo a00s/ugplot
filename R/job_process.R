@@ -162,6 +162,13 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
   partial_path <- status$partial_result_path %||% ugplot_result_path(job_id, jobs_dir, partial = TRUE)
   if (!is.null(partial_path) && file.exists(partial_path)) {
     config$resume_result_path <- partial_path
+    resume_result <- tryCatch(readRDS(partial_path), error = function(e) NULL)
+    resume_keys <- ugplot_job_completed_run_keys(resume_result)
+    if (length(resume_keys) > 0) {
+      config$resume_completed_keys <- resume_keys
+    }
+  } else if (length(status$resume_completed_keys %||% character(0)) > 0) {
+    config$resume_completed_keys <- status$resume_completed_keys
   }
   saveRDS(config, config_path)
   pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
