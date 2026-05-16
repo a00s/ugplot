@@ -216,6 +216,94 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
   metric_values <- list()
   mae_values <- list()
   rmse_values <- list()
+  completed_run_keys <- character(0)
+
+  run_key <- function(model_name, dataset_seed, training_seed) {
+    paste(as.character(model_name), as.character(dataset_seed), as.character(training_seed), sep = "\r")
+  }
+
+  restore_resume_result <- function(resume_result) {
+    if (!is.list(resume_result) || !is.data.frame(resume_result$results_table) || nrow(resume_result$results_table) == 0) {
+      return(invisible(FALSE))
+    }
+    resumed_results <- resume_result$results_table
+    if (!all(c("Model", "dataset_seed", "training_seed") %in% names(resumed_results))) {
+      return(invisible(FALSE))
+    }
+
+    resumed_results <- resumed_results[
+      as.character(resumed_results$Model) %in% models &
+        suppressWarnings(as.integer(resumed_results$dataset_seed)) %in% dataset_seed_values &
+        suppressWarnings(as.integer(resumed_results$training_seed)) %in% training_seed_values,
+      ,
+      drop = FALSE
+    ]
+    if (nrow(resumed_results) == 0) {
+      return(invisible(FALSE))
+    }
+
+    resumed_results$.resume_key <- run_key(
+      resumed_results$Model,
+      suppressWarnings(as.integer(resumed_results$dataset_seed)),
+      suppressWarnings(as.integer(resumed_results$training_seed))
+    )
+    resumed_results <- resumed_results[!duplicated(resumed_results$.resume_key), , drop = FALSE]
+    completed_run_keys <<- resumed_results$.resume_key
+    resumed_results$.resume_key <- NULL
+    results <<- resumed_results
+    completed_runs <<- min(length(completed_run_keys), total_runs)
+
+    ok_rows <- if ("Status" %in% names(results)) as.character(results$Status) == "OK" else rep(TRUE, nrow(results))
+    for (row_index in which(ok_rows)) {
+      model_name <- as.character(results$Model[[row_index]])
+      metric <- if ("R2" %in% names(results)) {
+        suppressWarnings(as.numeric(results$R2[[row_index]]))
+      } else if ("Accuracy" %in% names(results)) {
+        suppressWarnings(as.numeric(results$Accuracy[[row_index]]))
+      } else {
+        NA_real_
+      }
+      if (is.finite(metric)) {
+        metric_values[[model_name]] <<- c(metric_values[[model_name]], metric)
+        if ("MAE" %in% names(results)) {
+          mae <- suppressWarnings(as.numeric(results$MAE[[row_index]]))
+          if (is.finite(mae)) {
+            mae_values[[model_name]] <<- c(mae_values[[model_name]], mae)
+          }
+        }
+        if ("RMSE" %in% names(results)) {
+          rmse <- suppressWarnings(as.numeric(results$RMSE[[row_index]]))
+          if (is.finite(rmse)) {
+            rmse_values[[model_name]] <<- c(rmse_values[[model_name]], rmse)
+          }
+        }
+        if (metric > best_result) {
+          best_result <<- metric
+          best_model_name <<- model_name
+          best_dataset_seed <<- suppressWarnings(as.integer(results$dataset_seed[[row_index]]))
+          best_training_seed <<- suppressWarnings(as.integer(results$training_seed[[row_index]]))
+          best_model_label <<- paste(model_name, "(", best_dataset_seed, ":", best_training_seed, ")")
+          if ("MAE" %in% names(results)) {
+            best_mae <<- suppressWarnings(as.numeric(results$MAE[[row_index]]))
+          }
+          if ("RMSE" %in% names(results)) {
+            best_rmse <<- suppressWarnings(as.numeric(results$RMSE[[row_index]]))
+          }
+        }
+        if (metric < worst_result) {
+          worst_result <<- metric
+          worst_model <<- paste(model_name, "(", results$dataset_seed[[row_index]], ":", results$training_seed[[row_index]], ")")
+        }
+      }
+    }
+
+    best_model_object <<- resume_result$best_model %||% NULL
+    best_preprocess <<- resume_result$best_model_preprocess %||% NULL
+    if (is.list(resume_result$predictions)) {
+      predictions <<- resume_result$predictions
+    }
+    invisible(TRUE)
+  }
 
   current_result <- function(partial = FALSE) {
     metric_name <- if (is.factor(X_base[[target_name]])) "Accuracy" else "R2"
@@ -285,6 +373,20 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
       partial = isTRUE(partial),
       updated_at = as.character(Sys.time())
     )
+  }
+
+  resume_result <- config$resume_result %||% NULL
+  resume_result_path <- config$resume_result_path %||% ""
+  if (is.null(resume_result) && nzchar(resume_result_path) && file.exists(resume_result_path)) {
+    resume_result <- tryCatch(readRDS(resume_result_path), error = function(e) NULL)
+  }
+  restored_resume <- restore_resume_result(resume_result)
+  if (isTRUE(restored_resume)) {
+    progress_callback(
+      progress = completed_runs / total_runs,
+      message = paste("Resuming after", completed_runs, "completed runs")
+    )
+    partial_callback(current_result(partial = TRUE))
   }
 
   cv_settings <- ugplot_ml_cv_settings(config)
@@ -395,6 +497,14 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
 
       for (seed_position in seq_along(training_seed_values)) {
         training_seed <- training_seed_values[[seed_position]]
+        current_run_key <- run_key(model_name, dataset_seed, training_seed)
+        if (current_run_key %in% completed_run_keys) {
+          progress_callback(
+            progress = completed_runs / total_runs,
+            message = paste("Skipping completed", model_name, "dataset seed", dataset_seed, "training seed", training_seed)
+          )
+          next
+        }
         set.seed(training_seed)
         attempt_start <- proc.time()[["elapsed"]]
         progress_callback(
@@ -539,6 +649,7 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
           ))
         }
         completed_runs <- completed_runs + 1L
+        completed_run_keys <- c(completed_run_keys, current_run_key)
         progress_callback(progress = completed_runs / total_runs, message = paste("Finished", model_name))
         partial_callback(current_result(partial = TRUE))
       }

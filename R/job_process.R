@@ -159,6 +159,10 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
   config_path <- file.path(job_dir, "config.rds")
   config <- readRDS(config_path)
   config$use_callr_timeout <- FALSE
+  partial_path <- status$partial_result_path %||% ugplot_result_path(job_id, jobs_dir, partial = TRUE)
+  if (!is.null(partial_path) && file.exists(partial_path)) {
+    config$resume_result_path <- partial_path
+  }
   saveRDS(config, config_path)
   pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
   if ((status$state %||% "") %in% c("queued", "running") && !is.na(pid) && ugplot_process_alive(pid)) {
