@@ -64,11 +64,22 @@ ugplot_process_alive <- function(pid) {
   if (is.na(pid) || pid <= 0) {
     return(FALSE)
   }
+  if (.Platform$OS.type == "windows") {
+    output <- tryCatch(
+      suppressWarnings(system2("tasklist", c("/FI", paste0("PID eq ", pid), "/NH"), stdout = TRUE, stderr = FALSE)),
+      error = function(e) character()
+    )
+    return(any(grepl(paste0("\\b", pid, "\\b"), output)))
+  }
   result <- tryCatch(tools::pskill(pid, signal = 0), error = function(e) FALSE)
   isTRUE(result)
 }
 
 ugplot_terminate_process <- function(pid) {
+  if (.Platform$OS.type == "windows") {
+    system2("taskkill", c("/PID", as.character(as.integer(pid)), "/T", "/F"), stdout = FALSE, stderr = FALSE)
+    return(invisible(TRUE))
+  }
   tools::pskill(as.integer(pid), signal = tools::SIGTERM)
   Sys.sleep(0.5)
   if (ugplot_process_alive(pid)) {
