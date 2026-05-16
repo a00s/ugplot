@@ -3319,6 +3319,13 @@ server <- function(input, output, session) {
     if (!is.data.frame(ml_results)) {
       ml_results <- data.frame()
     }
+    if (ncol(ml_results) == 0) {
+      return(datatable(
+        data.frame(Status = "No machine learning result rows loaded yet.", check.names = FALSE),
+        options = list(lengthChange = FALSE, paging = FALSE, searching = FALSE, info = FALSE),
+        rownames = FALSE
+      ))
+    }
     priority_columns <- c(
       "Model", "R2", "Accuracy", "MAE", "RMSE",
       "dataset_seed", "training_seed", "threshold_scope", "imputation_scope",
@@ -3335,6 +3342,12 @@ server <- function(input, output, session) {
       )
     }
     error_column <- match("Error", names(ml_results)) - 1
+    column_defs <- list()
+    if (!is.na(error_column)) {
+      column_defs <- list(
+        list(targets = error_column, width = "420px", className = "dt-error-column")
+      )
+    }
     datatable(ml_results,
       options = list(
         lengthChange = FALSE,
@@ -3343,9 +3356,7 @@ server <- function(input, output, session) {
         info = FALSE,
         scrollX = TRUE,
         autoWidth = FALSE,
-        columnDefs = list(
-          list(targets = error_column, width = "420px", className = "dt-error-column")
-        )
+        columnDefs = column_defs
       ),
       rownames = FALSE)
   }
@@ -3563,8 +3574,12 @@ server <- function(input, output, session) {
   apply_remote_ml_result <- function(result, job_id) {
     remote_result_cache(result)
     remote_result_cache_job_id(job_id)
+    loaded_rows <- 0L
     if (is.data.frame(result$results_table)) {
       ml_table_results(result$results_table)
+      loaded_rows <- nrow(result$results_table)
+    } else {
+      ml_table_results(data.frame())
     }
     if (is.list(result$final_summary)) {
       ml_final_summary(result$final_summary)
@@ -3577,6 +3592,7 @@ server <- function(input, output, session) {
     if (is.list(result$predictions)) {
       ml_prediction <<- result$predictions
     }
+    remote_job_status_text(paste("Remote result loaded locally:", job_id, "-", loaded_rows, "result rows"))
     invisible(result)
   }
 
@@ -3696,17 +3712,24 @@ server <- function(input, output, session) {
     remote_job_preview_status(bundle$status %||% NULL)
     if (is.list(bundle$result)) {
       remote_job_preview_result(bundle$result)
-      apply_remote_ml_result(bundle$result, job_id)
+      result <- bundle$result
     } else {
       remote_job_preview_result(NULL)
-      ml_table_results(data.frame())
-      ml_final_summary(NULL)
-      best_model_object(NULL)
-      best_model_preprocess(NULL)
-      ml_prediction <<- list()
+      result <- NULL
     }
-    remote_job_status_text(paste("Remote job loaded locally:", job_id))
-    updateTabsetPanel(session, "tabs", selected = "MACHINE LEARNING")
+    session$onFlushed(function() {
+      if (is.list(result)) {
+        apply_remote_ml_result(result, job_id)
+      } else {
+        ml_table_results(data.frame())
+        ml_final_summary(NULL)
+        best_model_object(NULL)
+        best_model_preprocess(NULL)
+        ml_prediction <<- list()
+        remote_job_status_text(paste("Remote job loaded locally without result table:", job_id))
+      }
+      updateTabsetPanel(session, "tabs", selected = "MACHINE LEARNING")
+    }, once = TRUE)
     invisible(bundle)
   }
 
