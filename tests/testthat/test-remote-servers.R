@@ -19,15 +19,19 @@ test_that("remote server config stores CPU limits and migrates old records", {
   migrated <- read_remote_servers()
 
   expect_true("cpu_limit" %in% names(migrated))
+  expect_true("cpu_max" %in% names(migrated))
   expect_true(migrated$cpu_limit[[1]] >= 1L)
+  expect_true(migrated$cpu_max[[1]] >= migrated$cpu_limit[[1]])
 
   saved <- upsert_remote_server(
     name = "Remote",
     url = "http://remote.test:8080",
     token = "secret",
-    cpu_limit = 7
+    cpu_limit = 7,
+    cpu_max = 12
   )
 
   remote <- saved[saved$name == "Remote", , drop = FALSE]
   expect_equal(remote$cpu_limit, 7L)
+  expect_equal(remote$cpu_max, 12L)
 })

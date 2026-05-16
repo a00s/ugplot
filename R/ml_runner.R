@@ -119,6 +119,10 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
 ugplot_ml_train_direct <- function(train_set, target_name, model_name, ctrl,
                                    tune_length, model_libraries,
                                    parallel_enabled = FALSE, cpu_limit = 1L) {
+  cpu_limit <- suppressWarnings(as.integer(cpu_limit %||% 1L))
+  if (is.na(cpu_limit) || cpu_limit < 1L) {
+    cpu_limit <- 1L
+  }
   Sys.setenv(
     OMP_NUM_THREADS = cpu_limit,
     MKL_NUM_THREADS = cpu_limit,
@@ -130,7 +134,27 @@ ugplot_ml_train_direct <- function(train_set, target_name, model_name, ctrl,
   for (lib in model_libraries) {
     suppressPackageStartupMessages(library(lib, character.only = TRUE))
   }
-  ctrl$allowParallel <- isTRUE(parallel_enabled)
+  cl <- NULL
+  if (isTRUE(parallel_enabled) && cpu_limit > 1L) {
+    cl <- tryCatch(
+      parallel::makeCluster(cpu_limit),
+      error = function(e) {
+        warning("Could not start parallel workers: ", conditionMessage(e), call. = FALSE)
+        NULL
+      }
+    )
+    if (!is.null(cl)) {
+      doParallel::registerDoParallel(cl)
+    }
+  }
+  on.exit({
+    if (!is.null(cl)) {
+      try(parallel::stopCluster(cl), silent = TRUE)
+    }
+    foreach::registerDoSEQ()
+  }, add = TRUE)
+
+  ctrl$allowParallel <- !is.null(cl)
   caret::train(
     stats::as.formula(paste(target_name, "~ .")),
     data = train_set,

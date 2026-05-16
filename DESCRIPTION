@@ -28,6 +28,8 @@ Imports:
     randomForest,
     glmnet,
     plotly,
+    htmltools,
+    htmlwidgets,
     tidyr,
     missForest,
     caret,
@@ -42,11 +44,13 @@ Imports:
     gam
 Suggests:
     callr,
+    BiocManager,
     httr,
     jsonlite,
     methyLImp2,
     plumber,
     testthat (>= 3.0.0),
+    torch,
     withr
 Config/testthat/edition: 3
 URL: https://github.com/a00s/ugplot

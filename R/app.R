@@ -101,13 +101,13 @@ format_running_metric_distribution <- function(values, metric_name = "R2", bins 
   bar_char <- "\u2588"
 
   if (length(values) == 0) {
-    return(paste0("𝗗𝗜𝗦𝗧𝗥𝗜𝗕𝗨𝗧𝗜𝗢𝗡 : waiting for ", metric_name, " results"))
+    return(paste0("DISTRIBUTION : waiting for ", metric_name, " results"))
   }
 
   if (length(unique(values)) == 1) {
     bar <- paste(rep(bar_char, min(width, max(1, length(values)))), collapse = "")
     return(paste0(
-      "𝗗𝗜𝗦𝗧𝗥𝗜𝗕𝗨𝗧𝗜𝗢𝗡 : ", metric_name, " (n=", length(values), ")\n",
+      "DISTRIBUTION : ", metric_name, " (n=", length(values), ")\n",
       sprintf("%.4f | %s", values[[1]], bar)
     ))
   }
@@ -132,7 +132,7 @@ format_running_metric_distribution <- function(values, metric_name = "R2", bins 
     sprintf("%.2f", utils::tail(breaks, -1))
   )
   lines <- paste0(interval_labels, " | ", bars, " ", counts)
-  paste(c(paste0("𝗗𝗜𝗦𝗧𝗥𝗜𝗕𝗨𝗧𝗜𝗢𝗡 : ", metric_name, " (n=", length(values), ")"), lines), collapse = "\n")
+  paste(c(paste0("DISTRIBUTION : ", metric_name, " (n=", length(values), ")"), lines), collapse = "\n")
 }
 
 format_running_stability_signal <- function(values, metric_name = "R2") {
@@ -142,7 +142,7 @@ format_running_stability_signal <- function(values, metric_name = "R2") {
 
   if (n_values < 30) {
     return(paste0(
-      "Stability: 🟥 collecting data (n=", n_values, "/30)"
+      "Stability: collecting data (n=", n_values, "/30)"
     ))
   }
 
@@ -166,18 +166,18 @@ format_running_stability_signal <- function(values, metric_name = "R2") {
     metric_se <= 0.02
 
   status <- if (stable_green) {
-    "🟩 stable"
+    "stable"
   } else if (stable_yellow) {
-    "🟨 getting stable"
+    "getting stable"
   } else {
-    "🟥 still moving"
+    "still moving"
   }
 
   paste0(
     "Stability: ", status,
     " | n=", n_values,
-    " | Δmean ", round(mean_shift, 4),
-    " | Δmedian ", round(median_shift, 4),
+    " | delta mean ", round(mean_shift, 4),
+    " | delta median ", round(median_shift, 4),
     " | SE ", round(metric_se, 4)
   )
 }
@@ -409,7 +409,7 @@ slow_models <- c(
 slow_models_text <- paste("Slow or problematic models automatically removed:",
   paste(slow_models, collapse = ", "))
 
-# Global variables (seguindo o padrão utilizado)
+# Global variables (seguindo o padrao utilizado)
 df_pre <<- ""
 dff <<- ""
 ml_available <<- list()
@@ -694,13 +694,13 @@ ui <- fluidPage(
               class = "ml-skip-checkbox",
               checkboxInput(
                 "ml_auto_skip_bad_models",
-                "Auto-skip models in next rounds (timeout or low R²)",
+                "Auto-skip models in next rounds (timeout or low R2)",
                 value = FALSE
               )
             ),
             div(
               class = "ml-threshold-input ml-skip-threshold",
-              numericInput("ml_min_r2_skip", "Min R² (0-1)", value = 0, min = 0, max = 1, step = 0.01)
+              numericInput("ml_min_r2_skip", "Min R2 (0-1)", value = 0, min = 0, max = 1, step = 0.01)
             )
           ),
           selectInput(
@@ -897,11 +897,11 @@ ui <- fluidPage(
         fileInput("model_file", "Load RDS Model", accept = c(".rds")),
         verbatimTextOutput("model_details"),
         uiOutput("model_preprocess_ui"),
-        ## NOVO: mostrar variável alvo do modelo
+        ## NOVO: mostrar variavel alvo do modelo
         uiOutput("model_target_var_ui"),
         uiOutput("model_analysis_missing_features_ui"),
 
-        ## NOVO: escolher no dataset qual coluna é o ground truth
+        ## NOVO: escolher no dataset qual coluna e o ground truth
         selectInput("dataset_response_col", "Target column:",
                                                    choices = NULL,
                                                    selected = NULL),
@@ -1590,6 +1590,7 @@ server <- function(input, output, session) {
   remote_servers <- reactiveVal(ugplot_read_remote_servers())
   config_remote_editing_name <- reactiveVal(NULL)
   config_remote_test_status <- reactiveVal("")
+  config_remote_detected_cpus <- reactiveVal(NA_integer_)
   ml_model_source_status_text <- reactiveVal("")
 
   hideTab(inputId = "tabs", target = "TABLE")
@@ -1735,7 +1736,13 @@ server <- function(input, output, session) {
     if (is.na(current_cpu_limit) || current_cpu_limit < 1L) {
       current_cpu_limit <- default_system_cpu_limit
     }
-    cpu_slider_max <- max(total_system_cpus, current_cpu_limit)
+    current_cpu_max <- suppressWarnings(as.integer(if (is_edit && "cpu_max" %in% names(server)) server$cpu_max[[1]] else total_system_cpus))
+    if (is.na(current_cpu_max) || current_cpu_max < 1L) {
+      current_cpu_max <- max(total_system_cpus, current_cpu_limit)
+    }
+    current_cpu_max <- max(current_cpu_max, current_cpu_limit)
+    config_remote_detected_cpus(current_cpu_max)
+    cpu_slider_max <- current_cpu_max
     showModal(modalDialog(
       title = if (is_edit) "Edit remote server" else "Add remote server",
       textInput("config_remote_name", "Server name", value = if (is_edit) server$name[[1]] else ""),
@@ -1787,9 +1794,10 @@ server <- function(input, output, session) {
   remote_servers_table_data <- function() {
     servers <- remote_servers()
     if (!is.data.frame(servers) || nrow(servers) == 0) {
-      servers <- data.frame(name = character(0), url = character(0), token = character(0), stringsAsFactors = FALSE)
+      servers <- data.frame(name = character(0), url = character(0), token = character(0), cpu_limit = integer(0), cpu_max = integer(0), stringsAsFactors = FALSE)
     }
     token_status <- ifelse(nzchar(servers$token %||% ""), "Set", "")
+    cpu_text <- paste0(servers$cpu_limit, " / ", servers$cpu_max)
     actions <- vapply(servers$name, function(server_name) {
       paste(
         remote_server_action_button("edit", server_name, "Edit", "pencil", "remote-server-edit"),
@@ -1800,7 +1808,7 @@ server <- function(input, output, session) {
       name = servers$name,
       url = servers$url,
       token = token_status,
-      cpus = servers$cpu_limit,
+      cpus = cpu_text,
       actions = actions,
       stringsAsFactors = FALSE,
       check.names = FALSE
@@ -1825,6 +1833,7 @@ server <- function(input, output, session) {
       if (is.na(default_limit) || default_limit < 1L) {
         default_limit <- max(1L, cpus - 1L)
       }
+      config_remote_detected_cpus(cpus)
       updateSliderInput(
         session,
         "config_remote_cpu_limit",
@@ -1874,7 +1883,8 @@ server <- function(input, output, session) {
         name = input$config_remote_name,
         url = input$config_remote_url,
         token = input$config_remote_token %||% "",
-        cpu_limit = input$config_remote_cpu_limit %||% 1L
+        cpu_limit = input$config_remote_cpu_limit %||% 1L,
+        cpu_max = config_remote_detected_cpus() %||% input$config_remote_cpu_limit %||% 1L
       )
       remote_servers(servers)
       refresh_remote_server_inputs(input$config_remote_name)
@@ -2313,11 +2323,11 @@ server <- function(input, output, session) {
         tags$div(
           class = "ml-final-summary-content",
           tags$div(best_model_title),
-          tags$div(paste0("Min R²: ", fmt(summary_data$best_model_min))),
-          tags$div(paste0("Max R²: ", fmt(summary_data$best_model_max))),
-          tags$div(paste0("Range R²: ", fmt(summary_data$best_model_range))),
+          tags$div(paste0("Min R2: ", fmt(summary_data$best_model_min))),
+          tags$div(paste0("Max R2: ", fmt(summary_data$best_model_max))),
+          tags$div(paste0("Range R2: ", fmt(summary_data$best_model_range))),
           tags$strong("Medians:"),
-          tags$div(paste0("R²: ", fmt(summary_data$best_model_median), " (IQR ", fmt(summary_data$best_model_iqr), ")")),
+          tags$div(paste0("R2: ", fmt(summary_data$best_model_median), " (IQR ", fmt(summary_data$best_model_iqr), ")")),
           tags$div(paste0("MAE: ", fmt(summary_data$best_model_mae_median), " (IQR ", fmt(summary_data$best_model_mae_iqr), ")")),
           tags$div(paste0("RMSE: ", fmt(summary_data$best_model_rmse_median), " (IQR ", fmt(summary_data$best_model_rmse_iqr), ")")),
           runtime_lines
@@ -3059,7 +3069,7 @@ server <- function(input, output, session) {
     numeric_table <- numeric_table[, !(names(numeric_table) %in% cols_to_convert)]
     numeric_table <- apply(numeric_table, c(1, 2), as.numeric)
     if (input$plot_xy == "ROW x COL") {
-      # sem transformação adicional
+      # sem transformacao adicional
     } else if (input$plot_xy == "COL x COL") {
       numeric_table <- cor(numeric_table)
     } else if (input$plot_xy == "ROW x ROW") {
@@ -4242,9 +4252,9 @@ server <- function(input, output, session) {
 
           paste0(
             "\n",
-            "𝗕𝗘𝗦𝗧 𝗠𝗢𝗗𝗘𝗟 : ", best_model_label, "\n",
-            "𝗕𝗘𝗦𝗧 ", if (identical(best_metric_name, "R2")) "𝗥𝟮" else best_metric_name, " : ", best_metric_label, "\n\n",
-            "𝗠𝗘𝗗𝗜𝗔𝗡 ", if (identical(best_metric_name, "R2")) "𝗥𝟮" else best_metric_name, " : ", median_label, "\n\n",
+            "BEST MODEL : ", best_model_label, "\n",
+            "BEST ", if (identical(best_metric_name, "R2")) "R2" else best_metric_name, " : ", best_metric_label, "\n\n",
+            "MEDIAN ", if (identical(best_metric_name, "R2")) "R2" else best_metric_name, " : ", median_label, "\n\n",
             "Progress: ", current_run_index, "/", total_search_runs, " (", progress_percent, "%)",
             " | Model: ", count_model, "/", max(1, active_model_count), "\n",
             "Running: ", model_name, "\n",
@@ -4821,7 +4831,7 @@ server <- function(input, output, session) {
     stop_main_cluster()
   })
 
-  # Tab 6) MODEL ANALYSIS: Carrega o modelo e detecta variável‑alvo
+  # Tab 6) MODEL ANALYSIS: Carrega o modelo e detecta variavel-alvo
 observeEvent(input$model_file, {
   req(input$model_file)
   tryCatch({
@@ -4855,37 +4865,37 @@ observeEvent(input$model_file, {
       }
     })
 
-    # 3) Prepara vetor de colunas ativas do dataset (seleção da aba TABLE)
+    # 3) Prepara vetor de colunas ativas do dataset (selecao da aba TABLE)
     active_cols <- input$column_checkbox_group %||% character(0)
     cols_dataset <- intersect(active_cols, colnames(changed_table))
     if (length(cols_dataset) == 0) {
       cols_dataset <- colnames(changed_table)
     }
 
-    # 4) Detecta variável‑alvo em várias etapas
+    # 4) Detecta variavel-alvo em varias etapas
     model_target <- ""
 
-    # 4.1) Se for um objeto caret::train, o call$formula guarda a fórmula
+    # 4.1) Se for um objeto caret::train, o call$formula guarda a formula
     if (!is.null(model_obj$call$formula)) {
       model_target <- as.character(model_obj$call$formula[[2]])
     }
-    # 4.2) Caso seja um objeto randomForest puro treinado por fórmula
+    # 4.2) Caso seja um objeto randomForest puro treinado por formula
     else if (inherits(model_obj, "randomForest") && !is.null(model_obj$terms)) {
-      # extrai a segunda variável dos terms
+      # extrai a segunda variavel dos terms
       vars <- as.character(attr(model_obj$terms, "variables"))
       if (length(vars) >= 2) model_target <- vars[2]
     }
-    # 4.3) Fallback para caret::train (se por algum motivo o fórmula sumiu):
-    #      pegamos o .outcome no trainingData (mas aí o nome real não fica disponível)
+    # 4.3) Fallback para caret::train (se por algum motivo o formula sumiu):
+    #      pegamos o .outcome no trainingData (mas ai o nome real nao fica disponivel)
     else if (!is.null(model_obj$trainingData)) {
       # a coluna .outcome guarda o vetor de resposta
       if (".outcome" %in% colnames(model_obj$trainingData)) {
-        # não é o nome original, mas mostramos ao menos que veio do treinamento
+        # nao e o nome original, mas mostramos ao menos que veio do treinamento
         model_target <- ".outcome"
       }
     }
 
-    # 4.4) Se ainda vazio ou não estiver nas colunas ativas, usar o que o usuário selecionou
+    # 4.4) Se ainda vazio ou nao estiver nas colunas ativas, usar o que o usuario selecionou
     selected_manual <- input$dataset_response_col
     if (!(model_target %in% cols_dataset)) {
       if (!is.null(selected_manual) && selected_manual %in% cols_dataset) {
@@ -4905,8 +4915,8 @@ observeEvent(input$model_file, {
       )
     })
 
-    # 6) Atualiza o selectInput do dataset com as colunas disponíveis,
-    #    e já seleciona a variável‑alvo detectada (ou manual)
+    # 6) Atualiza o selectInput do dataset com as colunas disponiveis,
+    #    e ja seleciona a variavel-alvo detectada (ou manual)
     updateSelectInput(
       session,
       "dataset_response_col",
@@ -5115,7 +5125,7 @@ observeEvent(input$model_file, {
 
     if (is_classif) {
 
-      # ---- CLASSIFICAÇÃO ----
+      # ---- CLASSIFICACAO ----
       predicted_class <- as.character(pred_raw)
 
       # tenta obter probabilidades
@@ -5132,18 +5142,18 @@ observeEvent(input$model_file, {
         conf_margin <- rep(NA_real_, length(predicted_class))
       }
 
-      # status confiável vs inconclusivo
+      # status confiavel vs inconclusivo
       threshold <- input$confidence_threshold
       status    <- ifelse(conf_margin < threshold, "inconclusive", "reliable")
 
-      # diferença numérica (classe codificada como número)
+      # diferenca numerica (classe codificada como numero)
       diff_num <- if (!all(is.na(ground_truth))) {
         as.numeric(predicted_class) - as.numeric(as.character(ground_truth))
       } else {
         NA_real_
       }
 
-      # monta a tabela de saída
+      # monta a tabela de saida
       output_table <- data.frame(
         Sample            = sample_names,
         Ground_Truth      = ground_truth,
@@ -5157,7 +5167,7 @@ observeEvent(input$model_file, {
 
     } else {
 
-      # ---- REGRESSÃO ----
+      # ---- REGRESSAO ----
       predicted_value <- as.numeric(pred_raw)
       diff_val        <- predicted_value - ground_truth
 
@@ -5170,7 +5180,7 @@ observeEvent(input$model_file, {
       )
     }
 
-    # 4) Métricas adicionais
+    # 4) Metricas adicionais
     if (!all(is.na(ground_truth))) {
       if (is_classif) {
         total_items        <- length(sample_names)
@@ -5223,7 +5233,7 @@ observeEvent(input$model_file, {
       }
     } else {
       output$model_analysis_accuracy <- renderPrint({
-        report_txt <- "Ground truth não disponível.\n"
+        report_txt <- "Ground truth nao disponivel.\n"
         model_analysis_metrics_report(report_txt)
         cat(report_txt)
       })
