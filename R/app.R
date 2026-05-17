@@ -3619,6 +3619,20 @@ server <- function(input, output, session) {
     invisible(result)
   }
 
+  activate_remote_server_for_job <- function(server) {
+    server_name <- as.character(server$name[[1]])
+    updateRadioButtons(session, "ml_run_target", selected = "remote")
+    refresh_remote_server_inputs(selected = server_name)
+    updateSelectInput(session, "remote_server_name", selected = server_name)
+    model_deps <- ugplot_remote_model_deps(
+      server_url = server$url,
+      token = server$token %||% ""
+    )
+    load_ml_list(model_deps)
+    ml_model_source_status_text(paste("Models loaded from remote server:", server_name))
+    invisible(model_deps)
+  }
+
   refresh_remote_job_preview <- function(job_id, switch_to_ml = FALSE, server_name = NULL) {
     req(nzchar(job_id %||% ""))
     server <- remote_server_by_name(server_name %||% remote_server_name_for_job(job_id))
@@ -3680,6 +3694,7 @@ server <- function(input, output, session) {
   load_remote_job_bundle_locally <- function(job_id, server_name = NULL) {
     req(nzchar(job_id %||% ""))
     server <- remote_server_by_name(server_name %||% remote_server_name_for_job(job_id))
+    activate_remote_server_for_job(server)
     if (!remote_server_supports("job_bundle", server$name[[1]])) {
       result <- ugplot_remote_get_result(
         server_url = server$url,
@@ -3736,21 +3751,18 @@ server <- function(input, output, session) {
     if (is.list(bundle$result)) {
       remote_job_preview_result(bundle$result)
       result <- bundle$result
+      apply_remote_ml_result(result, job_id)
     } else {
       remote_job_preview_result(NULL)
       result <- NULL
+      ml_table_results(data.frame())
+      ml_final_summary(NULL)
+      best_model_object(NULL)
+      best_model_preprocess(NULL)
+      ml_prediction <<- list()
+      remote_job_status_text(paste("Remote job loaded locally without result table:", job_id))
     }
     session$onFlushed(function() {
-      if (is.list(result)) {
-        apply_remote_ml_result(result, job_id)
-      } else {
-        ml_table_results(data.frame())
-        ml_final_summary(NULL)
-        best_model_object(NULL)
-        best_model_preprocess(NULL)
-        ml_prediction <<- list()
-        remote_job_status_text(paste("Remote job loaded locally without result table:", job_id))
-      }
       updateTabsetPanel(session, "tabs", selected = "MACHINE LEARNING")
     }, once = TRUE)
     invisible(bundle)
@@ -3865,6 +3877,12 @@ server <- function(input, output, session) {
     if (length(selected) == 1 && is.data.frame(jobs) && nrow(jobs) >= selected && "id" %in% names(jobs)) {
       job_id <- jobs$id[[selected]]
       server_name <- if ("server" %in% names(jobs)) jobs$server[[selected]] else NULL
+      if (!is.null(server_name) && nzchar(server_name %||% "")) {
+        server <- remote_server_by_name(server_name)
+        updateRadioButtons(session, "ml_run_target", selected = "remote")
+        refresh_remote_server_inputs(selected = as.character(server$name[[1]]))
+        updateSelectInput(session, "remote_server_name", selected = as.character(server$name[[1]]))
+      }
       updateTextInput(session, "remote_job_id", value = job_id)
       tryCatch({
         refresh_remote_job_preview(job_id, switch_to_ml = FALSE, server_name = server_name)
