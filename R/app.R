@@ -211,6 +211,7 @@ source_local_helper <- function(file_name, function_name = NULL, always_reload =
   invisible(FALSE)
 }
 
+source_local_helper("00_version.R", "ugplot_build_version", always_reload = TRUE)
 source_local_helper("job_store.R", "ugplot_ensure_dir", always_reload = TRUE)
 source_local_helper("server_deps.R", "ugPlotInstallModelDeps", always_reload = TRUE)
 source_local_helper("remote_client.R", "ugplot_remote_create_job", always_reload = TRUE)
