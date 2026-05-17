@@ -172,6 +172,7 @@ ugPlotServerStart <- function(host = "0.0.0.0", port = 8080,
     func = function(host, port, jobs_dir, token, name, lib_paths, source_dir) {
       .libPaths(lib_paths)
       if (!is.null(source_dir) && file.exists(file.path(source_dir, "R", "server_api.R"))) {
+        source(file.path(source_dir, "R", "00_version.R"), local = .GlobalEnv)
         source(file.path(source_dir, "R", "app.R"), local = .GlobalEnv)
         source(file.path(source_dir, "R", "job_store.R"), local = .GlobalEnv)
         source(file.path(source_dir, "R", "job_process.R"), local = .GlobalEnv)
@@ -210,6 +211,26 @@ ugPlotServerStart <- function(host = "0.0.0.0", port = 8080,
     started_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
   )
   ugplot_write_server_state(state, name)
+
+  started <- FALSE
+  for (attempt in seq_len(50)) {
+    if (!process$is_alive()) {
+      log_lines <- if (file.exists(log_file)) utils::tail(readLines(log_file, warn = FALSE), 20) else character(0)
+      stop(
+        paste(c("ugPlotServer background process stopped before opening the port.", log_lines), collapse = "\n"),
+        call. = FALSE
+      )
+    }
+    if (length(ugplot_port_listener_pids(port)) > 0) {
+      started <- TRUE
+      break
+    }
+    Sys.sleep(0.2)
+  }
+  if (!isTRUE(started)) {
+    warning("ugPlotServer process started, but port ", port, " was not listening yet.", call. = FALSE)
+  }
+
   message("ugPlotServer started at ", state$url, " (pid ", state$pid, ").")
   invisible(state)
 }
