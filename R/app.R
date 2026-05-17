@@ -414,7 +414,7 @@ sample_data <- sample_data[, -1]
 slow_models <- c(
   'bam', 'ANFIS', 'DENFIS', 'FH.GBML', 'FIR.DM', 'FS.HGD',
   'gam', 'GFS.LT.RS', 'GFS.FR.MOGUL', 'GFS.THRIFT', 'HYFIS',
-  'gaussprRadial', 'gaussprLinear', 'rbf', 'randomGLM', 'null'
+  'gaussprRadial', 'gaussprLinear', 'rbf', 'randomGLM', 'Rborist', 'null'
 )
 slow_models_text <- paste("Slow or problematic models automatically removed:",
   paste(slow_models, collapse = ", "))
@@ -476,7 +476,7 @@ ui <- fluidPage(
   useShinyjs(),
   titlePanel(tags$img(
     src = getImage("ugplot.png"), height = "50px",
-    tags$span("version 1.0.1", style = "color: gray; font-size: 11px;")
+    tags$span(paste("version", ugplot_build_version()), style = "color: gray; font-size: 11px;")
   )),
   tabsetPanel(
     id = "tabs",
@@ -1651,8 +1651,15 @@ server <- function(input, output, session) {
     )
   })
 
-  output$config_remote_test_status <- renderText({
-    config_remote_test_status()
+  output$config_remote_test_status <- renderUI({
+    status_text <- config_remote_test_status()
+    if (!nzchar(status_text)) {
+      return(NULL)
+    }
+    if (grepl("Version mismatch", status_text, fixed = TRUE)) {
+      return(tags$span(style = "color: #8a5a00; font-weight: 600;", htmltools::htmlEscape(status_text)))
+    }
+    tags$span(htmltools::htmlEscape(status_text))
   })
 
   remote_server_choices <- function() {
@@ -1774,7 +1781,7 @@ server <- function(input, output, session) {
       tags$div(
         class = "remote-server-test-row",
         actionButton("config_remote_test", "Test connection", icon = icon("plug")),
-        textOutput("config_remote_test_status", inline = TRUE)
+        uiOutput("config_remote_test_status", inline = TRUE)
       ),
       footer = tagList(
         modalButton("Cancel"),
@@ -1848,6 +1855,13 @@ server <- function(input, output, session) {
       if (is.na(default_limit) || default_limit < 1L) {
         default_limit <- max(1L, cpus - 1L)
       }
+      remote_version <- as.character(health$ugplot_build_version %||% "")
+      local_version <- ugplot_build_version()
+      version_message <- if (identical(ugplot_compare_build_versions(local_version, remote_version), 0L)) {
+        ""
+      } else {
+        paste0(" ", ugplot_version_mismatch_message(local_version, remote_version))
+      }
       config_remote_detected_cpus(cpus)
       updateSliderInput(
         session,
@@ -1855,7 +1869,7 @@ server <- function(input, output, session) {
         max = cpus,
         value = min(default_limit, cpus)
       )
-      config_remote_test_status(paste0("Connected. Available CPUs: ", cpus, ". Suggested: ", min(default_limit, cpus), "."))
+      config_remote_test_status(paste0("Connected. Available CPUs: ", cpus, ". Suggested: ", min(default_limit, cpus), ".", version_message))
     }, error = function(e) {
       config_remote_test_status(paste("Connection failed:", conditionMessage(e)))
     })
@@ -3387,7 +3401,7 @@ server <- function(input, output, session) {
       tune_length = input$ml_tune_length %||% 3,
       cpu_limit = selected_remote_cpu_limit(),
       parallel_enabled = isTRUE(input$config_parallel_cubist_models),
-      use_callr_timeout = FALSE,
+      use_callr_timeout = TRUE,
       restart_parallel_each_model = isTRUE(input$config_restart_parallel_each_model),
       retry_parallel_connection_errors = isTRUE(input$config_retry_parallel_connection_errors)
     )
@@ -3459,6 +3473,10 @@ server <- function(input, output, session) {
       server_jobs <- tryCatch({
         health <- ugplot_remote_health(server_url = server$url, token = server$token %||% "")
         capabilities_by_server[[server_name]] <- health$capabilities %||% list()
+        remote_version <- as.character(health$ugplot_build_version %||% "")
+        local_version <- ugplot_build_version()
+        version_matches <- identical(ugplot_compare_build_versions(local_version, remote_version), 0L)
+        version_message <- if (isTRUE(version_matches)) "" else ugplot_version_mismatch_message(local_version, remote_version)
         jobs <- ugplot_remote_list_jobs(
           server_url = server$url,
           token = server$token %||% ""
@@ -3475,10 +3493,12 @@ server <- function(input, output, session) {
         }
         add_server_connection_row(data.frame(
           server = server_name,
-          state = if (active_count > 0) "active" else "idle",
+          state = if (!isTRUE(version_matches)) "version_mismatch" else if (active_count > 0) "active" else "idle",
           jobs = nrow(jobs),
           active = active_count,
-          message = if (active_count > 0) paste(active_count, "active") else "idle",
+          message = if (!isTRUE(version_matches)) version_message else if (active_count > 0) paste(active_count, "active") else "idle",
+          interface_version = local_version,
+          server_version = if (nzchar(remote_version)) remote_version else NA_character_,
           stringsAsFactors = FALSE
         ))
         jobs
@@ -3490,6 +3510,8 @@ server <- function(input, output, session) {
           jobs = NA_integer_,
           active = NA_integer_,
           message = conditionMessage(e),
+          interface_version = ugplot_build_version(),
+          server_version = NA_character_,
           stringsAsFactors = FALSE
         ))
         data.frame()
@@ -3981,6 +4003,7 @@ server <- function(input, output, session) {
     state_styles <- list(
       active = list(label = "ONLINE - RUNNING", background = "#e8f7eb", border = "#2e9d4d", color = "#1f6f37"),
       idle = list(label = "ONLINE - IDLE", background = "#f0e9ff", border = "#7a4fd4", color = "#5632a8"),
+      version_mismatch = list(label = "VERSION MISMATCH", background = "#fff4e5", border = "#f0ad4e", color = "#8a5a00"),
       offline = list(label = "OFFLINE", background = "#fdecec", border = "#d9534f", color = "#a5302d")
     )
     cards <- lapply(seq_len(nrow(server_state)), function(i) {
@@ -3998,7 +4021,9 @@ server <- function(input, output, session) {
         tags$div(style = "font-weight: 700; font-size: 12px; line-height: 1.2;", htmltools::htmlEscape(row$server[[1]])),
         tags$div(style = "font-size: 11px; line-height: 1.25;", style$label),
         tags$div(style = "font-size: 11px; line-height: 1.25;", paste0(jobs_label, active_label)),
-        if (identical(state, "offline")) {
+        if (identical(state, "version_mismatch")) {
+          tags$div(style = "font-size: 10px; margin-top: 2px; max-width: 340px;", htmltools::htmlEscape(row$message[[1]] %||% "Version mismatch"))
+        } else if (identical(state, "offline")) {
           tags$div(style = "font-size: 10px; margin-top: 2px; max-width: 280px;", htmltools::htmlEscape(row$message[[1]] %||% "Connection failed"))
         }
       )

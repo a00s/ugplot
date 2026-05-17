@@ -35,3 +35,30 @@ test_that("remote server config stores CPU limits and migrates old records", {
   expect_equal(remote$cpu_limit, 7L)
   expect_equal(remote$cpu_max, 12L)
 })
+
+test_that("build versions compare date and suffix versions", {
+  if (!exists("ugplot_compare_build_versions", inherits = TRUE)) {
+    version_file <- c(file.path("R", "00_version.R"), file.path("..", "..", "R", "00_version.R"))
+    version_file <- version_file[file.exists(version_file)][[1]]
+    source(version_file, local = globalenv())
+  }
+  compare_versions <- get("ugplot_compare_build_versions", inherits = TRUE)
+  mismatch_message <- get("ugplot_version_mismatch_message", inherits = TRUE)
+
+  expect_equal(compare_versions("20260517", "20260517"), 0L)
+  expect_equal(compare_versions("20260517.1", "20260517"), 1L)
+  expect_equal(compare_versions("20260517", "20260517.2"), -1L)
+  expect_equal(compare_versions("20260518", "20260517.9"), 1L)
+  expect_true(is.na(compare_versions("20260517", "")))
+
+  expect_match(
+    mismatch_message("20260517.1", "20260517"),
+    "Update the remote server to 20260517.1",
+    fixed = TRUE
+  )
+  expect_match(
+    mismatch_message("20260517", "20260517.2"),
+    "Update this interface to 20260517.2",
+    fixed = TRUE
+  )
+})

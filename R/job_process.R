@@ -118,6 +118,7 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
       .libPaths(lib_paths)
       tryCatch({
         if (!is.null(source_dir) && file.exists(file.path(source_dir, "R", "app.R"))) {
+          source(file.path(source_dir, "R", "00_version.R"), local = .GlobalEnv)
           source(file.path(source_dir, "R", "app.R"), local = .GlobalEnv)
           source(file.path(source_dir, "R", "job_store.R"), local = .GlobalEnv)
           source(file.path(source_dir, "R", "ml_runner.R"), local = .GlobalEnv)
@@ -147,7 +148,6 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
 }
 
 ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugplot_default_jobs_dir()) {
-  config$use_callr_timeout <- FALSE
   status <- ugplot_create_job(dataset = dataset, config = config, jobs_dir = jobs_dir)
   ugplot_launch_background_job(status$id, jobs_dir)
 }
@@ -163,7 +163,6 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
   }
   config_path <- file.path(job_dir, "config.rds")
   config <- readRDS(config_path)
-  config$use_callr_timeout <- FALSE
   partial_path <- status$partial_result_path %||% ugplot_result_path(job_id, jobs_dir, partial = TRUE)
   resume_result <- NULL
   if (!is.null(partial_path) && file.exists(partial_path)) {

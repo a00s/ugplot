@@ -153,6 +153,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
     }
     list(
       status = "ok",
+      ugplot_build_version = ugplot_build_version(),
       jobs_dir = jobs_dir,
       cpus = as.integer(total_cpus),
       default_cpu_limit = max(1L, as.integer(total_cpus) - 1L),
