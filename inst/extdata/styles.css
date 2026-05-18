@@ -491,6 +491,34 @@ table.dataTable th.dt-error-column {
   line-height: 1.2;
 }
 
+.remote-job-models {
+  max-width: 620px;
+}
+
+.remote-job-models summary {
+  cursor: pointer;
+  list-style-position: inside;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-job-models summary:hover {
+  color: #1769aa;
+}
+
+.remote-job-model-count {
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
+  margin-left: 6px;
+}
+
+.remote-job-model-list {
+  margin-top: 8px;
+  white-space: normal;
+}
+
 table.dataTable tbody tr.remote-job-row-finished td {
   background-color: #ffffff !important;
   border-top: 1px solid #d7eadc;
@@ -543,7 +571,22 @@ table.dataTable tbody tr.remote-job-row-problem.selected td {
   color: #333 !important;
 }
 
+table.dataTable tbody tr.remote-job-row-finished.selected > *,
+table.dataTable tbody tr.remote-job-row-active.selected > *,
+table.dataTable tbody tr.remote-job-row-problem.selected > *,
+table.dataTable tbody tr.remote-job-row-finished.selected:hover > *,
+table.dataTable tbody tr.remote-job-row-active.selected:hover > *,
+table.dataTable tbody tr.remote-job-row-problem.selected:hover > * {
+  box-shadow: none !important;
+  color: #333 !important;
+}
+
 table.dataTable tbody tr.remote-job-row-finished.selected td {
+  background-color: #eef8f1 !important;
+}
+
+table.dataTable tbody tr.remote-job-row-finished.selected > *,
+table.dataTable tbody tr.remote-job-row-finished.selected:hover > * {
   background-color: #eef8f1 !important;
 }
 
@@ -551,7 +594,17 @@ table.dataTable tbody tr.remote-job-row-active.selected td {
   background-color: #ebf8fc !important;
 }
 
+table.dataTable tbody tr.remote-job-row-active.selected > *,
+table.dataTable tbody tr.remote-job-row-active.selected:hover > * {
+  background-color: #ebf8fc !important;
+}
+
 table.dataTable tbody tr.remote-job-row-problem.selected td {
+  background-color: #fff0f0 !important;
+}
+
+table.dataTable tbody tr.remote-job-row-problem.selected > *,
+table.dataTable tbody tr.remote-job-row-problem.selected:hover > * {
   background-color: #fff0f0 !important;
 }
 

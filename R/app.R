@@ -3816,9 +3816,36 @@ server <- function(input, output, session) {
     if ("progress" %in% names(jobs)) {
       jobs$progress <- vapply(jobs$progress, remote_job_progress_label, character(1))
     }
+    raw_model_values <- if ("models" %in% names(raw_jobs)) as.character(raw_jobs$models) else character(0)
     character_columns <- names(jobs)[vapply(jobs, is.character, logical(1))]
     for (column_name in character_columns) {
       jobs[[column_name]] <- htmltools::htmlEscape(jobs[[column_name]])
+    }
+    if (nrow(jobs) > 0 && "models" %in% names(jobs)) {
+      jobs$models <- vapply(seq_len(nrow(jobs)), function(i) {
+        raw_models <- raw_model_values[[i]] %||% ""
+        model_items <- trimws(strsplit(raw_models, ",", fixed = TRUE)[[1]])
+        model_items <- model_items[nzchar(model_items)]
+        model_count <- length(model_items)
+        escaped_models <- jobs$models[[i]]
+        if (model_count <= 8 && nchar(raw_models) <= 120) {
+          return(escaped_models)
+        }
+        summary_items <- utils::head(model_items, 5)
+        summary_text <- paste(summary_items, collapse = ", ")
+        if (model_count > length(summary_items)) {
+          summary_text <- paste0(summary_text, " ...")
+        }
+        paste0(
+          "<details class='remote-job-models' onclick='event.stopPropagation();'>",
+          "<summary>",
+          htmltools::htmlEscape(summary_text),
+          " <span class='remote-job-model-count'>", model_count, " models</span>",
+          "</summary>",
+          "<div class='remote-job-model-list'>", escaped_models, "</div>",
+          "</details>"
+        )
+      }, character(1))
     }
     if (nrow(jobs) > 0 && "id" %in% names(raw_jobs)) {
       job_ids <- as.character(raw_jobs$id)
@@ -3886,7 +3913,7 @@ server <- function(input, output, session) {
       selection = "single",
       escape = FALSE,
       callback = DT::JS(
-        "table.on('mousedown mouseup click dblclick', '.remote-job-actions, .remote-job-actions *', function(e) {
+        "table.on('mousedown mouseup click dblclick', '.remote-job-actions, .remote-job-actions *, .remote-job-models, .remote-job-models *', function(e) {
           e.stopPropagation();
         });"
       )
