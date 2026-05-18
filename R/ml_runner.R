@@ -62,7 +62,7 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
     stop("Package 'callr' is required to enforce remote model timeouts.", call. = FALSE)
   }
 
-  callr::r(
+  process <- callr::r_bg(
     func = function(train_set, target_name, model_name, ctrl, tune_length,
                     model_libraries, parallel_enabled, cpu_limit, lib_paths) {
       .libPaths(lib_paths)
@@ -110,10 +110,33 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
       cpu_limit = max(1L, as.integer(cpu_limit)),
       lib_paths = lib_paths
     ),
-    timeout = timeout,
     stdout = NULL,
-    stderr = NULL
+    stderr = NULL,
+    supervise = TRUE
   )
+  on.exit({
+    if (process$is_alive()) {
+      try(process$kill_tree(), silent = TRUE)
+      try(process$kill(), silent = TRUE)
+    }
+  }, add = TRUE)
+
+  started_at <- proc.time()[["elapsed"]]
+  poll_interval <- 0.25
+  repeat {
+    if (!process$is_alive()) {
+      return(process$get_result())
+    }
+    elapsed <- proc.time()[["elapsed"]] - started_at
+    if (is.finite(elapsed) && elapsed >= timeout) {
+      try(process$kill_tree(), silent = TRUE)
+      try(process$kill(), silent = TRUE)
+      condition <- simpleError(paste0("Timed out after ", timeout, " seconds"))
+      class(condition) <- c("callr_timeout_error", class(condition))
+      stop(condition)
+    }
+    Sys.sleep(poll_interval)
+  }
 }
 
 ugplot_ml_train_direct <- function(train_set, target_name, model_name, ctrl,
