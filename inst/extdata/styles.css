@@ -490,3 +490,33 @@ table.dataTable th.dt-error-column {
   padding: 4px 8px;
   line-height: 1.2;
 }
+
+table.dataTable tbody tr.remote-job-row-finished td {
+  background-color: #e8f7eb !important;
+}
+
+table.dataTable tbody tr.remote-job-row-active td {
+  background-color: #fff4e5 !important;
+}
+
+table.dataTable tbody tr.remote-job-row-problem td {
+  background-color: #fdeaea !important;
+}
+
+table.dataTable tbody tr.remote-job-row-finished.selected td,
+table.dataTable tbody tr.remote-job-row-active.selected td,
+table.dataTable tbody tr.remote-job-row-problem.selected td {
+  color: #333 !important;
+}
+
+table.dataTable tbody tr.remote-job-row-finished.selected td {
+  background-color: #cdebd4 !important;
+}
+
+table.dataTable tbody tr.remote-job-row-active.selected td {
+  background-color: #ffe0b3 !important;
+}
+
+table.dataTable tbody tr.remote-job-row-problem.selected td {
+  background-color: #f8caca !important;
+}

@@ -3859,6 +3859,23 @@ server <- function(input, output, session) {
       jobs$Actions <- actions
     }
     table_options <- list(pageLength = 8, scrollX = TRUE)
+    if ("state" %in% names(jobs)) {
+      state_column <- which(names(jobs) == "state") - 1L
+      table_options$createdRow <- DT::JS(sprintf(
+        "function(row, data, dataIndex) {
+          var state = (data[%d] || '').toString().toLowerCase();
+          $(row).removeClass('remote-job-row-finished remote-job-row-active remote-job-row-problem');
+          if (state === 'finished') {
+            $(row).addClass('remote-job-row-finished');
+          } else if (state === 'queued' || state === 'running') {
+            $(row).addClass('remote-job-row-active');
+          } else if (state === 'failed' || state === 'stopped' || state === 'error') {
+            $(row).addClass('remote-job-row-problem');
+          }
+        }",
+        state_column
+      ))
+    }
     if ("Actions" %in% names(jobs)) {
       table_options$columnDefs <- list(list(orderable = FALSE, targets = which(names(jobs) == "Actions") - 1L))
     }
@@ -3867,7 +3884,12 @@ server <- function(input, output, session) {
       options = table_options,
       rownames = FALSE,
       selection = "single",
-      escape = FALSE
+      escape = FALSE,
+      callback = DT::JS(
+        "table.on('mousedown mouseup click dblclick', '.remote-job-actions, .remote-job-actions *', function(e) {
+          e.stopPropagation();
+        });"
+      )
     )
   })
 
