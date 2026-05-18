@@ -297,3 +297,48 @@ ugplot_auto_resume_crashed_jobs <- function(jobs_dir = ugplot_default_jobs_dir()
   }
   invisible(resumed)
 }
+
+ugplot_start_auto_resume_monitor <- function(jobs_dir = ugplot_default_jobs_dir(),
+                                             interval = 30,
+                                             source_dir = NULL,
+                                             lib_paths = .libPaths()) {
+  interval <- suppressWarnings(as.numeric(interval %||% 30))
+  if (is.na(interval) || interval <= 0) {
+    return(NULL)
+  }
+  if (!requireNamespace("callr", quietly = TRUE)) {
+    stop("Package 'callr' is required to start the auto-resume monitor.", call. = FALSE)
+  }
+  ugplot_ensure_dir(jobs_dir)
+  callr::r_bg(
+    func = function(jobs_dir, interval, source_dir, lib_paths) {
+      `%||%` <- function(lhs, rhs) {
+        if (is.null(lhs) || length(lhs) == 0) rhs else lhs
+      }
+      assign("%||%", `%||%`, envir = .GlobalEnv)
+      .libPaths(lib_paths)
+      if (!is.null(source_dir) && file.exists(file.path(source_dir, "R", "job_process.R"))) {
+        source(file.path(source_dir, "R", "00_version.R"), local = .GlobalEnv)
+        source(file.path(source_dir, "R", "server_control.R"), local = .GlobalEnv)
+        source(file.path(source_dir, "R", "job_store.R"), local = .GlobalEnv)
+        source(file.path(source_dir, "R", "ml_runner.R"), local = .GlobalEnv)
+        source(file.path(source_dir, "R", "job_process.R"), local = .GlobalEnv)
+      } else {
+        library(ugplot)
+      }
+      repeat {
+        try(ugplot_auto_resume_crashed_jobs(jobs_dir), silent = TRUE)
+        Sys.sleep(interval)
+      }
+    },
+    args = list(
+      jobs_dir = jobs_dir,
+      interval = max(1, interval),
+      source_dir = source_dir,
+      lib_paths = lib_paths
+    ),
+    supervise = TRUE,
+    stdout = file.path(jobs_dir, "auto-resume-monitor.stdout.log"),
+    stderr = file.path(jobs_dir, "auto-resume-monitor.stderr.log")
+  )
+}

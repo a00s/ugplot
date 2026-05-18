@@ -105,11 +105,14 @@ ugplot_read_rds_base64 <- function(value) {
 #' @param name Local server handle name used by status/stop when the server is
 #'   started directly.
 #' @param register Whether to write a local state file for status/stop.
+#' @param auto_resume_interval Seconds between automatic crashed-job resume
+#'   checks. Use 0 to disable the background monitor.
 #' @return The plumber server result.
 #' @export
 ugPlotServer <- function(host = "0.0.0.0", port = 8080,
                          jobs_dir = ugplot_default_jobs_dir(),
-                         token = "", name = "default", register = TRUE) {
+                         token = "", name = "default", register = TRUE,
+                         auto_resume_interval = 30) {
   ugplot_assert_server_system_deps()
   if (!requireNamespace("plumber", quietly = TRUE)) {
     stop("Package 'plumber' is required to start ugPlotServer(). Run ugPlotInstallServerDeps().", call. = FALSE)
@@ -119,6 +122,21 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
   }
 
   ugplot_ensure_dir(jobs_dir)
+  source_dir <- if (file.exists(file.path(getwd(), "R", "app.R"))) normalizePath(getwd(), mustWork = FALSE) else NULL
+  auto_resume_process <- ugplot_start_auto_resume_monitor(
+    jobs_dir = jobs_dir,
+    interval = auto_resume_interval,
+    source_dir = source_dir,
+    lib_paths = .libPaths()
+  )
+  if (!is.null(auto_resume_process)) {
+    on.exit({
+      if (auto_resume_process$is_alive()) {
+        try(auto_resume_process$kill_tree(), silent = TRUE)
+        try(auto_resume_process$kill(), silent = TRUE)
+      }
+    }, add = TRUE)
+  }
   if (isTRUE(register) && exists("ugplot_register_server_state", mode = "function", inherits = TRUE)) {
     ugplot_register_server_state(
       host = host,
@@ -160,6 +178,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
       capabilities = list(
         delete_job = TRUE,
         resume_job = TRUE,
+        auto_resume_monitor = !is.null(auto_resume_process),
         job_bundle = TRUE,
         job_preview = TRUE,
         job_config_summary = TRUE
