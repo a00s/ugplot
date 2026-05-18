@@ -57,7 +57,9 @@ ugplot_ml_classify_error <- function(error_message) {
 ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctrl,
                                          tune_length, timeout, model_libraries,
                                          parallel_enabled = FALSE, cpu_limit = 1L,
-                                         lib_paths = .libPaths()) {
+                                         lib_paths = .libPaths(),
+                                         heartbeat_callback = function(...) NULL,
+                                         heartbeat_interval = 30) {
   if (!requireNamespace("callr", quietly = TRUE)) {
     stop("Package 'callr' is required to enforce remote model timeouts.", call. = FALSE)
   }
@@ -122,12 +124,17 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
   }, add = TRUE)
 
   started_at <- proc.time()[["elapsed"]]
+  last_heartbeat <- started_at
   poll_interval <- 0.25
   repeat {
     if (!process$is_alive()) {
       return(process$get_result())
     }
     elapsed <- proc.time()[["elapsed"]] - started_at
+    if (is.finite(elapsed) && (proc.time()[["elapsed"]] - last_heartbeat) >= heartbeat_interval) {
+      heartbeat_callback(elapsed)
+      last_heartbeat <- proc.time()[["elapsed"]]
+    }
     if (is.finite(elapsed) && elapsed >= timeout) {
       try(process$kill_tree(), silent = TRUE)
       try(process$kill(), silent = TRUE)
@@ -584,7 +591,18 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
                 model_libraries = model_info$library,
                 parallel_enabled = parallel_enabled,
                 cpu_limit = cpu_limit,
-                lib_paths = .libPaths()
+                lib_paths = .libPaths(),
+                heartbeat_callback = function(elapsed) {
+                  progress_callback(
+                    progress = completed_runs / total_runs,
+                    message = paste(
+                      "Running", model_name,
+                      "dataset seed", dataset_seed,
+                      "training seed", training_seed,
+                      "- elapsed", round(elapsed), "seconds"
+                    )
+                  )
+                }
               )
             } else {
               ugplot_ml_train_direct(
