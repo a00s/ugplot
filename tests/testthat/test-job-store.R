@@ -229,6 +229,11 @@ test_that("resume migrates old ML jobs to isolated model timeouts", {
     jobs_dir = jobs_dir
   )
   status$state <- "stopped"
+  status$error <- "The job process is no longer running."
+  status$current_run_key <- paste("Rborist", 1, 1, sep = "\r")
+  status$current_model <- "Rborist"
+  status$current_dataset_seed <- 1L
+  status$current_training_seed <- 1L
   write_job_status(status$id, status, jobs_dir)
 
   resume_job(status$id, jobs_dir)
@@ -238,4 +243,6 @@ test_that("resume migrates old ML jobs to isolated model timeouts", {
   expect_true(config$use_callr_timeout)
   expect_equal(config$watchdog_timeout_multiplier, 3)
   expect_equal(resumed_status$watchdog_timeout_multiplier, 3)
+  expect_true(paste("Rborist", 1, 1, sep = "\r") %in% config$resume_completed_keys)
+  expect_equal(config$resume_failed_runs[[1]]$model, "Rborist")
 })

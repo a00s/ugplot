@@ -455,6 +455,46 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
     )
     partial_callback(current_result(partial = TRUE))
   }
+  resume_failed_runs <- config$resume_failed_runs %||% list()
+  if (length(resume_failed_runs) > 0) {
+    result_keys <- if (is.data.frame(results) && all(c("Model", "dataset_seed", "training_seed") %in% names(results))) {
+      run_key(
+        results$Model,
+        suppressWarnings(as.integer(results$dataset_seed)),
+        suppressWarnings(as.integer(results$training_seed))
+      )
+    } else {
+      character(0)
+    }
+    for (failed_run in resume_failed_runs) {
+      if (!is.list(failed_run)) {
+        next
+      }
+      failed_key <- as.character(failed_run$key %||% "")
+      failed_model <- as.character(failed_run$model %||% "")
+      failed_dataset_seed <- suppressWarnings(as.integer(failed_run$dataset_seed %||% NA_integer_))
+      failed_training_seed <- suppressWarnings(as.integer(failed_run$training_seed %||% NA_integer_))
+      if (!nzchar(failed_key) || failed_key %in% result_keys || !failed_model %in% models ||
+          !failed_dataset_seed %in% dataset_seed_values || !failed_training_seed %in% training_seed_values) {
+        next
+      }
+      results <- ugplot_ml_append_row(results, data.frame(
+        Model = failed_model,
+        Status = "ERROR",
+        Error = as.character(failed_run$error %||% "Previous remote process stopped while this run was active"),
+        dataset_seed = failed_dataset_seed,
+        training_seed = failed_training_seed,
+        threshold_scope = "full_before_split",
+        imputation_scope = config$imputation_scope %||% "split_separate",
+        elapsed_seconds = NA_real_,
+        stringsAsFactors = FALSE
+      ))
+      completed_run_keys <- unique(c(completed_run_keys, failed_key))
+      result_keys <- unique(c(result_keys, failed_key))
+    }
+    completed_runs <- min(length(completed_run_keys), total_runs)
+    partial_callback(current_result(partial = TRUE))
+  }
 
   cv_settings <- ugplot_ml_cv_settings(config)
   missing_definition <- config$missing_definition %||% c("empty", "na")
@@ -576,7 +616,14 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
         attempt_start <- proc.time()[["elapsed"]]
         progress_callback(
           progress = completed_runs / total_runs,
-          message = paste("Running", model_name, "dataset seed", dataset_seed, "training seed", training_seed)
+          message = paste("Running", model_name, "dataset seed", dataset_seed, "training seed", training_seed),
+          current_run = list(
+            key = current_run_key,
+            model = model_name,
+            dataset_seed = dataset_seed,
+            training_seed = training_seed,
+            started_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+          )
         )
 
         run_status <- "OK"
@@ -731,6 +778,7 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
         completed_run_keys <- c(completed_run_keys, current_run_key)
         progress_callback(progress = completed_runs / total_runs, message = paste("Finished", model_name))
         partial_callback(current_result(partial = TRUE))
+        progress_callback(current_run = list(clear = TRUE))
         rm(model)
         gc(verbose = FALSE)
       }

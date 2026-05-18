@@ -44,7 +44,7 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
   }
   ugplot_append_job_log(job_id, paste0("Runner pid: ", Sys.getpid()), jobs_dir)
 
-  progress_callback <- function(progress = NULL, message = NULL) {
+  progress_callback <- function(progress = NULL, message = NULL, current_run = NULL) {
     updates <- list()
     if (!is.null(progress)) {
       updates$progress <- max(0, min(1, as.numeric(progress)))
@@ -52,6 +52,21 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
     if (!is.null(message)) {
       updates$message <- as.character(message)
       ugplot_append_job_log(job_id, as.character(message), jobs_dir)
+    }
+    if (is.list(current_run)) {
+      if (isTRUE(current_run$clear)) {
+        updates$current_run_key <- NA_character_
+        updates$current_model <- NA_character_
+        updates$current_dataset_seed <- NA_integer_
+        updates$current_training_seed <- NA_integer_
+        updates$current_run_started_at <- NA_character_
+      } else {
+        updates$current_run_key <- current_run$key %||% NA_character_
+        updates$current_model <- current_run$model %||% NA_character_
+        updates$current_dataset_seed <- current_run$dataset_seed %||% NA_integer_
+        updates$current_training_seed <- current_run$training_seed %||% NA_integer_
+        updates$current_run_started_at <- current_run$started_at %||% NA_character_
+      }
     }
     do.call(ugplot_update_job_status, c(list(job_id = job_id, jobs_dir = jobs_dir), updates))
   }
@@ -198,6 +213,23 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
       config$watchdog_timeout_multiplier <- 3
     }
     status$watchdog_timeout_multiplier <- config$watchdog_timeout_multiplier
+    failed_run_key <- as.character(status$current_run_key %||% "")
+    if (nzchar(failed_run_key) && !(failed_run_key %in% (config$resume_completed_keys %||% character(0)))) {
+      config$resume_failed_runs <- c(
+        config$resume_failed_runs %||% list(),
+        list(list(
+          key = failed_run_key,
+          model = as.character(status$current_model %||% ""),
+          dataset_seed = suppressWarnings(as.integer(status$current_dataset_seed %||% NA_integer_)),
+          training_seed = suppressWarnings(as.integer(status$current_training_seed %||% NA_integer_)),
+          error = paste0(
+            "Previous remote process stopped while this run was active",
+            if (nzchar(status$error %||% "")) paste0(": ", status$error) else ""
+          )
+        ))
+      )
+      config$resume_completed_keys <- unique(c(config$resume_completed_keys %||% character(0), failed_run_key))
+    }
   }
   saveRDS(config, config_path)
   pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
