@@ -3400,6 +3400,8 @@ server <- function(input, output, session) {
       cv_folds = input$ml_cv_folds %||% 10,
       cv_repeats = input$ml_cv_repeats %||% 1,
       tune_length = input$ml_tune_length %||% 3,
+      auto_skip_bad_models = isTRUE(input$ml_auto_skip_bad_models),
+      min_r2_skip = input$ml_min_r2_skip %||% 0,
       cpu_limit = selected_remote_cpu_limit(),
       parallel_enabled = isTRUE(input$config_parallel_cubist_models),
       use_callr_timeout = TRUE,
@@ -3750,6 +3752,24 @@ server <- function(input, output, session) {
     if (nzchar(target) && target %in% names(dataset)) {
       updateSelectizeInput(session, "ml_target", choices = c("", names(dataset)), selected = target, server = TRUE)
     }
+    updateNumericInput(session, "ml_dataset_seedi", value = config$dataset_seed_start %||% 1)
+    updateNumericInput(session, "ml_dataset_seedf", value = config$dataset_seed_end %||% config$dataset_seed_start %||% 1)
+    updateNumericInput(session, "ml_seedi", value = config$training_seed_start %||% 1)
+    updateNumericInput(session, "ml_seedf", value = config$training_seed_end %||% config$training_seed_start %||% 1)
+    updateNumericInput(session, "ml_timeout", value = config$timeout %||% 1200)
+    updateSelectInput(session, "ml_performance_mode", selected = config$performance_mode %||% "default")
+    updateSelectInput(session, "ml_cv_method", selected = config$cv_method %||% "cv")
+    updateNumericInput(session, "ml_cv_folds", value = config$cv_folds %||% 10)
+    updateNumericInput(session, "ml_cv_repeats", value = config$cv_repeats %||% 1)
+    updateNumericInput(session, "ml_tune_length", value = config$tune_length %||% 3)
+    updateCheckboxInput(session, "ml_auto_skip_bad_models", value = isTRUE(config$auto_skip_bad_models %||% FALSE))
+    updateNumericInput(session, "ml_min_r2_skip", value = config$min_r2_skip %||% 0)
+    updateCheckboxGroupInput(session, "ml_missing_definition", selected = config$missing_definition %||% c("empty", "na"))
+    updateSelectizeInput(session, "ml_zero_exceptions", selected = config$zero_exceptions %||% character(0))
+    updateSelectInput(session, "ml_missing_strategy", selected = config$missing_strategy %||% "none")
+    updateSelectInput(session, "ml_imputation_scope", selected = config$imputation_scope %||% "split_separate")
+    updateNumericInput(session, "ml_missing_threshold_cols", value = config$missing_threshold_cols %||% 100)
+    updateNumericInput(session, "ml_missing_threshold_rows", value = config$missing_threshold_rows %||% 100)
     category_columns <- intersect(config$category_columns %||% character(0), names(dataset))
     updateCheckboxGroupInput(session, "checkbox_group_categories", selected = category_columns)
     job_name <- as.character(config$job_name %||% bundle$status$name %||% "")

@@ -123,7 +123,7 @@ test_that("running jobs that exceed timeout are stopped with partial result", {
   status <- read_job_status(status$id, jobs_dir)
   status$state <- "running"
   status$pid <- 2147483647L
-  status$updated_at <- format(Sys.time() - 120, "%Y-%m-%d %H:%M:%S %z")
+  status$updated_at <- format(Sys.time() - 3600, "%Y-%m-%d %H:%M:%S %z")
   write_rds_atomic(status, status_path(status$id, jobs_dir))
 
   refreshed <- refresh_job_status(status, jobs_dir)
