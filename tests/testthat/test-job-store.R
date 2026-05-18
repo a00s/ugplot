@@ -243,6 +243,7 @@ test_that("resume migrates old ML jobs to isolated model timeouts", {
   expect_true(config$use_callr_timeout)
   expect_equal(config$watchdog_timeout_multiplier, 3)
   expect_equal(resumed_status$watchdog_timeout_multiplier, 3)
-  expect_true(paste("Rborist", 1, 1, sep = "\r") %in% config$resume_completed_keys)
+  expect_false(paste("Rborist", 1, 1, sep = "\r") %in% (config$resume_completed_keys %||% character(0)))
   expect_equal(config$resume_failed_runs[[1]]$model, "Rborist")
+  expect_true(endsWith(config$model_log_dir, "model-logs"))
 })

@@ -28,6 +28,8 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
   job_dir <- ugplot_job_dir(job_id, jobs_dir)
   dataset <- readRDS(file.path(job_dir, "dataset.rds"))
   config <- readRDS(file.path(job_dir, "config.rds"))
+  config$job_dir <- job_dir
+  config$model_log_dir <- file.path(job_dir, "model-logs")
   runner <- config$runner %||% "ugplot_run_placeholder_job"
 
   ugplot_update_job_status(
@@ -182,6 +184,8 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
   }
   config_path <- file.path(job_dir, "config.rds")
   config <- readRDS(config_path)
+  config$job_dir <- job_dir
+  config$model_log_dir <- file.path(job_dir, "model-logs")
   partial_path <- status$partial_result_path %||% ugplot_result_path(job_id, jobs_dir, partial = TRUE)
   resume_result <- NULL
   if (!is.null(partial_path) && file.exists(partial_path)) {
@@ -228,7 +232,6 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
           )
         ))
       )
-      config$resume_completed_keys <- unique(c(config$resume_completed_keys %||% character(0), failed_run_key))
     }
   }
   saveRDS(config, config_path)

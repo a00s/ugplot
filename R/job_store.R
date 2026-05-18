@@ -465,7 +465,8 @@ ugplot_read_job_log <- function(job_id, jobs_dir = ugplot_default_jobs_dir(), ma
   log_paths <- c(
     file.path(job_dir, "log.txt"),
     file.path(job_dir, "stdout.log"),
-    file.path(job_dir, "stderr.log")
+    file.path(job_dir, "stderr.log"),
+    utils::tail(sort(list.files(file.path(job_dir, "model-logs"), pattern = "\\.log$", full.names = TRUE)), 12)
   )
   sections <- lapply(log_paths[file.exists(log_paths)], function(path) {
     lines <- readLines(path, warn = FALSE)

@@ -59,12 +59,22 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
                                          parallel_enabled = FALSE, cpu_limit = 1L,
                                          lib_paths = .libPaths(),
                                          heartbeat_callback = function(...) NULL,
-                                         heartbeat_interval = 30) {
+                                         heartbeat_interval = 30,
+                                         model_log_dir = NULL,
+                                         run_key = NULL) {
   if (!requireNamespace("callr", quietly = TRUE)) {
     stop("Package 'callr' is required to enforce remote model timeouts.", call. = FALSE)
   }
 
   heartbeat_callback(0, "starting isolated trainer")
+  safe_run_name <- gsub("[^A-Za-z0-9_.-]+", "_", paste(c(model_name, run_key), collapse = "_"))
+  stdout_path <- NULL
+  stderr_path <- NULL
+  if (!is.null(model_log_dir) && nzchar(as.character(model_log_dir))) {
+    dir.create(model_log_dir, recursive = TRUE, showWarnings = FALSE)
+    stdout_path <- file.path(model_log_dir, paste0(safe_run_name, ".stdout.log"))
+    stderr_path <- file.path(model_log_dir, paste0(safe_run_name, ".stderr.log"))
+  }
   process <- callr::r_bg(
     func = function(train_set, target_name, model_name, ctrl, tune_length,
                     model_libraries, parallel_enabled, cpu_limit, lib_paths) {
@@ -113,12 +123,16 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
       cpu_limit = max(1L, as.integer(cpu_limit)),
       lib_paths = lib_paths
     ),
-    stdout = NULL,
-    stderr = NULL,
+    stdout = stdout_path %||% NULL,
+    stderr = stderr_path %||% NULL,
     poll_connection = FALSE,
     supervise = TRUE
   )
-  heartbeat_callback(0, paste("isolated trainer pid", process$get_pid()))
+  heartbeat_callback(0, paste(
+    "isolated trainer pid", process$get_pid(),
+    if (!is.null(stdout_path)) paste("| stdout", basename(stdout_path)) else "",
+    if (!is.null(stderr_path)) paste("| stderr", basename(stderr_path)) else ""
+  ))
   on.exit({
     if (process$is_alive()) {
       try(process$kill_tree(), silent = TRUE)
@@ -131,7 +145,23 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
   poll_interval <- 0.25
   repeat {
     if (!process$is_alive()) {
-      return(process$get_result())
+      return(tryCatch(process$get_result(), error = function(e) {
+        log_tail <- function(path) {
+          if (is.null(path) || !file.exists(path)) {
+            return("")
+          }
+          lines <- tryCatch(utils::tail(readLines(path, warn = FALSE), 40), error = function(err) character(0))
+          paste(lines, collapse = "\n")
+        }
+        stdout_tail <- log_tail(stdout_path)
+        stderr_tail <- log_tail(stderr_path)
+        detail <- paste(
+          conditionMessage(e),
+          if (nzchar(stdout_tail)) paste0("\n--- isolated stdout tail ---\n", stdout_tail) else "",
+          if (nzchar(stderr_tail)) paste0("\n--- isolated stderr tail ---\n", stderr_tail) else ""
+        )
+        stop(simpleError(detail))
+      }))
     }
     elapsed <- proc.time()[["elapsed"]] - started_at
     if (is.finite(elapsed) && (proc.time()[["elapsed"]] - last_heartbeat) >= heartbeat_interval) {
@@ -455,47 +485,6 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
     )
     partial_callback(current_result(partial = TRUE))
   }
-  resume_failed_runs <- config$resume_failed_runs %||% list()
-  if (length(resume_failed_runs) > 0) {
-    result_keys <- if (is.data.frame(results) && all(c("Model", "dataset_seed", "training_seed") %in% names(results))) {
-      run_key(
-        results$Model,
-        suppressWarnings(as.integer(results$dataset_seed)),
-        suppressWarnings(as.integer(results$training_seed))
-      )
-    } else {
-      character(0)
-    }
-    for (failed_run in resume_failed_runs) {
-      if (!is.list(failed_run)) {
-        next
-      }
-      failed_key <- as.character(failed_run$key %||% "")
-      failed_model <- as.character(failed_run$model %||% "")
-      failed_dataset_seed <- suppressWarnings(as.integer(failed_run$dataset_seed %||% NA_integer_))
-      failed_training_seed <- suppressWarnings(as.integer(failed_run$training_seed %||% NA_integer_))
-      if (!nzchar(failed_key) || failed_key %in% result_keys || !failed_model %in% models ||
-          !failed_dataset_seed %in% dataset_seed_values || !failed_training_seed %in% training_seed_values) {
-        next
-      }
-      results <- ugplot_ml_append_row(results, data.frame(
-        Model = failed_model,
-        Status = "ERROR",
-        Error = as.character(failed_run$error %||% "Previous remote process stopped while this run was active"),
-        dataset_seed = failed_dataset_seed,
-        training_seed = failed_training_seed,
-        threshold_scope = "full_before_split",
-        imputation_scope = config$imputation_scope %||% "split_separate",
-        elapsed_seconds = NA_real_,
-        stringsAsFactors = FALSE
-      ))
-      completed_run_keys <- unique(c(completed_run_keys, failed_key))
-      result_keys <- unique(c(result_keys, failed_key))
-    }
-    completed_runs <- min(length(completed_run_keys), total_runs)
-    partial_callback(current_result(partial = TRUE))
-  }
-
   cv_settings <- ugplot_ml_cv_settings(config)
   missing_definition <- config$missing_definition %||% c("empty", "na")
   zero_exceptions <- config$zero_exceptions %||% character(0)
@@ -642,6 +631,8 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
                 parallel_enabled = parallel_enabled,
                 cpu_limit = cpu_limit,
                 lib_paths = .libPaths(),
+                model_log_dir = config$model_log_dir %||% NULL,
+                run_key = current_run_key,
                 heartbeat_callback = function(elapsed, phase = "isolated trainer still running") {
                   progress_callback(
                     progress = completed_runs / total_runs,
