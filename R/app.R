@@ -3580,6 +3580,7 @@ server <- function(input, output, session) {
     }
     paste0(
       "Job ", status$id %||% "",
+      " | pid: ", status$pid %||% "N/A",
       " | state: ", status$state %||% "unknown",
       " | progress: ", remote_job_progress_label(status$progress %||% NA_real_),
       " | ", status$message %||% ""
@@ -3884,6 +3885,10 @@ server <- function(input, output, session) {
         paste0("<div class='remote-job-actions'>", paste(buttons, collapse = ""), "</div>")
       }, character(1))
       jobs$Actions <- actions
+    }
+    hidden_detail_columns <- intersect(c("id", "pid"), names(jobs))
+    if (length(hidden_detail_columns) > 0) {
+      jobs <- jobs[, setdiff(names(jobs), hidden_detail_columns), drop = FALSE]
     }
     table_options <- list(pageLength = 8, scrollX = TRUE)
     if ("state" %in% names(jobs)) {
