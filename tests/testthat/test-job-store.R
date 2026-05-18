@@ -205,3 +205,37 @@ test_that("job status keeps resume metadata and job bundle", {
 
   expect_error(read_job_bundle(running$id, jobs_dir), "Full job bundle is not available while the job is active")
 })
+
+test_that("resume migrates old ML jobs to isolated model timeouts", {
+  read_job_status <- ugplot_test_internal("ugplot_read_job_status")
+  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
+    list(job = read_job_status(job_id, jobs_dir), process = NULL)
+  })
+
+  jobs_dir <- tempfile("ugplot-jobs-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  write_job_status <- ugplot_test_internal("ugplot_write_job_status")
+  resume_job <- ugplot_test_internal("ugplot_resume_background_job")
+
+  status <- create_job(
+    data.frame(y = 1:3, x = 1:3),
+    config = list(
+      runner = "ugplot_run_ml_job",
+      target = "y",
+      models = "Rborist",
+      timeout = 1200,
+      use_callr_timeout = FALSE
+    ),
+    jobs_dir = jobs_dir
+  )
+  status$state <- "stopped"
+  write_job_status(status$id, status, jobs_dir)
+
+  resume_job(status$id, jobs_dir)
+  config <- readRDS(file.path(jobs_dir, status$id, "config.rds"))
+  resumed_status <- readRDS(file.path(jobs_dir, status$id, "status.rds"))
+
+  expect_true(config$use_callr_timeout)
+  expect_equal(config$watchdog_timeout_multiplier, 3)
+  expect_equal(resumed_status$watchdog_timeout_multiplier, 3)
+})

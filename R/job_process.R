@@ -191,6 +191,14 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
   } else if (length(status$resume_completed_keys %||% character(0)) > 0) {
     config$resume_completed_keys <- status$resume_completed_keys
   }
+  if (identical(config$runner %||% "", "ugplot_run_ml_job")) {
+    config$use_callr_timeout <- TRUE
+    config$watchdog_timeout_multiplier <- suppressWarnings(as.numeric(config$watchdog_timeout_multiplier %||% 3))
+    if (is.na(config$watchdog_timeout_multiplier) || config$watchdog_timeout_multiplier < 1) {
+      config$watchdog_timeout_multiplier <- 3
+    }
+    status$watchdog_timeout_multiplier <- config$watchdog_timeout_multiplier
+  }
   saveRDS(config, config_path)
   pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
   if ((status$state %||% "") %in% c("queued", "running") && !is.na(pid) && ugplot_process_alive(pid)) {
