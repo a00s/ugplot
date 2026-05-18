@@ -498,9 +498,9 @@ table.dataTable tbody tr.remote-job-row-finished td {
 }
 
 table.dataTable tbody tr.remote-job-row-active td {
-  background-color: #fffaf0 !important;
-  border-top: 1px solid #f4dfb8;
-  border-bottom: 1px solid #f4dfb8;
+  background-color: #eef9ff !important;
+  border-top: 1px solid #c8ecff;
+  border-bottom: 1px solid #c8ecff;
 }
 
 table.dataTable tbody tr.remote-job-row-problem td {
@@ -514,7 +514,7 @@ table.dataTable tbody tr.remote-job-row-finished td:first-child {
 }
 
 table.dataTable tbody tr.remote-job-row-active td:first-child {
-  border-left: 5px solid #d89122;
+  border-left: 5px solid #1aa6c9;
 }
 
 table.dataTable tbody tr.remote-job-row-problem td:first-child {
@@ -527,7 +527,7 @@ table.dataTable tbody tr.remote-job-row-finished td:nth-child(4) {
 }
 
 table.dataTable tbody tr.remote-job-row-active td:nth-child(4) {
-  color: #8a5a00;
+  color: #087a97;
   font-weight: 600;
 }
 
@@ -547,7 +547,7 @@ table.dataTable tbody tr.remote-job-row-finished.selected td {
 }
 
 table.dataTable tbody tr.remote-job-row-active.selected td {
-  background-color: #fff1d6 !important;
+  background-color: #dff4ff !important;
 }
 
 table.dataTable tbody tr.remote-job-row-problem.selected td {
