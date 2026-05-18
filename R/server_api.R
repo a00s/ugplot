@@ -168,6 +168,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
   })
 
   pr$handle("GET", "/jobs", function() {
+    ugplot_auto_resume_crashed_jobs(jobs_dir)
     ugplot_list_jobs(jobs_dir)
   })
 
@@ -177,7 +178,10 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
 
   pr$handle("GET", "/jobs/<job_id>", function(job_id, res) {
     tryCatch(
-      ugplot_read_job_status(job_id, jobs_dir),
+      {
+        ugplot_auto_resume_crashed_jobs(jobs_dir)
+        ugplot_read_job_status(job_id, jobs_dir)
+      },
       error = function(e) {
         res$status <- 404
         list(error = conditionMessage(e))

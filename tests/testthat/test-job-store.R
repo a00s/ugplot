@@ -247,3 +247,53 @@ test_that("resume migrates old ML jobs to isolated model timeouts", {
   expect_equal(config$resume_failed_runs[[1]]$model, "Rborist")
   expect_true(endsWith(config$model_log_dir, "model-logs"))
 })
+
+test_that("crashed ML jobs auto-resume with an attempt limit", {
+  read_job_status <- ugplot_test_internal("ugplot_read_job_status")
+  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
+    list(job = read_job_status(job_id, jobs_dir), process = NULL)
+  })
+
+  jobs_dir <- tempfile("ugplot-jobs-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  write_job_status <- ugplot_test_internal("ugplot_write_job_status")
+  auto_resume <- ugplot_test_internal("ugplot_auto_resume_crashed_jobs")
+
+  status <- create_job(
+    data.frame(y = 1:3, x = 1:3),
+    config = list(
+      runner = "ugplot_run_ml_job",
+      target = "y",
+      models = "bagEarthGCV",
+      timeout = 1200,
+      auto_resume_max_attempts = 2
+    ),
+    jobs_dir = jobs_dir
+  )
+  status$state <- "failed"
+  status$message <- "Background process stopped before finishing"
+  status$error <- "The job process is no longer running."
+  status$current_run_key <- paste("bagEarthGCV", 2, 1, sep = "\r")
+  status$current_model <- "bagEarthGCV"
+  status$current_dataset_seed <- 2L
+  status$current_training_seed <- 1L
+  write_job_status(status$id, status, jobs_dir)
+
+  auto_resume(jobs_dir)
+  resumed_status <- readRDS(file.path(jobs_dir, status$id, "status.rds"))
+  resumed_config <- readRDS(file.path(jobs_dir, status$id, "config.rds"))
+
+  expect_equal(resumed_status$state, "queued")
+  expect_equal(resumed_status$auto_resume_count, 1L)
+  expect_equal(resumed_config$resume_failed_runs[[1]]$model, "bagEarthGCV")
+
+  resumed_status$state <- "failed"
+  resumed_status$message <- "Background process stopped before finishing"
+  resumed_status$auto_resume_count <- 2L
+  write_job_status(status$id, resumed_status, jobs_dir)
+
+  auto_resume(jobs_dir)
+  limited_status <- readRDS(file.path(jobs_dir, status$id, "status.rds"))
+  expect_equal(limited_status$state, "failed")
+  expect_equal(limited_status$auto_resume_count, 2L)
+})

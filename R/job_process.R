@@ -247,3 +247,53 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
   ugplot_write_job_status(job_id, status, jobs_dir)
   ugplot_launch_background_job(job_id, jobs_dir)
 }
+
+ugplot_auto_resume_crashed_jobs <- function(jobs_dir = ugplot_default_jobs_dir()) {
+  if (!dir.exists(jobs_dir)) {
+    return(invisible(list()))
+  }
+  job_ids <- basename(list.dirs(jobs_dir, full.names = TRUE, recursive = FALSE))
+  resumed <- list()
+  for (job_id in job_ids) {
+    status <- tryCatch(ugplot_read_job_status(job_id, jobs_dir), error = function(e) NULL)
+    if (!is.list(status) || !isTRUE(status$resumable)) {
+      next
+    }
+    if (!identical(status$state %||% "", "failed") ||
+        !identical(status$message %||% "", "Background process stopped before finishing")) {
+      next
+    }
+    config_path <- file.path(ugplot_job_dir(job_id, jobs_dir), "config.rds")
+    config <- tryCatch(readRDS(config_path), error = function(e) list())
+    if (!identical(config$runner %||% "", "ugplot_run_ml_job")) {
+      next
+    }
+    if (identical(config$auto_resume_crashed_jobs, FALSE)) {
+      next
+    }
+    max_attempts <- suppressWarnings(as.integer(config$auto_resume_max_attempts %||% 5L))
+    if (is.na(max_attempts) || max_attempts < 1L) {
+      max_attempts <- 5L
+    }
+    attempt_count <- suppressWarnings(as.integer(status$auto_resume_count %||% 0L))
+    if (is.na(attempt_count)) {
+      attempt_count <- 0L
+    }
+    if (attempt_count >= max_attempts) {
+      next
+    }
+    status$auto_resume_count <- attempt_count + 1L
+    status$auto_resume_last_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    ugplot_write_job_status(job_id, status, jobs_dir)
+    ugplot_append_job_log(
+      job_id,
+      paste0("Auto-resuming crashed job attempt ", status$auto_resume_count, "/", max_attempts),
+      jobs_dir
+    )
+    resumed[[job_id]] <- tryCatch(ugplot_resume_background_job(job_id, jobs_dir), error = function(e) {
+      ugplot_append_job_log(job_id, paste0("Auto-resume failed: ", conditionMessage(e)), jobs_dir)
+      NULL
+    })
+  }
+  invisible(resumed)
+}
