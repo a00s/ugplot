@@ -3620,6 +3620,15 @@ server <- function(input, output, session) {
     invisible(result)
   }
 
+  remote_result_tested_models <- function(result) {
+    if (!is.list(result) || !is.data.frame(result$results_table) || !("Model" %in% names(result$results_table))) {
+      return(character(0))
+    }
+    models <- unique(as.character(result$results_table$Model))
+    models <- models[nzchar(models) & !is.na(models)]
+    intersect(models, ml_available)
+  }
+
   activate_remote_server_for_job <- function(server) {
     server_name <- as.character(server$name[[1]])
     updateRadioButtons(session, "ml_run_target", selected = "remote")
@@ -3743,16 +3752,21 @@ server <- function(input, output, session) {
     }
     category_columns <- intersect(config$category_columns %||% character(0), names(dataset))
     updateCheckboxGroupInput(session, "checkbox_group_categories", selected = category_columns)
-    models <- intersect(config$models %||% config$model_names %||% character(0), ml_available)
-    if (length(models) > 0) {
-      updateCheckboxGroupInput(session, "ml_checkbox_group", selected = models)
-    }
+    job_name <- as.character(config$job_name %||% bundle$status$name %||% "")
+    updateTextInput(session, "remote_job_name", value = job_name)
 
     remote_job_preview_status(bundle$status %||% NULL)
     if (is.list(bundle$result)) {
       remote_job_preview_result(bundle$result)
       result <- bundle$result
       apply_remote_ml_result(result, job_id)
+      tested_models <- remote_result_tested_models(result)
+      if (length(tested_models) > 0) {
+        updateCheckboxGroupInput(session, "ml_checkbox_group", selected = tested_models)
+      } else {
+        models <- intersect(config$models %||% config$model_names %||% character(0), ml_available)
+        updateCheckboxGroupInput(session, "ml_checkbox_group", selected = models)
+      }
     } else {
       remote_job_preview_result(NULL)
       result <- NULL
@@ -3761,6 +3775,8 @@ server <- function(input, output, session) {
       best_model_object(NULL)
       best_model_preprocess(NULL)
       ml_prediction <<- list()
+      models <- intersect(config$models %||% config$model_names %||% character(0), ml_available)
+      updateCheckboxGroupInput(session, "ml_checkbox_group", selected = models)
       remote_job_status_text(paste("Remote job loaded locally without result table:", job_id))
     }
     session$onFlushed(function() {

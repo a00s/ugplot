@@ -39,6 +39,10 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
     pid = Sys.getpid()
   )
   ugplot_append_job_log(job_id, paste0("Started runner: ", runner), jobs_dir)
+  if (exists("ugplot_build_version", mode = "function", inherits = TRUE)) {
+    ugplot_append_job_log(job_id, paste0("Runner build version: ", ugplot_build_version()), jobs_dir)
+  }
+  ugplot_append_job_log(job_id, paste0("Runner pid: ", Sys.getpid()), jobs_dir)
 
   progress_callback <- function(progress = NULL, message = NULL) {
     updates <- list()

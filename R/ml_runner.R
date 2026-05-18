@@ -64,6 +64,7 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
     stop("Package 'callr' is required to enforce remote model timeouts.", call. = FALSE)
   }
 
+  heartbeat_callback(0, "starting isolated trainer")
   process <- callr::r_bg(
     func = function(train_set, target_name, model_name, ctrl, tune_length,
                     model_libraries, parallel_enabled, cpu_limit, lib_paths) {
@@ -114,8 +115,10 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
     ),
     stdout = NULL,
     stderr = NULL,
+    poll_connection = FALSE,
     supervise = TRUE
   )
+  heartbeat_callback(0, paste("isolated trainer pid", process$get_pid()))
   on.exit({
     if (process$is_alive()) {
       try(process$kill_tree(), silent = TRUE)
@@ -132,7 +135,7 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
     }
     elapsed <- proc.time()[["elapsed"]] - started_at
     if (is.finite(elapsed) && (proc.time()[["elapsed"]] - last_heartbeat) >= heartbeat_interval) {
-      heartbeat_callback(elapsed)
+      heartbeat_callback(elapsed, "isolated trainer still running")
       last_heartbeat <- proc.time()[["elapsed"]]
     }
     if (is.finite(elapsed) && elapsed >= timeout) {
@@ -592,13 +595,14 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
                 parallel_enabled = parallel_enabled,
                 cpu_limit = cpu_limit,
                 lib_paths = .libPaths(),
-                heartbeat_callback = function(elapsed) {
+                heartbeat_callback = function(elapsed, phase = "isolated trainer still running") {
                   progress_callback(
                     progress = completed_runs / total_runs,
                     message = paste(
                       "Running", model_name,
                       "dataset seed", dataset_seed,
                       "training seed", training_seed,
+                      "-", phase,
                       "- elapsed", round(elapsed), "seconds"
                     )
                   )

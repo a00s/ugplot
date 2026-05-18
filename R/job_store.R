@@ -190,9 +190,13 @@ ugplot_running_job_timed_out <- function(status) {
   if (is.na(updated_at)) {
     return(FALSE)
   }
-  grace <- max(30, min(300, timeout * 0.1))
+  watchdog_multiplier <- suppressWarnings(as.numeric(status$watchdog_timeout_multiplier %||% NA_real_))
+  if (is.na(watchdog_multiplier) || watchdog_multiplier < 1) {
+    watchdog_multiplier <- 3
+  }
+  grace <- max(300, min(1800, timeout * 0.5))
   age <- as.numeric(difftime(Sys.time(), updated_at, units = "secs"))
-  is.finite(age) && age > (timeout + grace)
+  is.finite(age) && age > ((timeout * watchdog_multiplier) + grace)
 }
 
 ugplot_create_job <- function(dataset, config = list(), jobs_dir = ugplot_default_jobs_dir(), type = "ml") {
@@ -224,7 +228,8 @@ ugplot_create_job <- function(dataset, config = list(), jobs_dir = ugplot_defaul
     error = NULL,
     result_path = NULL,
     partial_result_path = NULL,
-    timeout = suppressWarnings(as.numeric(config$timeout %||% NA_real_))
+    timeout = suppressWarnings(as.numeric(config$timeout %||% NA_real_)),
+    watchdog_timeout_multiplier = suppressWarnings(as.numeric(config$watchdog_timeout_multiplier %||% 3))
   )
   ugplot_write_job_status(job_id, status, jobs_dir)
   status
