@@ -1220,12 +1220,8 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
 }
 
 ugplot_geo_cache_dir <- function(accession) {
-  base_dir <- getwd()
-  if (basename(base_dir) == "R" && file.exists(file.path(dirname(base_dir), "DESCRIPTION"))) {
-    base_dir <- dirname(base_dir)
-  }
   safe_accession <- gsub("[^A-Za-z0-9_.-]", "_", accession)
-  file.path(base_dir, "geo_downloads", safe_accession)
+  file.path(ugplot_geo_cache_root("downloads"), safe_accession)
 }
 
 ugplot_geo_manifest_path <- function(cache_dir) {
@@ -1245,7 +1241,21 @@ ugplot_geo_project_root <- function() {
 }
 
 ugplot_geo_annotation_cache_dir <- function() {
-  file.path(ugplot_geo_project_root(), "geo_annotation_cache")
+  ugplot_geo_cache_root("annotation")
+}
+
+ugplot_geo_cache_root <- function(type = c("downloads", "annotation")) {
+  type <- match.arg(type)
+  env_var <- if (identical(type, "downloads")) "UGPLOT_GEO_DOWNLOAD_DIR" else "UGPLOT_GEO_ANNOTATION_DIR"
+  configured_dir <- Sys.getenv(env_var, unset = "")
+  if (nzchar(configured_dir)) {
+    return(normalizePath(configured_dir, mustWork = FALSE))
+  }
+  user_cache <- tryCatch(
+    tools::R_user_dir("ugplot", which = "cache"),
+    error = function(e) file.path(path.expand("~"), ".cache", "ugplot")
+  )
+  file.path(user_cache, if (identical(type, "downloads")) "geo_downloads" else "geo_annotation_cache")
 }
 
 ugplot_geo_annotation_cache_path <- function(platform_id, extension = "rds") {

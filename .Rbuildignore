@@ -3,7 +3,12 @@
 ^\.positai$
 ^\.claude$
 ^\.github$
+^\.agents$
+^\.codex$
+^\.Rhistory$
 ^.*\.Rcheck$
 ^.*\.tar\.gz$
 ^.*\.log$
 ^R/.*\.txt$
+geo_downloads
+geo_annotation_cache
