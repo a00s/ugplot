@@ -582,6 +582,8 @@ ui <- fluidPage(
                 uiOutput("geo_annotation_summary"),
                 actionButton("geo_build_annotation", "Build/load CpG annotation cache"),
                 actionButton("geo_run_spearman", "Run CpG Spearman scan"),
+                numericInput("geo_transcript_absrho_threshold", "Transcript CpG threshold |rho|:", value = 0.8, min = 0, max = 1, step = 0.01),
+                actionButton("geo_build_transcript_candidates", "Build transcript CpG table"),
                 uiOutput("geo_file_selector"),
                 checkboxInput("geo_use_first_column_names", "Use first column as row names", value = TRUE),
                 selectInput("geo_loaded_orientation", "Loaded matrix orientation:", choices = c("Samples x CpGs" = "samples_rows", "CpGs x Samples" = "cpgs_rows"), selected = "samples_rows"),
@@ -597,6 +599,7 @@ ui <- fluidPage(
             DT::DTOutput("geo_files_table"),
             DT::DTOutput("geo_annotation_table"),
             DT::DTOutput("geo_spearman_table"),
+            DT::DTOutput("geo_transcript_candidates_table"),
             tags$hr(),
             tags$details(class = "geo-debug-log",
               tags$summary("Technical log"),
@@ -1906,6 +1909,69 @@ ugplot_geo_group_spearman_annotation <- function(annotated_results, group_col) {
   summary
 }
 
+ugplot_geo_transcript_candidates <- function(results, annotation_map, absrho_threshold = 0.8) {
+  if (!is.data.frame(results) || nrow(results) == 0 || !is.data.frame(annotation_map) || nrow(annotation_map) == 0) {
+    return(data.frame())
+  }
+  required_result_cols <- c("CpG", "SpearmanRho", "PValue", "N", "AbsRho")
+  if (!all(required_result_cols %in% names(results)) || !"Transcript" %in% names(annotation_map)) {
+    return(data.frame())
+  }
+  absrho_threshold <- suppressWarnings(as.numeric(absrho_threshold))
+  if (!is.finite(absrho_threshold) || absrho_threshold < 0) {
+    absrho_threshold <- 0.8
+  }
+  absrho_threshold <- min(1, absrho_threshold)
+
+  raw_results <- unique(results[, required_result_cols, drop = FALSE])
+  high_cpgs <- raw_results[is.finite(raw_results$AbsRho) & raw_results$AbsRho >= absrho_threshold, , drop = FALSE]
+  if (nrow(high_cpgs) == 0) {
+    return(data.frame())
+  }
+
+  trigger_links <- merge(
+    high_cpgs,
+    annotation_map[, intersect(c("CpG", "Gene", "Transcript"), names(annotation_map)), drop = FALSE],
+    by = "CpG",
+    all.x = FALSE,
+    sort = FALSE
+  )
+  trigger_links <- trigger_links[!is.na(trigger_links$Transcript) & nzchar(as.character(trigger_links$Transcript)), , drop = FALSE]
+  if (nrow(trigger_links) == 0) {
+    return(data.frame())
+  }
+
+  selected_transcripts <- unique(as.character(trigger_links$Transcript))
+  transcript_cpgs <- annotation_map[
+    !is.na(annotation_map$Transcript) & as.character(annotation_map$Transcript) %in% selected_transcripts,
+    ,
+    drop = FALSE
+  ]
+  transcript_cpgs <- unique(transcript_cpgs)
+  candidates <- merge(transcript_cpgs, raw_results, by = "CpG", all.x = TRUE, sort = FALSE)
+  candidates$CpGInSpearmanScan <- !is.na(candidates$AbsRho)
+
+  trigger_summary <- lapply(selected_transcripts, function(transcript_id) {
+    df <- trigger_links[as.character(trigger_links$Transcript) == transcript_id, , drop = FALSE]
+    df <- df[order(-df$AbsRho, df$PValue), , drop = FALSE]
+    data.frame(
+      Transcript = transcript_id,
+      TriggerCpGs = paste(unique(df$CpG), collapse = ";"),
+      TriggerGenes = paste(unique(stats::na.omit(df$Gene)), collapse = ";"),
+      TriggerMaxAbsRho = max(df$AbsRho, na.rm = TRUE),
+      TriggerBestCpG = df$CpG[[1]],
+      TriggerBestRho = df$SpearmanRho[[1]],
+      ThresholdAbsRho = absrho_threshold,
+      stringsAsFactors = FALSE
+    )
+  })
+  trigger_summary <- do.call(rbind, trigger_summary)
+  candidates <- merge(candidates, trigger_summary, by = "Transcript", all.x = TRUE, sort = FALSE)
+  candidates <- candidates[order(-candidates$TriggerMaxAbsRho, candidates$Transcript, candidates$Gene, candidates$CpG), , drop = FALSE]
+  rownames(candidates) <- NULL
+  candidates
+}
+
 ugplot_geo_matrix_files <- function(cache_dir) {
   files <- list.files(cache_dir, pattern = "\\.(txt|tsv|csv)$", full.names = TRUE)
   files <- files[!grepl("series_matrix|sample_metadata|spearman|manifest|metadata", basename(files), ignore.case = TRUE)]
@@ -2951,6 +3017,8 @@ server <- function(input, output, session) {
   geo_cpg_annotation <- reactiveVal(data.frame())
   geo_pending_annotation_platform <- reactiveVal(NULL)
   geo_spearman_results <- reactiveVal(data.frame())
+  geo_spearman_raw_results <- reactiveVal(data.frame())
+  geo_transcript_candidates <- reactiveVal(data.frame())
   geo_status <- reactiveVal("Waiting for GEO accession.")
   geo_stage <- reactiveVal(list(
     step = "Step 1",
@@ -3192,9 +3260,16 @@ server <- function(input, output, session) {
         tags$p(paste0("Cache: ", cache_path))
       ))
     }
+    missing_packages <- ugplot_geo_missing_annotation_packages(platform_info)
+    if (length(missing_packages) == 0) {
+      return(tags$div(
+        tags$p(paste0("Annotation packages are installed for ", platform_info$platform, ", but the cache has not been built yet.")),
+        tags$p("Click Build/load CpG annotation cache to create the local CpG-to-gene/transcript map.")
+      ))
+    }
     tags$div(
       tags$p(paste0("CpG annotation cache is not built yet for ", platform_info$platform, " (", platform_info$array, ").")),
-      tags$p(paste0("Requires Bioconductor packages: minfi and ", platform_info$package, "."))
+      tags$p(paste0("Missing Bioconductor package(s): ", paste(missing_packages, collapse = ", "), "."))
     )
   })
 
@@ -3215,6 +3290,27 @@ server <- function(input, output, session) {
     display$SpearmanRho <- round(display$SpearmanRho, 5)
     display$PValue <- signif(display$PValue, 5)
     display$AbsRho <- round(display$AbsRho, 5)
+    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  })
+
+  output$geo_transcript_candidates_table <- DT::renderDT({
+    candidates <- geo_transcript_candidates()
+    req(is.data.frame(candidates), nrow(candidates) > 0)
+    display_cols <- intersect(
+      c(
+        "Transcript", "Gene", "CpG", "GeneRegion", "Chr", "Position",
+        "SpearmanRho", "PValue", "N", "AbsRho", "CpGInSpearmanScan",
+        "TriggerBestCpG", "TriggerBestRho", "TriggerMaxAbsRho", "TriggerCpGs", "TriggerGenes", "ThresholdAbsRho"
+      ),
+      names(candidates)
+    )
+    display <- candidates[, display_cols, drop = FALSE]
+    for (metric_col in intersect(c("SpearmanRho", "AbsRho", "TriggerBestRho", "TriggerMaxAbsRho", "ThresholdAbsRho"), names(display))) {
+      display[[metric_col]] <- round(display[[metric_col]], 5)
+    }
+    if ("PValue" %in% names(display)) {
+      display$PValue <- signif(display$PValue, 5)
+    }
     DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
   })
 
@@ -3263,6 +3359,9 @@ server <- function(input, output, session) {
     geo_files(data.frame())
     geo_sample_metadata(data.frame())
     geo_cpg_annotation(data.frame())
+    geo_spearman_raw_results(data.frame())
+    geo_spearman_results(data.frame())
+    geo_transcript_candidates(data.frame())
     geo_preview_data(data.frame())
     geo_status(ugplot_geo_append_log("", paste0("Inspecting GEO metadata for ", accession, "...")))
     geo_stage(list(step = "Step 1", title = "Inspecting GEO", message = paste0("Reading metadata for ", accession, " and checking supplementary file sizes.")))
@@ -3899,6 +3998,8 @@ server <- function(input, output, session) {
 
     max_cpgs <- suppressWarnings(as.integer(input$geo_spearman_max_cpgs %||% 50000))
     geo_spearman_results(data.frame())
+    geo_spearman_raw_results(data.frame())
+    geo_transcript_candidates(data.frame())
     geo_status(ugplot_geo_append_log(
       geo_status(),
       paste0("Running Spearman scan for target '", target_column, "' across ", length(matrix_files), " matrix file(s).")
@@ -3930,6 +4031,7 @@ server <- function(input, output, session) {
       matched_samples <- attr(results, "matched_samples") %||% NA_integer_
       results_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, ".csv"))
       utils::write.csv(results, results_path, row.names = FALSE)
+      geo_spearman_raw_results(results)
 
       annotation_map <- geo_cpg_annotation()
       if (!is.data.frame(annotation_map) || nrow(annotation_map) == 0) {
@@ -3988,6 +4090,72 @@ server <- function(input, output, session) {
       geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not run CpG Spearman scan: ", conditionMessage(e))))
       geo_stage(list(step = "Step 6", title = "CpG scan failed", message = conditionMessage(e)))
     })
+  })
+
+  observeEvent(input$geo_build_transcript_candidates, {
+    accession <- trimws(input$geo_accession %||% "")
+    if (!nzchar(accession)) {
+      geo_stage(list(step = "Step 6", title = "Missing accession", message = "Enter a GEO accession before building transcript candidates."))
+      return()
+    }
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    target_column <- input$geo_target_column %||% ""
+    results <- geo_spearman_raw_results()
+    if (!is.data.frame(results) || nrow(results) == 0) {
+      spearman_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, ".csv"))
+      if (nzchar(target_column) && file.exists(spearman_path)) {
+        results <- tryCatch(utils::read.csv(spearman_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+        geo_spearman_raw_results(results)
+      }
+    }
+    if (!is.data.frame(results) || nrow(results) == 0) {
+      geo_stage(list(step = "Step 6", title = "Run Spearman first", message = "Run the CpG Spearman scan before building the transcript CpG table."))
+      return()
+    }
+
+    annotation_map <- geo_cpg_annotation()
+    metadata <- geo_sample_metadata()
+    if ((!is.data.frame(annotation_map) || nrow(annotation_map) == 0) && is.data.frame(metadata) && nrow(metadata) > 0) {
+      annotation_map <- ugplot_geo_load_annotation_cache(ugplot_geo_detect_platform(metadata))
+      if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
+        geo_cpg_annotation(annotation_map)
+      }
+    }
+    if (!is.data.frame(annotation_map) || nrow(annotation_map) == 0) {
+      geo_stage(list(step = "Step 6", title = "Build annotation first", message = "Build/load the CpG annotation cache before building transcript candidates."))
+      return()
+    }
+
+    threshold <- suppressWarnings(as.numeric(input$geo_transcript_absrho_threshold %||% 0.8))
+    candidates <- ugplot_geo_transcript_candidates(results, annotation_map, threshold)
+    geo_transcript_candidates(candidates)
+    safe_threshold <- gsub("[^0-9]+", "_", format(threshold, trim = TRUE, scientific = FALSE))
+    candidates_path <- file.path(cache_dir, paste0("ugplot_geo_transcript_candidates_", target_column, "_absrho_", safe_threshold, ".csv"))
+    if (is.data.frame(candidates) && nrow(candidates) > 0) {
+      utils::write.csv(candidates, candidates_path, row.names = FALSE)
+      geo_status(ugplot_geo_append_log(
+        geo_status(),
+        paste0(
+          "Transcript candidate table ready: ", nrow(candidates), " CpG-transcript rows across ",
+          length(unique(candidates$Transcript)), " transcript(s). Saved to ", candidates_path, "."
+        )
+      ))
+      geo_stage(list(
+        step = "Step 6",
+        title = "Transcript CpG table ready",
+        message = paste0(
+          "Found ", length(unique(candidates$Transcript)), " transcript(s) with at least one CpG above |rho| >= ",
+          threshold, ". Saved expanded CpG table to disk."
+        )
+      ))
+    } else {
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("No transcript candidates found for |rho| >= ", threshold, ".")))
+      geo_stage(list(
+        step = "Step 6",
+        title = "No transcript candidates",
+        message = paste0("No annotated CpG passed |rho| >= ", threshold, ". Lower the threshold or scan more CpGs.")
+      ))
+    }
   })
 
   observeEvent(input$geo_load_selected_file, {
