@@ -1770,7 +1770,7 @@ ugplot_split_semicolon <- function(x) {
   if (!nzchar(x) || is.na(x)) {
     return(character(0))
   }
-  values <- trimws(strsplit(x, ";", fixed = TRUE)[[1]])
+  values <- trimws(base::strsplit(x, ";", fixed = TRUE)[[1]])
   values[nzchar(values) & !is.na(values)]
 }
 
@@ -1794,47 +1794,45 @@ ugplot_geo_expand_probe_annotation <- function(annotation, platform_id, source_p
   feature_col <- ugplot_first_existing_col(annotation, c("Regulatory_Feature_Group", "Regulatory_Feature_Name"))
   probe_type_col <- ugplot_first_existing_col(annotation, c("Type", "Probe_Type"))
 
-  rows <- vector("list", length(cpg_ids))
-  for (i in seq_along(cpg_ids)) {
-    genes <- if (!is.na(gene_col)) ugplot_split_semicolon(annotation[[gene_col]][[i]]) else character(0)
-    transcripts <- if (!is.na(transcript_col)) ugplot_split_semicolon(annotation[[transcript_col]][[i]]) else character(0)
-    groups <- if (!is.na(group_col)) ugplot_split_semicolon(annotation[[group_col]][[i]]) else character(0)
-    if (length(genes) == 0) genes <- NA_character_
-    if (length(transcripts) == 0) transcripts <- NA_character_
-    if (length(groups) == 0) groups <- NA_character_
-
-    if (length(genes) == length(transcripts) && length(transcripts) == length(groups)) {
-      probe_links <- data.frame(
-        Gene = genes,
-        Transcript = transcripts,
-        GeneRegion = groups,
-        stringsAsFactors = FALSE
-      )
-    } else {
-      probe_links <- expand.grid(
-        Gene = genes,
-        Transcript = transcripts,
-        GeneRegion = groups,
-        stringsAsFactors = FALSE
-      )
+  split_annotation_col <- function(col_name) {
+    if (is.na(col_name)) {
+      return(rep(list(character(0)), length(cpg_ids)))
     }
-
-    rows[[i]] <- data.frame(
-      CpG = cpg_ids[[i]],
-      probe_links,
-      Chr = if (!is.na(chr_col)) as.character(annotation[[chr_col]][[i]]) else NA_character_,
-      Position = if (!is.na(pos_col)) suppressWarnings(as.numeric(annotation[[pos_col]][[i]])) else NA_real_,
-      CpGIslandRelation = if (!is.na(island_col)) as.character(annotation[[island_col]][[i]]) else NA_character_,
-      RegulatoryFeature = if (!is.na(feature_col)) as.character(annotation[[feature_col]][[i]]) else NA_character_,
-      ProbeType = if (!is.na(probe_type_col)) as.character(annotation[[probe_type_col]][[i]]) else NA_character_,
-      Platform = platform_id,
-      Genome = genome,
-      AnnotationSource = source_package,
-      stringsAsFactors = FALSE
-    )
+    lapply(annotation[[col_name]], ugplot_split_semicolon)
   }
-  annotation_map <- do.call(rbind, rows)
-  annotation_map <- unique(annotation_map)
+
+  genes_split <- split_annotation_col(gene_col)
+  transcripts_split <- split_annotation_col(transcript_col)
+  groups_split <- split_annotation_col(group_col)
+  max_links <- pmax(lengths(genes_split), lengths(transcripts_split), lengths(groups_split), 1L)
+  expand_split_values <- function(values_split) {
+    base::unlist(Map(function(values, n_links) {
+      if (length(values) == 0) {
+        values <- NA_character_
+      }
+      if (length(values) == n_links) {
+        return(values)
+      }
+      rep(values, length.out = n_links)
+    }, values_split, max_links), use.names = FALSE)
+  }
+
+  annotation_map <- base::data.frame(
+    CpG = rep(cpg_ids, max_links),
+    Gene = expand_split_values(genes_split),
+    Transcript = expand_split_values(transcripts_split),
+    GeneRegion = expand_split_values(groups_split),
+    Chr = if (!is.na(chr_col)) rep(as.character(annotation[[chr_col]]), max_links) else NA_character_,
+    Position = if (!is.na(pos_col)) rep(suppressWarnings(as.numeric(annotation[[pos_col]])), max_links) else NA_real_,
+    CpGIslandRelation = if (!is.na(island_col)) rep(as.character(annotation[[island_col]]), max_links) else NA_character_,
+    RegulatoryFeature = if (!is.na(feature_col)) rep(as.character(annotation[[feature_col]]), max_links) else NA_character_,
+    ProbeType = if (!is.na(probe_type_col)) rep(as.character(annotation[[probe_type_col]]), max_links) else NA_character_,
+    Platform = platform_id,
+    Genome = genome,
+    AnnotationSource = source_package,
+    stringsAsFactors = FALSE
+  )
+  annotation_map <- base::unique(annotation_map)
   rownames(annotation_map) <- NULL
   annotation_map
 }
@@ -1845,8 +1843,8 @@ ugplot_geo_build_annotation_cache <- function(platform_id, force = FALSE) {
     stop(paste0("No built-in annotation mapping is configured for platform ", platform_id, "."))
   }
   cache_path <- ugplot_geo_annotation_cache_path(platform_info$platform, "rds")
-  if (!isTRUE(force) && file.exists(cache_path)) {
-    return(readRDS(cache_path))
+  if (!isTRUE(force) && base::file.exists(cache_path)) {
+    return(base::readRDS(cache_path))
   }
   if (!requireNamespace("minfi", quietly = TRUE)) {
     stop("Package 'minfi' is required to build methylation annotation caches.")
@@ -1854,9 +1852,10 @@ ugplot_geo_build_annotation_cache <- function(platform_id, force = FALSE) {
   if (!requireNamespace(platform_info$package, quietly = TRUE)) {
     stop(paste0("Package '", platform_info$package, "' is required for ", platform_info$platform, " annotation."))
   }
-  env <- new.env(parent = emptyenv())
-  utils::data(list = platform_info$object, package = platform_info$package, envir = env)
-  annotation_object <- env[[platform_info$object]]
+  suppressPackageStartupMessages(
+    base::library(platform_info$package, character.only = TRUE)
+  )
+  annotation_object <- base::get(platform_info$object, envir = base::as.environment(paste0("package:", platform_info$package)))
   annotation <- minfi::getAnnotation(annotation_object)
   annotation_map <- ugplot_geo_expand_probe_annotation(
     annotation,
@@ -1864,8 +1863,8 @@ ugplot_geo_build_annotation_cache <- function(platform_id, force = FALSE) {
     source_package = platform_info$package,
     genome = platform_info$genome
   )
-  dir.create(dirname(cache_path), recursive = TRUE, showWarnings = FALSE)
-  saveRDS(annotation_map, cache_path)
+  base::dir.create(dirname(cache_path), recursive = TRUE, showWarnings = FALSE)
+  base::saveRDS(annotation_map, cache_path)
   utils::write.csv(annotation_map, ugplot_geo_annotation_cache_path(platform_info$platform, "csv"), row.names = FALSE)
   annotation_map
 }
@@ -1876,10 +1875,10 @@ ugplot_geo_load_annotation_cache <- function(platform_id) {
     return(data.frame())
   }
   cache_path <- ugplot_geo_annotation_cache_path(platform_info$platform, "rds")
-  if (!file.exists(cache_path)) {
+  if (!base::file.exists(cache_path)) {
     return(data.frame())
   }
-  readRDS(cache_path)
+  base::readRDS(cache_path)
 }
 
 ugplot_geo_join_spearman_annotation <- function(results, annotation_map) {
