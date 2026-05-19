@@ -579,7 +579,8 @@ ui <- fluidPage(
                 uiOutput("geo_target_selector"),
                 tags$p(class = "geo-step-note", "Spearman scan uses numeric targets such as age. Categorical targets will need a separate group-comparison scan."),
                 numericInput("geo_spearman_max_cpgs", "Max CpGs to scan (0 = all):", value = 50000, min = 0, step = 10000),
-                numericInput("geo_spearman_top_n", "Top CpGs to keep:", value = 1000, min = 10, step = 10),
+                uiOutput("geo_annotation_summary"),
+                actionButton("geo_build_annotation", "Build/load CpG annotation cache"),
                 actionButton("geo_run_spearman", "Run CpG Spearman scan"),
                 uiOutput("geo_file_selector"),
                 checkboxInput("geo_use_first_column_names", "Use first column as row names", value = TRUE),
@@ -594,6 +595,7 @@ ui <- fluidPage(
             DT::DTOutput("geo_metadata_table"),
             tags$hr(),
             DT::DTOutput("geo_files_table"),
+            DT::DTOutput("geo_annotation_table"),
             DT::DTOutput("geo_spearman_table"),
             tags$hr(),
             tags$details(class = "geo-debug-log",
@@ -1231,6 +1233,23 @@ ugplot_geo_sample_metadata_path <- function(cache_dir, extension = "rds") {
   file.path(cache_dir, paste0("ugplot_geo_sample_metadata.", extension))
 }
 
+ugplot_geo_project_root <- function() {
+  base_dir <- getwd()
+  if (basename(base_dir) == "R" && file.exists(file.path(dirname(base_dir), "DESCRIPTION"))) {
+    base_dir <- dirname(base_dir)
+  }
+  base_dir
+}
+
+ugplot_geo_annotation_cache_dir <- function() {
+  file.path(ugplot_geo_project_root(), "geo_annotation_cache")
+}
+
+ugplot_geo_annotation_cache_path <- function(platform_id, extension = "rds") {
+  safe_platform <- gsub("[^A-Za-z0-9_.-]", "_", platform_id %||% "unknown_platform")
+  file.path(ugplot_geo_annotation_cache_dir(), paste0(safe_platform, "_cpg_gene_transcript_map.", extension))
+}
+
 ugplot_geo_append_log <- function(current_log, message) {
   timestamp <- format(Sys.time(), "%H:%M:%S")
   paste(c(current_log, paste0("[", timestamp, "] ", message)), collapse = "\n")
@@ -1689,6 +1708,190 @@ ugplot_geo_target_candidates <- function(metadata) {
   unique(c(priority, candidates))
 }
 
+ugplot_geo_detect_platform <- function(metadata) {
+  if (!is.data.frame(metadata) || nrow(metadata) == 0 || !"platform_id" %in% names(metadata)) {
+    return(NA_character_)
+  }
+  platforms <- unique(na.omit(as.character(metadata$platform_id)))
+  platforms <- platforms[nzchar(platforms)]
+  if (length(platforms) == 0) NA_character_ else platforms[[1]]
+}
+
+ugplot_geo_platform_annotation_package <- function(platform_id) {
+  platform_id <- toupper(trimws(platform_id %||% ""))
+  switch(platform_id,
+    "GPL13534" = list(
+      platform = "GPL13534",
+      array = "Illumina HumanMethylation450",
+      package = "IlluminaHumanMethylation450kanno.ilmn12.hg19",
+      object = "IlluminaHumanMethylation450kanno.ilmn12.hg19",
+      genome = "hg19"
+    ),
+    "GPL21145" = list(
+      platform = "GPL21145",
+      array = "Illumina HumanMethylationEPIC",
+      package = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+      object = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+      genome = "hg19"
+    ),
+    NULL
+  )
+}
+
+ugplot_split_semicolon <- function(x) {
+  x <- as.character(x %||% "")
+  if (!nzchar(x) || is.na(x)) {
+    return(character(0))
+  }
+  values <- trimws(strsplit(x, ";", fixed = TRUE)[[1]])
+  values[nzchar(values) & !is.na(values)]
+}
+
+ugplot_first_existing_col <- function(data, candidates) {
+  found <- intersect(candidates, names(data))
+  if (length(found) == 0) NA_character_ else found[[1]]
+}
+
+ugplot_geo_expand_probe_annotation <- function(annotation, platform_id, source_package, genome) {
+  annotation <- as.data.frame(annotation, stringsAsFactors = FALSE, check.names = FALSE)
+  cpg_ids <- rownames(annotation)
+  if ("Name" %in% names(annotation)) {
+    cpg_ids <- as.character(annotation$Name)
+  }
+  gene_col <- ugplot_first_existing_col(annotation, c("UCSC_RefGene_Name", "Gene", "gene", "gene_symbol"))
+  transcript_col <- ugplot_first_existing_col(annotation, c("UCSC_RefGene_Accession", "Transcript", "transcript_id"))
+  group_col <- ugplot_first_existing_col(annotation, c("UCSC_RefGene_Group", "Relation_to_Gene", "gene_group"))
+  chr_col <- ugplot_first_existing_col(annotation, c("chr", "CHR", "Chromosome"))
+  pos_col <- ugplot_first_existing_col(annotation, c("pos", "MAPINFO", "mapinfo", "Position"))
+  island_col <- ugplot_first_existing_col(annotation, c("Relation_to_Island", "Relation_to_UCSC_CpG_Island"))
+  feature_col <- ugplot_first_existing_col(annotation, c("Regulatory_Feature_Group", "Regulatory_Feature_Name"))
+  probe_type_col <- ugplot_first_existing_col(annotation, c("Type", "Probe_Type"))
+
+  rows <- vector("list", length(cpg_ids))
+  for (i in seq_along(cpg_ids)) {
+    genes <- if (!is.na(gene_col)) ugplot_split_semicolon(annotation[[gene_col]][[i]]) else character(0)
+    transcripts <- if (!is.na(transcript_col)) ugplot_split_semicolon(annotation[[transcript_col]][[i]]) else character(0)
+    groups <- if (!is.na(group_col)) ugplot_split_semicolon(annotation[[group_col]][[i]]) else character(0)
+    if (length(genes) == 0) genes <- NA_character_
+    if (length(transcripts) == 0) transcripts <- NA_character_
+    if (length(groups) == 0) groups <- NA_character_
+
+    if (length(genes) == length(transcripts) && length(transcripts) == length(groups)) {
+      probe_links <- data.frame(
+        Gene = genes,
+        Transcript = transcripts,
+        GeneRegion = groups,
+        stringsAsFactors = FALSE
+      )
+    } else {
+      probe_links <- expand.grid(
+        Gene = genes,
+        Transcript = transcripts,
+        GeneRegion = groups,
+        stringsAsFactors = FALSE
+      )
+    }
+
+    rows[[i]] <- data.frame(
+      CpG = cpg_ids[[i]],
+      probe_links,
+      Chr = if (!is.na(chr_col)) as.character(annotation[[chr_col]][[i]]) else NA_character_,
+      Position = if (!is.na(pos_col)) suppressWarnings(as.numeric(annotation[[pos_col]][[i]])) else NA_real_,
+      CpGIslandRelation = if (!is.na(island_col)) as.character(annotation[[island_col]][[i]]) else NA_character_,
+      RegulatoryFeature = if (!is.na(feature_col)) as.character(annotation[[feature_col]][[i]]) else NA_character_,
+      ProbeType = if (!is.na(probe_type_col)) as.character(annotation[[probe_type_col]][[i]]) else NA_character_,
+      Platform = platform_id,
+      Genome = genome,
+      AnnotationSource = source_package,
+      stringsAsFactors = FALSE
+    )
+  }
+  annotation_map <- do.call(rbind, rows)
+  annotation_map <- unique(annotation_map)
+  rownames(annotation_map) <- NULL
+  annotation_map
+}
+
+ugplot_geo_build_annotation_cache <- function(platform_id, force = FALSE) {
+  platform_info <- ugplot_geo_platform_annotation_package(platform_id)
+  if (is.null(platform_info)) {
+    stop(paste0("No built-in annotation mapping is configured for platform ", platform_id, "."))
+  }
+  cache_path <- ugplot_geo_annotation_cache_path(platform_info$platform, "rds")
+  if (!isTRUE(force) && file.exists(cache_path)) {
+    return(readRDS(cache_path))
+  }
+  if (!requireNamespace("minfi", quietly = TRUE)) {
+    stop("Package 'minfi' is required to build methylation annotation caches.")
+  }
+  if (!requireNamespace(platform_info$package, quietly = TRUE)) {
+    stop(paste0("Package '", platform_info$package, "' is required for ", platform_info$platform, " annotation."))
+  }
+  env <- new.env(parent = emptyenv())
+  utils::data(list = platform_info$object, package = platform_info$package, envir = env)
+  annotation_object <- env[[platform_info$object]]
+  annotation <- minfi::getAnnotation(annotation_object)
+  annotation_map <- ugplot_geo_expand_probe_annotation(
+    annotation,
+    platform_id = platform_info$platform,
+    source_package = platform_info$package,
+    genome = platform_info$genome
+  )
+  dir.create(dirname(cache_path), recursive = TRUE, showWarnings = FALSE)
+  saveRDS(annotation_map, cache_path)
+  utils::write.csv(annotation_map, ugplot_geo_annotation_cache_path(platform_info$platform, "csv"), row.names = FALSE)
+  annotation_map
+}
+
+ugplot_geo_load_annotation_cache <- function(platform_id) {
+  platform_info <- ugplot_geo_platform_annotation_package(platform_id)
+  if (is.null(platform_info)) {
+    return(data.frame())
+  }
+  cache_path <- ugplot_geo_annotation_cache_path(platform_info$platform, "rds")
+  if (!file.exists(cache_path)) {
+    return(data.frame())
+  }
+  readRDS(cache_path)
+}
+
+ugplot_geo_join_spearman_annotation <- function(results, annotation_map) {
+  if (!is.data.frame(results) || nrow(results) == 0 || !is.data.frame(annotation_map) || nrow(annotation_map) == 0) {
+    return(results)
+  }
+  merge(results, annotation_map, by = "CpG", all.x = TRUE, sort = FALSE)
+}
+
+ugplot_geo_group_spearman_annotation <- function(annotated_results, group_col) {
+  if (!is.data.frame(annotated_results) || nrow(annotated_results) == 0 || !group_col %in% names(annotated_results)) {
+    return(data.frame())
+  }
+  grouped <- annotated_results[!is.na(annotated_results[[group_col]]) & nzchar(as.character(annotated_results[[group_col]])), , drop = FALSE]
+  if (nrow(grouped) == 0) {
+    return(data.frame())
+  }
+  split_groups <- split(grouped, grouped[[group_col]])
+  summary <- lapply(names(split_groups), function(group_name) {
+    df <- split_groups[[group_name]]
+    best <- df[order(-df$AbsRho, df$PValue), , drop = FALSE][1, , drop = FALSE]
+    data.frame(
+      Group = group_name,
+      NRows = nrow(df),
+      NCpGs = length(unique(df$CpG)),
+      MaxAbsRho = best$AbsRho[[1]],
+      BestCpG = best$CpG[[1]],
+      BestRho = best$SpearmanRho[[1]],
+      BestPValue = best$PValue[[1]],
+      MeanAbsRho = mean(df$AbsRho, na.rm = TRUE),
+      stringsAsFactors = FALSE
+    )
+  })
+  summary <- do.call(rbind, summary)
+  summary <- summary[order(-summary$MaxAbsRho, summary$BestPValue), , drop = FALSE]
+  rownames(summary) <- NULL
+  summary
+}
+
 ugplot_geo_matrix_files <- function(cache_dir) {
   files <- list.files(cache_dir, pattern = "\\.(txt|tsv|csv)$", full.names = TRUE)
   files <- files[!grepl("series_matrix|sample_metadata|spearman|manifest|metadata", basename(files), ignore.case = TRUE)]
@@ -1732,8 +1935,8 @@ ugplot_geo_matrix_sample_map <- function(matrix_files, metadata) {
 }
 
 ugplot_geo_spearman_scan <- function(matrix_files, metadata, target_column,
-                                     max_cpgs = 0, top_n = 1000,
-                                     progress_callback = NULL) {
+                                     max_cpgs = 0,
+                                     progress_callback = NULL, result_callback = NULL) {
   if (!target_column %in% names(metadata)) {
     stop("Selected target column is not present in sample metadata.")
   }
@@ -1762,7 +1965,6 @@ ugplot_geo_spearman_scan <- function(matrix_files, metadata, target_column,
   if (!is.finite(max_cpgs) || max_cpgs < 0) {
     max_cpgs <- 0
   }
-  top_n <- max(1, suppressWarnings(as.integer(top_n)))
   results <- data.frame(CpG = character(), SpearmanRho = numeric(), PValue = numeric(), N = integer(), AbsRho = numeric(), stringsAsFactors = FALSE)
   scanned <- 0L
 
@@ -1790,9 +1992,8 @@ ugplot_geo_spearman_scan <- function(matrix_files, metadata, target_column,
         AbsRho = abs(unname(test$estimate)),
         stringsAsFactors = FALSE
       ))
-      if (nrow(results) > top_n * 2) {
-        results <- results[order(-results$AbsRho, results$PValue), , drop = FALSE]
-        results <- utils::head(results, top_n)
+      if (!is.null(result_callback)) {
+        result_callback(utils::tail(results, 1))
       }
     }
     scanned <- scanned + 1L
@@ -1810,7 +2011,7 @@ ugplot_geo_spearman_scan <- function(matrix_files, metadata, target_column,
   rownames(results) <- NULL
   attr(results, "scanned_cpgs") <- scanned
   attr(results, "matched_samples") <- sum(!is.na(target_by_matrix))
-  utils::head(results, top_n)
+  results
 }
 
 ugplot_geo_list_candidate_files <- function(accession, cache_dir) {
@@ -2733,6 +2934,7 @@ server <- function(input, output, session) {
   geo_files <- reactiveVal(data.frame())
   geo_remote_files <- reactiveVal(data.frame())
   geo_sample_metadata <- reactiveVal(data.frame())
+  geo_cpg_annotation <- reactiveVal(data.frame())
   geo_spearman_results <- reactiveVal(data.frame())
   geo_status <- reactiveVal("Waiting for GEO accession.")
   geo_stage <- reactiveVal(list(
@@ -2943,6 +3145,54 @@ server <- function(input, output, session) {
     selectInput("geo_target_column", "Target metadata column:", choices = candidates, selected = selected)
   })
 
+  output$geo_annotation_summary <- renderUI({
+    metadata <- geo_sample_metadata()
+    if (!is.data.frame(metadata) || nrow(metadata) == 0) {
+      return(tags$p("Fetch sample metadata first to detect the methylation platform."))
+    }
+    platform_id <- ugplot_geo_detect_platform(metadata)
+    if (!nzchar(platform_id %||% "")) {
+      return(tags$p("No GEO platform_id was found in sample metadata."))
+    }
+    platform_info <- ugplot_geo_platform_annotation_package(platform_id)
+    if (is.null(platform_info)) {
+      return(tags$p(paste0("No built-in CpG annotation cache is configured for ", platform_id, ".")))
+    }
+    annotation_map <- geo_cpg_annotation()
+    cache_path <- ugplot_geo_annotation_cache_path(platform_info$platform, "rds")
+    if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
+      return(tags$div(
+        tags$p(paste0(
+          "Annotation loaded: ", nrow(annotation_map), " CpG-gene/transcript links; ",
+          length(unique(annotation_map$CpG)), " CpGs; ",
+          length(unique(stats::na.omit(annotation_map$Gene))), " genes; ",
+          length(unique(stats::na.omit(annotation_map$Transcript))), " transcripts."
+        )),
+        tags$p(paste0("Platform: ", platform_info$platform, " (", platform_info$array, ")."))
+      ))
+    }
+    if (file.exists(cache_path)) {
+      return(tags$div(
+        tags$p(paste0("CpG annotation cache is available locally for ", platform_info$platform, ".")),
+        tags$p(paste0("Cache: ", cache_path))
+      ))
+    }
+    tags$div(
+      tags$p(paste0("CpG annotation cache is not built yet for ", platform_info$platform, " (", platform_info$array, ").")),
+      tags$p(paste0("Requires Bioconductor packages: minfi and ", platform_info$package, "."))
+    )
+  })
+
+  output$geo_annotation_table <- DT::renderDT({
+    annotation_map <- geo_cpg_annotation()
+    req(is.data.frame(annotation_map), nrow(annotation_map) > 0)
+    display_cols <- intersect(
+      c("CpG", "Gene", "Transcript", "GeneRegion", "Chr", "Position", "CpGIslandRelation", "RegulatoryFeature", "ProbeType", "Platform", "Genome"),
+      names(annotation_map)
+    )
+    DT::datatable(annotation_map[, display_cols, drop = FALSE], options = list(pageLength = 8, scrollX = TRUE), rownames = FALSE)
+  })
+
   output$geo_spearman_table <- DT::renderDT({
     results <- geo_spearman_results()
     req(is.data.frame(results), nrow(results) > 0)
@@ -2997,6 +3247,7 @@ server <- function(input, output, session) {
     }
     geo_files(data.frame())
     geo_sample_metadata(data.frame())
+    geo_cpg_annotation(data.frame())
     geo_preview_data(data.frame())
     geo_status(ugplot_geo_append_log("", paste0("Inspecting GEO metadata for ", accession, "...")))
     geo_stage(list(step = "Step 1", title = "Inspecting GEO", message = paste0("Reading metadata for ", accession, " and checking supplementary file sizes.")))
@@ -3010,6 +3261,11 @@ server <- function(input, output, session) {
         if (is.data.frame(cached_metadata) && nrow(cached_metadata) > 0) {
           geo_sample_metadata(cached_metadata)
           geo_status(ugplot_geo_append_log(geo_status(), paste0("Loaded cached sample metadata: ", nrow(cached_metadata), " samples.")))
+          cached_annotation <- ugplot_geo_load_annotation_cache(ugplot_geo_detect_platform(cached_metadata))
+          if (is.data.frame(cached_annotation) && nrow(cached_annotation) > 0) {
+            geo_cpg_annotation(cached_annotation)
+            geo_status(ugplot_geo_append_log(geo_status(), paste0("Loaded cached CpG annotation: ", nrow(cached_annotation), " CpG-gene/transcript links.")))
+          }
         }
       }
       remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
@@ -3095,6 +3351,10 @@ server <- function(input, output, session) {
     tryCatch({
       metadata <- ugplot_geo_fetch_sample_metadata(accession, cache_dir)
       geo_sample_metadata(metadata)
+      cached_annotation <- ugplot_geo_load_annotation_cache(ugplot_geo_detect_platform(metadata))
+      if (is.data.frame(cached_annotation) && nrow(cached_annotation) > 0) {
+        geo_cpg_annotation(cached_annotation)
+      }
       likely_targets <- grep("age|sex|gender|disease|status|treatment|response|case|control|group|phenotype", names(metadata), value = TRUE, ignore.case = TRUE)
       geo_status(ugplot_geo_append_log(
         geo_status(),
@@ -3465,6 +3725,68 @@ server <- function(input, output, session) {
     })
   })
 
+  observeEvent(input$geo_build_annotation, {
+    accession <- trimws(input$geo_accession %||% "")
+    cache_dir <- if (nzchar(accession)) ugplot_geo_cache_dir(accession) else ""
+    metadata <- geo_sample_metadata()
+    if ((!is.data.frame(metadata) || nrow(metadata) == 0) && nzchar(cache_dir) && file.exists(ugplot_geo_sample_metadata_path(cache_dir, "rds"))) {
+      metadata <- tryCatch(readRDS(ugplot_geo_sample_metadata_path(cache_dir, "rds")), error = function(e) data.frame())
+      geo_sample_metadata(metadata)
+    }
+    if (!is.data.frame(metadata) || nrow(metadata) == 0) {
+      geo_stage(list(step = "Step 6", title = "Missing sample metadata", message = "Fetch sample metadata before building CpG annotation."))
+      return()
+    }
+    platform_id <- ugplot_geo_detect_platform(metadata)
+    if (!nzchar(platform_id %||% "")) {
+      geo_stage(list(step = "Step 6", title = "Missing platform", message = "Sample metadata does not include a usable platform_id."))
+      return()
+    }
+    platform_info <- ugplot_geo_platform_annotation_package(platform_id)
+    if (is.null(platform_info)) {
+      geo_stage(list(step = "Step 6", title = "Unsupported platform", message = paste0("No built-in annotation mapping is configured for ", platform_id, ".")))
+      return()
+    }
+
+    geo_stage(list(
+      step = "Step 6",
+      title = "Loading CpG annotation",
+      message = paste0("Building or loading many-to-many CpG annotation for ", platform_info$platform, ".")
+    ))
+    geo_status(ugplot_geo_append_log(geo_status(), paste0("Loading CpG annotation cache for ", platform_info$platform, ".")))
+    tryCatch({
+      annotation_map <- ugplot_geo_build_annotation_cache(platform_info$platform)
+      geo_cpg_annotation(annotation_map)
+      geo_status(ugplot_geo_append_log(
+        geo_status(),
+        paste0(
+          "CpG annotation ready: ", nrow(annotation_map), " CpG-gene/transcript links, ",
+          length(unique(annotation_map$CpG)), " CpGs. Cache: ",
+          ugplot_geo_annotation_cache_path(platform_info$platform, "rds")
+        )
+      ))
+      geo_stage(list(
+        step = "Step 6",
+        title = "CpG annotation ready",
+        message = paste0(
+          "Loaded ", nrow(annotation_map), " many-to-many CpG-gene/transcript links for ",
+          platform_info$platform, ". Spearman output will save annotated and grouped files."
+        )
+      ))
+    }, error = function(e) {
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not build/load CpG annotation: ", conditionMessage(e))))
+      geo_stage(list(
+        step = "Step 6",
+        title = "CpG annotation unavailable",
+        message = paste0(
+          conditionMessage(e),
+          " Install Bioconductor packages 'minfi' and '", platform_info$package,
+          "', then run this step again."
+        )
+      ))
+    })
+  })
+
   observeEvent(input$geo_run_spearman, {
     accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
@@ -3493,7 +3815,6 @@ server <- function(input, output, session) {
     }
 
     max_cpgs <- suppressWarnings(as.integer(input$geo_spearman_max_cpgs %||% 50000))
-    top_n <- suppressWarnings(as.integer(input$geo_spearman_top_n %||% 1000))
     geo_spearman_results(data.frame())
     geo_status(ugplot_geo_append_log(
       geo_status(),
@@ -3512,7 +3833,6 @@ server <- function(input, output, session) {
           metadata = metadata,
           target_column = target_column,
           max_cpgs = max_cpgs,
-          top_n = top_n,
           progress_callback = function(scanned) {
             scanned_last <<- scanned
             if (max_cpgs > 0) {
@@ -3527,15 +3847,59 @@ server <- function(input, output, session) {
       matched_samples <- attr(results, "matched_samples") %||% NA_integer_
       results_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, ".csv"))
       utils::write.csv(results, results_path, row.names = FALSE)
-      geo_spearman_results(results)
+
+      annotation_map <- geo_cpg_annotation()
+      if (!is.data.frame(annotation_map) || nrow(annotation_map) == 0) {
+        platform_id <- ugplot_geo_detect_platform(metadata)
+        annotation_map <- ugplot_geo_load_annotation_cache(platform_id)
+        if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
+          geo_cpg_annotation(annotation_map)
+        }
+      }
+
+      annotated_path <- ""
+      transcript_path <- ""
+      gene_path <- ""
+      display_results <- results
+      if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
+        annotated_results <- ugplot_geo_join_spearman_annotation(results, annotation_map)
+        annotated_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, "_annotated.csv"))
+        utils::write.csv(annotated_results, annotated_path, row.names = FALSE)
+        display_results <- annotated_results
+
+        transcript_summary <- ugplot_geo_group_spearman_annotation(annotated_results, "Transcript")
+        if (is.data.frame(transcript_summary) && nrow(transcript_summary) > 0) {
+          transcript_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, "_by_transcript.csv"))
+          utils::write.csv(transcript_summary, transcript_path, row.names = FALSE)
+        }
+        gene_summary <- ugplot_geo_group_spearman_annotation(annotated_results, "Gene")
+        if (is.data.frame(gene_summary) && nrow(gene_summary) > 0) {
+          gene_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, "_by_gene.csv"))
+          utils::write.csv(gene_summary, gene_path, row.names = FALSE)
+        }
+      }
+
+      geo_spearman_results(display_results)
+      saved_files <- c(results_path, annotated_path, transcript_path, gene_path)
+      saved_files <- saved_files[nzchar(saved_files)]
       geo_status(ugplot_geo_append_log(
         geo_status(),
-        paste0("Spearman scan complete: ", scanned, " CpGs scanned, ", matched_samples, " matched samples. Results saved to ", results_path, ".")
+        paste0(
+          "Spearman scan complete: ", scanned, " CpGs scanned, ", matched_samples,
+          " matched samples. Saved files: ", paste(saved_files, collapse = "; "), "."
+        )
       ))
       geo_stage(list(
         step = "Step 6",
         title = "CpG Spearman scan complete",
-        message = paste0("Showing top ", nrow(results), " CpGs for target '", target_column, "'.")
+        message = paste0(
+          "Saved all ", nrow(results), " raw CpG results for target '", target_column, "'.",
+          if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
+            " Annotated many-to-many CpG-gene/transcript results and grouped summaries were also saved."
+          } else {
+            " Build the CpG annotation cache to also save gene/transcript grouped summaries."
+          }
+        )
       ))
     }, error = function(e) {
       geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not run CpG Spearman scan: ", conditionMessage(e))))
