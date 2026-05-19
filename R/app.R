@@ -1738,6 +1738,20 @@ ugplot_geo_platform_annotation_package <- function(platform_id) {
   )
 }
 
+ugplot_geo_missing_annotation_packages <- function(platform_info) {
+  if (is.null(platform_info)) {
+    return(character(0))
+  }
+  missing <- character(0)
+  if (!requireNamespace("minfi", quietly = TRUE)) {
+    missing <- c(missing, "minfi")
+  }
+  if (!requireNamespace(platform_info$package, quietly = TRUE)) {
+    missing <- c(missing, platform_info$package)
+  }
+  unique(missing)
+}
+
 ugplot_split_semicolon <- function(x) {
   x <- as.character(x %||% "")
   if (!nzchar(x) || is.na(x)) {
@@ -2935,6 +2949,7 @@ server <- function(input, output, session) {
   geo_remote_files <- reactiveVal(data.frame())
   geo_sample_metadata <- reactiveVal(data.frame())
   geo_cpg_annotation <- reactiveVal(data.frame())
+  geo_pending_annotation_platform <- reactiveVal(NULL)
   geo_spearman_results <- reactiveVal(data.frame())
   geo_status <- reactiveVal("Waiting for GEO accession.")
   geo_stage <- reactiveVal(list(
@@ -3725,6 +3740,34 @@ server <- function(input, output, session) {
     })
   })
 
+  load_geo_annotation_cache_for_platform <- function(platform_info) {
+    geo_stage(list(
+      step = "Step 6",
+      title = "Loading CpG annotation",
+      message = paste0("Building or loading many-to-many CpG annotation for ", platform_info$platform, ".")
+    ))
+    geo_status(ugplot_geo_append_log(geo_status(), paste0("Loading CpG annotation cache for ", platform_info$platform, ".")))
+    annotation_map <- ugplot_geo_build_annotation_cache(platform_info$platform)
+    geo_cpg_annotation(annotation_map)
+    geo_status(ugplot_geo_append_log(
+      geo_status(),
+      paste0(
+        "CpG annotation ready: ", nrow(annotation_map), " CpG-gene/transcript links, ",
+        length(unique(annotation_map$CpG)), " CpGs. Cache: ",
+        ugplot_geo_annotation_cache_path(platform_info$platform, "rds")
+      )
+    ))
+    geo_stage(list(
+      step = "Step 6",
+      title = "CpG annotation ready",
+      message = paste0(
+        "Loaded ", nrow(annotation_map), " many-to-many CpG-gene/transcript links for ",
+        platform_info$platform, ". Spearman output will save annotated and grouped files."
+      )
+    ))
+    invisible(annotation_map)
+  }
+
   observeEvent(input$geo_build_annotation, {
     accession <- trimws(input$geo_accession %||% "")
     cache_dir <- if (nzchar(accession)) ugplot_geo_cache_dir(accession) else ""
@@ -3748,41 +3791,81 @@ server <- function(input, output, session) {
       return()
     }
 
-    geo_stage(list(
-      step = "Step 6",
-      title = "Loading CpG annotation",
-      message = paste0("Building or loading many-to-many CpG annotation for ", platform_info$platform, ".")
-    ))
-    geo_status(ugplot_geo_append_log(geo_status(), paste0("Loading CpG annotation cache for ", platform_info$platform, ".")))
-    tryCatch({
-      annotation_map <- ugplot_geo_build_annotation_cache(platform_info$platform)
-      geo_cpg_annotation(annotation_map)
-      geo_status(ugplot_geo_append_log(
-        geo_status(),
-        paste0(
-          "CpG annotation ready: ", nrow(annotation_map), " CpG-gene/transcript links, ",
-          length(unique(annotation_map$CpG)), " CpGs. Cache: ",
-          ugplot_geo_annotation_cache_path(platform_info$platform, "rds")
-        )
-      ))
+    missing_packages <- ugplot_geo_missing_annotation_packages(platform_info)
+    if (length(missing_packages) > 0) {
+      geo_pending_annotation_platform(platform_info)
       geo_stage(list(
         step = "Step 6",
-        title = "CpG annotation ready",
-        message = paste0(
-          "Loaded ", nrow(annotation_map), " many-to-many CpG-gene/transcript links for ",
-          platform_info$platform, ". Spearman output will save annotated and grouped files."
-        )
+        title = "CpG annotation packages missing",
+        message = paste0("ugPlot needs permission to install: ", paste(missing_packages, collapse = ", "), ".")
       ))
+      showModal(modalDialog(
+        title = "Install CpG annotation packages?",
+        tags$p("To build the CpG-to-gene/transcript cache, ugPlot needs to install missing Bioconductor packages."),
+        tags$p(tags$strong("Packages: "), paste(missing_packages, collapse = ", ")),
+        tags$p("This can take several minutes, especially for minfi and Illumina annotation packages."),
+        footer = tagList(
+          modalButton("Cancel"),
+          actionButton("geo_confirm_install_annotation", "Install packages and continue")
+        ),
+        easyClose = TRUE
+      ))
+      return()
+    }
+
+    tryCatch({
+      load_geo_annotation_cache_for_platform(platform_info)
     }, error = function(e) {
       geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not build/load CpG annotation: ", conditionMessage(e))))
       geo_stage(list(
         step = "Step 6",
         title = "CpG annotation unavailable",
-        message = paste0(
-          conditionMessage(e),
-          " Install Bioconductor packages 'minfi' and '", platform_info$package,
-          "', then run this step again."
-        )
+        message = conditionMessage(e)
+      ))
+    })
+  })
+
+  observeEvent(input$geo_confirm_install_annotation, {
+    platform_info <- geo_pending_annotation_platform()
+    if (is.null(platform_info)) {
+      removeModal()
+      geo_stage(list(step = "Step 6", title = "No pending install", message = "No annotation platform is waiting for package installation."))
+      return()
+    }
+    removeModal()
+    missing_packages <- ugplot_geo_missing_annotation_packages(platform_info)
+    if (length(missing_packages) == 0) {
+      tryCatch(load_geo_annotation_cache_for_platform(platform_info), error = function(e) {
+        geo_stage(list(step = "Step 6", title = "CpG annotation unavailable", message = conditionMessage(e)))
+      })
+      return()
+    }
+
+    geo_stage(list(
+      step = "Step 6",
+      title = "Installing CpG annotation packages",
+      message = paste0("Installing: ", paste(missing_packages, collapse = ", "), ". This may take several minutes.")
+    ))
+    geo_status(ugplot_geo_append_log(geo_status(), paste0("Installing CpG annotation dependencies: ", paste(missing_packages, collapse = ", "), ".")))
+    tryCatch({
+      withProgress(message = "Installing CpG annotation packages", value = 0, {
+        if (!requireNamespace("BiocManager", quietly = TRUE)) {
+          shiny::setProgress(0.1, detail = "Installing BiocManager")
+          utils::install.packages("BiocManager", dependencies = TRUE)
+        }
+        shiny::setProgress(0.35, detail = paste0("Installing ", paste(missing_packages, collapse = ", ")))
+        BiocManager::install(missing_packages, ask = FALSE, update = FALSE)
+        shiny::setProgress(0.8, detail = "Building annotation cache")
+        load_geo_annotation_cache_for_platform(platform_info)
+        shiny::setProgress(1, detail = "Annotation ready")
+      })
+      geo_pending_annotation_platform(NULL)
+    }, error = function(e) {
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not install/build CpG annotation packages: ", conditionMessage(e))))
+      geo_stage(list(
+        step = "Step 6",
+        title = "CpG annotation install failed",
+        message = conditionMessage(e)
       ))
     })
   })
