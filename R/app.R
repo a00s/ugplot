@@ -471,6 +471,14 @@ ui <- fluidPage(
       }, 60000);
       setInterval(setupTableListFilters, 500);
     });
+
+    Shiny.addCustomMessageHandler('geoProgress', function(x) {
+      var pct = Math.max(0, Math.min(100, Number(x.percent || 0)));
+      $('#geoProgressBar').css('width', pct + '%').attr('aria-valuenow', pct);
+      $('#geoProgressText').text(Math.round(pct) + '%');
+      $('#geoProgressFile').text(x.file || 'Waiting');
+      $('#geoProgressDetail').text(x.detail || '');
+    });
   "),
   includeCSS(path_to_css()),
   add_busy_spinner(spin = "fading-circle"),
@@ -529,6 +537,72 @@ ui <- fluidPage(
       tags$div(
         br(),
         actionButton("load_sample", "Click here to load an example")
+      )
+    ),
+    tabPanel("GEO IMPORT",
+      fluidPage(
+        tags$h4("GEO methylation import"),
+        fluidRow(
+          column(
+            4,
+            tags$div(class = "geo-workflow",
+              tags$div(class = "geo-step",
+                tags$div(class = "geo-step-title", "1. Inspect GEO accession"),
+                textInput("geo_accession", "GEO accession:", value = "", placeholder = "GSE87571"),
+                actionButton("geo_inspect_files", "Inspect files")
+              ),
+              tags$div(class = "geo-step",
+                tags$div(class = "geo-step-title", "2. Fetch sample metadata"),
+                tags$p(class = "geo-step-note", "Sample metadata contains age, sex, tissue, disease, treatment, response, and other phenotype fields when GEO provides them."),
+                uiOutput("geo_metadata_summary"),
+                actionButton("geo_fetch_metadata", "Fetch sample metadata")
+              ),
+              tags$div(class = "geo-step",
+                tags$div(class = "geo-step-title", "3. Review matrix download plan"),
+                tags$p(class = "geo-step-note", "Processed matrix tables are selected by default; raw archives can be very large."),
+                checkboxInput("geo_download_loadable_only", "Download only loadable processed tables", value = TRUE),
+                uiOutput("geo_download_summary"),
+                actionButton("geo_fetch_files", "Download matrix files")
+              ),
+              tags$div(class = "geo-step",
+                tags$div(class = "geo-step-title", "4. Matrix download progress"),
+                uiOutput("geo_download_progress_ui")
+              ),
+              tags$div(class = "geo-step",
+                tags$div(class = "geo-step-title", "5. Extract matrix files"),
+                tags$p(class = "geo-step-note", "Large .gz matrices must be extracted before preprocessing. They are still too large to load directly into ugPlot."),
+                actionButton("geo_extract_files", "Extract downloaded .gz files"),
+                uiOutput("geo_extract_progress_ui")
+              ),
+              tags$div(class = "geo-step",
+                tags$div(class = "geo-step-title", "6. Build/load analysis table"),
+                uiOutput("geo_target_selector"),
+                tags$p(class = "geo-step-note", "Spearman scan uses numeric targets such as age. Categorical targets will need a separate group-comparison scan."),
+                numericInput("geo_spearman_max_cpgs", "Max CpGs to scan (0 = all):", value = 50000, min = 0, step = 10000),
+                numericInput("geo_spearman_top_n", "Top CpGs to keep:", value = 1000, min = 10, step = 10),
+                actionButton("geo_run_spearman", "Run CpG Spearman scan"),
+                uiOutput("geo_file_selector"),
+                checkboxInput("geo_use_first_column_names", "Use first column as row names", value = TRUE),
+                selectInput("geo_loaded_orientation", "Loaded matrix orientation:", choices = c("Samples x CpGs" = "samples_rows", "CpGs x Samples" = "cpgs_rows"), selected = "samples_rows"),
+                actionButton("geo_load_selected_file", "Load selected file")
+              )
+            )
+          ),
+          column(
+            8,
+            uiOutput("geo_stage_status"),
+            DT::DTOutput("geo_metadata_table"),
+            tags$hr(),
+            DT::DTOutput("geo_files_table"),
+            DT::DTOutput("geo_spearman_table"),
+            tags$hr(),
+            tags$details(class = "geo-debug-log",
+              tags$summary("Technical log"),
+              tags$div(class = "dl-status-box", verbatimTextOutput("geo_import_status"))
+            ),
+            DT::DTOutput("geo_preview_table")
+          )
+        )
       )
     ),
     tabPanel("TABLE",
@@ -970,19 +1044,25 @@ ui <- fluidPage(
               "dl_task",
               "Task type:",
               choices = c("Auto-detect" = "auto", "Classification" = "classification", "Regression" = "regression"),
-              selected = "auto"
+              selected = "regression"
             ),
             sliderInput("dl_test_split", "Test split (%):", min = 10, max = 40, value = 20, step = 5),
-            numericInput("dl_seed", "Random seed:", value = 42, min = 1, step = 1),
-            numericInput("dl_epochs", "Epochs:", value = 50, min = 5, step = 5),
+            numericInput("dl_seed", "Random seed:", value = 1, min = 1, step = 1),
+            numericInput("dl_epochs", "Epochs:", value = 200, min = 5, step = 5),
             numericInput("dl_batch_size", "Batch size:", value = 32, min = 4, step = 4),
             numericInput("dl_hidden_layers", "Number of hidden layers:", value = 2, min = 1, step = 1),
             uiOutput("dl_hidden_units_ui"),
-            numericInput("dl_learning_rate", "Learning rate:", value = 0.001, min = 0.0001, step = 0.0001),
-            numericInput("dl_weight_decay", "Weight decay (L2):", value = 0.0001, min = 0, step = 0.0001),
+            numericInput("dl_learning_rate", "Learning rate:", value = 0.0005, min = 0.0001, step = 0.0001),
+            numericInput("dl_weight_decay", "Weight decay (L2):", value = 0.001, min = 0, step = 0.0001),
             uiOutput("dl_dropout_ui"),
             checkboxInput("dl_scale_target", "Scale numeric target (regression)", value = TRUE),
-            checkboxInput("dl_auto_arch", "Auto adjust hidden layer sizes", value = TRUE),
+            checkboxInput("dl_auto_arch", "Auto adjust hidden layer sizes", value = FALSE),
+            checkboxInput("dl_auto_tune", "Auto tune parameters", value = FALSE),
+            conditionalPanel(
+              condition = "input.dl_auto_tune == true",
+              numericInput("dl_tune_trials", "Auto tune trials:", value = 20, min = 2, max = 100, step = 1),
+              sliderInput("dl_validation_split", "Validation split inside training (%):", min = 10, max = 40, value = 20, step = 5)
+            ),
             actionButton("dl_run_training", "Train Deep Learning model")
           ),
           column(
@@ -1000,6 +1080,7 @@ ui <- fluidPage(
               plotOutput("dl_weight_plot", height = "250px")
             ),
             DT::DTOutput("dl_metrics_table"),
+            DT::DTOutput("dl_tune_table"),
             DT::DTOutput("dl_predictions_table")
           )
         )
@@ -1131,6 +1212,658 @@ load_file_into_table <- function(textarea_columns, textarea_rows, localsession) 
   showTab(inputId = "tabs", target = "GRAPH MODELS")
   showTab(inputId = "tabs", target = "JOBS")
   showTab(inputId = "tabs", target = "CONFIGURATIONS")
+}
+
+ugplot_geo_cache_dir <- function(accession) {
+  base_dir <- getwd()
+  if (basename(base_dir) == "R" && file.exists(file.path(dirname(base_dir), "DESCRIPTION"))) {
+    base_dir <- dirname(base_dir)
+  }
+  safe_accession <- gsub("[^A-Za-z0-9_.-]", "_", accession)
+  file.path(base_dir, "geo_downloads", safe_accession)
+}
+
+ugplot_geo_manifest_path <- function(cache_dir) {
+  file.path(cache_dir, "ugplot_geo_manifest.rds")
+}
+
+ugplot_geo_sample_metadata_path <- function(cache_dir, extension = "rds") {
+  file.path(cache_dir, paste0("ugplot_geo_sample_metadata.", extension))
+}
+
+ugplot_geo_append_log <- function(current_log, message) {
+  timestamp <- format(Sys.time(), "%H:%M:%S")
+  paste(c(current_log, paste0("[", timestamp, "] ", message)), collapse = "\n")
+}
+
+ugplot_format_bytes <- function(bytes) {
+  bytes <- suppressWarnings(as.numeric(bytes))
+  if (length(bytes) == 0 || is.na(bytes) || !is.finite(bytes) || bytes < 0) {
+    return("unknown")
+  }
+  units <- c("B", "KB", "MB", "GB", "TB")
+  unit_index <- 1
+  while (bytes >= 1024 && unit_index < length(units)) {
+    bytes <- bytes / 1024
+    unit_index <- unit_index + 1
+  }
+  paste0(round(bytes, if (unit_index == 1) 0 else 2), " ", units[[unit_index]])
+}
+
+ugplot_geo_size_bytes <- function(file_table) {
+  if (!is.data.frame(file_table) || nrow(file_table) == 0) {
+    return(numeric(0))
+  }
+  if ("SizeBytes" %in% names(file_table)) {
+    size_bytes <- suppressWarnings(as.numeric(file_table$SizeBytes))
+  } else {
+    size_bytes <- suppressWarnings(as.numeric(file_table$SizeMB) * 1024^2)
+  }
+  size_bytes
+}
+
+ugplot_geo_normalize_url <- function(url) {
+  sub("^ftp://ftp\\.ncbi\\.nlm\\.nih\\.gov/", "https://ftp.ncbi.nlm.nih.gov/", url)
+}
+
+ugplot_geo_gzip_valid <- function(path) {
+  if (!file.exists(path) || !grepl("\\.gz(\\.|$)", basename(path), ignore.case = TRUE)) {
+    return(TRUE)
+  }
+  gzip_path <- Sys.which("gzip")
+  if (nzchar(gzip_path)) {
+    return(system2(gzip_path, c("-t", path), stdout = FALSE, stderr = FALSE) == 0)
+  }
+  input <- gzfile(path, "rb")
+  on.exit(try(close(input), silent = TRUE), add = TRUE)
+  ok <- tryCatch({
+    repeat {
+      chunk <- readBin(input, what = "raw", n = 1024^2)
+      if (length(chunk) == 0) {
+        break
+      }
+    }
+    TRUE
+  }, warning = function(e) FALSE, error = function(e) FALSE)
+  isTRUE(ok)
+}
+
+ugplot_geo_remote_file_size <- function(url) {
+  url <- ugplot_geo_normalize_url(url)
+  if (!requireNamespace("curl", quietly = TRUE)) {
+    return(NA_real_)
+  }
+  tryCatch({
+    handle <- curl::new_handle(nobody = TRUE)
+    response <- curl::curl_fetch_memory(url, handle = handle)
+    headers <- rawToChar(response$headers)
+    content_length <- grep("^Content-Length:", strsplit(headers, "\r?\n")[[1]], value = TRUE, ignore.case = TRUE)
+    if (length(content_length) == 0) {
+      return(NA_real_)
+    }
+    as.numeric(trimws(sub("^Content-Length:\\s*", "", content_length[[length(content_length)]], ignore.case = TRUE)))
+  }, error = function(e) NA_real_)
+}
+
+ugplot_append_file <- function(source, destination, chunk_size = 8 * 1024^2) {
+  input <- file(source, "rb")
+  on.exit(close(input), add = TRUE)
+  output <- file(destination, "ab")
+  on.exit(close(output), add = TRUE)
+  repeat {
+    chunk <- readBin(input, what = "raw", n = chunk_size)
+    if (length(chunk) == 0) {
+      break
+    }
+    writeBin(chunk, output)
+  }
+}
+
+ugplot_geo_download_file <- function(url, destination, expected_size = NA_real_, progress_callback = NULL) {
+  url <- ugplot_geo_normalize_url(url)
+  dir.create(dirname(destination), recursive = TRUE, showWarnings = FALSE)
+  temp_destination <- paste0(destination, ".part")
+  resume_destination <- paste0(destination, ".resume")
+  expected_size <- suppressWarnings(as.numeric(expected_size))
+
+  if (file.exists(destination) && is.finite(expected_size) && file.info(destination)$size == expected_size && ugplot_geo_gzip_valid(destination)) {
+    return(list(status = "complete", path = destination, bytes = file.info(destination)$size))
+  }
+  if (file.exists(temp_destination) && is.finite(expected_size) && file.info(temp_destination)$size == expected_size && ugplot_geo_gzip_valid(temp_destination)) {
+    if (file.exists(destination)) {
+      unlink(destination)
+    }
+    file.rename(temp_destination, destination)
+    return(list(status = "completed_from_partial", path = destination, bytes = file.info(destination)$size))
+  }
+  if (file.exists(temp_destination) && is.finite(expected_size) && file.info(temp_destination)$size == expected_size && !ugplot_geo_gzip_valid(temp_destination)) {
+    unlink(temp_destination)
+  }
+  if (file.exists(temp_destination) && is.finite(expected_size) && file.info(temp_destination)$size > expected_size) {
+    stop(paste0(
+      "Partial file is larger than expected: ", temp_destination,
+      " (", ugplot_format_bytes(file.info(temp_destination)$size), " vs ",
+      ugplot_format_bytes(expected_size), "). Remove it manually before retrying."
+    ))
+  }
+
+  partial_start <- if (file.exists(temp_destination)) file.info(temp_destination)$size else 0
+  if (file.exists(resume_destination)) {
+    unlink(resume_destination)
+  }
+  if (requireNamespace("curl", quietly = TRUE)) {
+    handle_options <- list(
+      noprogress = FALSE,
+      progressfunction = function(download, upload) {
+        if (!is.null(progress_callback) && length(download) >= 2) {
+          progress_callback(partial_start + download[[2]], if (is.finite(expected_size)) expected_size else download[[1]])
+        }
+        TRUE
+      }
+    )
+    if (partial_start > 0) {
+      handle_options$resume_from_large <- partial_start
+    }
+    handle <- do.call(curl::new_handle, handle_options)
+    download_target <- if (partial_start > 0) resume_destination else temp_destination
+    download_error <- tryCatch({
+      curl::curl_fetch_disk(url, download_target, handle = handle)
+      NULL
+    }, error = function(e) e)
+    if (file.exists(resume_destination)) {
+      ugplot_append_file(resume_destination, temp_destination)
+      unlink(resume_destination)
+    }
+    if (!is.null(download_error)) {
+      if (file.exists(temp_destination) && is.finite(expected_size) && file.info(temp_destination)$size == expected_size && ugplot_geo_gzip_valid(temp_destination)) {
+        if (file.exists(destination)) {
+          unlink(destination)
+        }
+        file.rename(temp_destination, destination)
+        return(list(status = "completed_after_transfer_warning", path = destination, bytes = file.info(destination)$size))
+      }
+      partial_size <- if (file.exists(temp_destination)) file.info(temp_destination)$size else 0
+      stop(paste0(
+        conditionMessage(download_error),
+        ". Partial download saved: ", temp_destination,
+        " (", ugplot_format_bytes(partial_size), " of ", ugplot_format_bytes(expected_size), "). Click download again to resume."
+      ))
+    }
+  } else {
+    utils::download.file(url, temp_destination, mode = "wb", quiet = TRUE)
+  }
+  if (file.exists(temp_destination) && is.finite(expected_size) && file.info(temp_destination)$size < expected_size) {
+    stop(paste0(
+      "Partial download saved: ", temp_destination,
+      " (", ugplot_format_bytes(file.info(temp_destination)$size), " of ", ugplot_format_bytes(expected_size), "). Click download again to resume."
+    ))
+  }
+  if (file.exists(destination)) {
+    unlink(destination)
+  }
+  file.rename(temp_destination, destination)
+  if (!ugplot_geo_gzip_valid(destination)) {
+    invalid_size <- file.info(destination)$size
+    unlink(destination)
+    stop(paste0(
+      "Downloaded gzip failed integrity check and was deleted to save disk space: ",
+      destination, " (", ugplot_format_bytes(invalid_size),
+      "). Click download again to fetch a clean copy."
+    ))
+  }
+  list(status = if (partial_start > 0) "resumed" else "downloaded", path = destination, bytes = file.info(destination)$size)
+}
+
+ugplot_geo_decompressed_path <- function(path) {
+  if (grepl("\\.gz$", path, ignore.case = TRUE)) {
+    return(sub("\\.gz$", "", path, ignore.case = TRUE))
+  }
+  NA_character_
+}
+
+ugplot_geo_extract_gzip <- function(source, destination = ugplot_geo_decompressed_path(source),
+                                    chunk_size = 16 * 1024^2, progress_callback = NULL,
+                                    delete_source = TRUE) {
+  if (is.na(destination) || !nzchar(destination)) {
+    stop("Only .gz files can be extracted in this step.")
+  }
+  if (!file.exists(source)) {
+    stop(paste0("Compressed file not found: ", source))
+  }
+  if (!ugplot_geo_gzip_valid(source)) {
+    stop(paste0(
+      "Compressed file failed gzip integrity check. Re-download before extracting: ",
+      source
+    ))
+  }
+  if (file.exists(destination)) {
+    return(list(status = "already_extracted", path = destination, bytes = file.info(destination)$size))
+  }
+  temp_destination <- paste0(destination, ".part")
+  if (file.exists(temp_destination)) {
+    unlink(temp_destination)
+  }
+  input <- gzfile(source, "rb")
+  on.exit(try(close(input), silent = TRUE), add = TRUE)
+  output <- file(temp_destination, "wb")
+  on.exit(try(close(output), silent = TRUE), add = TRUE)
+  total_in <- file.info(source)$size
+  read_in <- 0
+  repeat {
+    chunk <- readBin(input, what = "raw", n = chunk_size)
+    if (length(chunk) == 0) {
+      break
+    }
+    writeBin(chunk, output)
+    read_in <- min(total_in, read_in + length(chunk))
+    if (!is.null(progress_callback)) {
+      progress_callback(read_in, total_in)
+    }
+  }
+  close(output)
+  close(input)
+  file.rename(temp_destination, destination)
+  if (isTRUE(delete_source) && file.exists(destination) && file.info(destination)$size > 0 && file.exists(source)) {
+    unlink(source)
+  }
+  list(status = "extracted", path = destination, bytes = file.info(destination)$size)
+}
+
+ugplot_geo_local_status <- function(file_name, cache_dir, expected_size = NA_real_) {
+  final_path <- file.path(cache_dir, file_name)
+  partial_path <- paste0(final_path, ".part")
+  decompressed_path <- ugplot_geo_decompressed_path(final_path)
+  expected_size <- suppressWarnings(as.numeric(expected_size))
+
+  if (!is.na(decompressed_path) && file.exists(decompressed_path)) {
+    return(list(
+      status = "extracted",
+      size = file.info(decompressed_path)$size,
+      path = decompressed_path
+    ))
+  }
+  if (file.exists(final_path)) {
+    final_size <- file.info(final_path)$size
+    if (!ugplot_geo_gzip_valid(final_path)) {
+      unlink(final_path)
+      return(list(status = "deleted_corrupt", size = NA_real_, path = final_path))
+    }
+    if (!is.finite(expected_size) || final_size == expected_size) {
+      return(list(status = "downloaded", size = final_size, path = final_path))
+    }
+    return(list(status = "size_mismatch", size = final_size, path = final_path))
+  }
+  if (file.exists(partial_path)) {
+    partial_size <- file.info(partial_path)$size
+    if (is.finite(expected_size) && partial_size == expected_size) {
+      if (!ugplot_geo_gzip_valid(partial_path)) {
+        unlink(partial_path)
+        return(list(status = "deleted_corrupt_partial", size = NA_real_, path = final_path))
+      }
+      if (file.exists(final_path)) {
+        unlink(final_path)
+      }
+      file.rename(partial_path, final_path)
+      return(list(status = "downloaded", size = file.info(final_path)$size, path = final_path))
+    }
+    return(list(status = "partial", size = partial_size, path = partial_path))
+  }
+  list(status = "missing", size = NA_real_, path = final_path)
+}
+
+ugplot_geo_annotate_remote_files <- function(remote_files, cache_dir) {
+  if (!is.data.frame(remote_files) || nrow(remote_files) == 0) {
+    return(remote_files)
+  }
+  expected_sizes <- ugplot_geo_size_bytes(remote_files)
+  local_info <- lapply(seq_len(nrow(remote_files)), function(i) {
+    ugplot_geo_local_status(remote_files$File[[i]], cache_dir, expected_sizes[[i]])
+  })
+  remote_files$LocalStatus <- vapply(local_info, function(x) x$status, character(1))
+  remote_files$LocalSizeBytes <- vapply(local_info, function(x) suppressWarnings(as.numeric(x$size)), numeric(1))
+  remote_files$LocalSize <- vapply(local_info, function(x) ugplot_format_bytes(x$size), character(1))
+  remote_files$LocalPath <- vapply(local_info, function(x) x$path, character(1))
+  remote_files$NeedsDownload <- !(remote_files$LocalStatus %in% c("downloaded", "extracted"))
+  remote_files
+}
+
+ugplot_geo_write_manifest <- function(cache_dir, accession, remote_files) {
+  dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+  manifest <- list(
+    accession = accession,
+    updated_at = as.character(Sys.time()),
+    files = remote_files
+  )
+  saveRDS(manifest, ugplot_geo_manifest_path(cache_dir))
+}
+
+ugplot_geo_remote_supp_files <- function(accession) {
+  metadata <- GEOquery::getGEOfile(accession, amount = "quick", destdir = tempdir())
+  supp_files <- character(0)
+  if (is.character(metadata) && length(metadata) > 0 && file.exists(metadata[[1]])) {
+    soft_lines <- readLines(metadata[[1]], warn = FALSE)
+    supp_lines <- grep("^!Series_supplementary_file", soft_lines, value = TRUE)
+    supp_files <- trimws(sub("^!Series_supplementary_file\\s*=\\s*", "", supp_lines))
+  } else {
+    supp_files <- tryCatch(
+      GEOquery::Meta(metadata)$supplementary_file,
+      error = function(e) character(0)
+    )
+  }
+  supp_files <- unique(as.character(supp_files))
+  supp_files <- supp_files[nzchar(supp_files) & !is.na(supp_files)]
+  if (length(supp_files) == 0) {
+    return(data.frame())
+  }
+  supp_files <- ugplot_geo_normalize_url(supp_files)
+  file_names <- basename(supp_files)
+  lower_names <- tolower(file_names)
+  is_idat <- grepl("\\.idat(\\.gz)?$", lower_names)
+  is_table <- grepl("\\.(csv|tsv|txt|csv\\.gz|tsv\\.gz|txt\\.gz)$", lower_names)
+  is_metadata <- grepl("\\.(xlsx|xls|soft|soft\\.gz)$", lower_names)
+  is_archive <- grepl("\\.(tar|tar\\.gz|tgz|zip)$", lower_names)
+  methylation_hint <- grepl("beta|methyl|meth|450k|850k|epic|matrix|processed|normalized|normalised", lower_names)
+  size_bytes <- unname(vapply(supp_files, ugplot_geo_remote_file_size, numeric(1)))
+  data.frame(
+    File = file_names,
+    URL = supp_files,
+    SizeBytes = size_bytes,
+    SizeMB = round(size_bytes / (1024^2), 3),
+    Size = vapply(size_bytes, ugplot_format_bytes, character(1)),
+    Type = ifelse(is_idat, "IDAT", ifelse(is_table, "table", ifelse(is_metadata, "metadata", ifelse(is_archive, "archive", "other")))),
+    MethylationHint = methylation_hint,
+    Loadable = is_table,
+    stringsAsFactors = FALSE
+  )
+}
+
+ugplot_geo_clean_metadata_name <- function(x) {
+  x <- tolower(trimws(as.character(x)))
+  x <- gsub("[^a-z0-9]+", "_", x)
+  x <- gsub("^_+|_+$", "", x)
+  ifelse(nzchar(x), x, "characteristic")
+}
+
+ugplot_geo_parse_characteristics <- function(metadata) {
+  characteristic_cols <- grep("^characteristics", names(metadata), value = TRUE, ignore.case = TRUE)
+  if (length(characteristic_cols) == 0 || nrow(metadata) == 0) {
+    return(metadata)
+  }
+
+  parsed <- vector("list", nrow(metadata))
+  all_keys <- character(0)
+  for (i in seq_len(nrow(metadata))) {
+    row_values <- as.character(unlist(metadata[i, characteristic_cols, drop = FALSE], use.names = FALSE))
+    row_values <- row_values[nzchar(row_values) & !is.na(row_values)]
+    row_values <- unique(row_values)
+    row_map <- list()
+    for (value in row_values) {
+      if (!grepl(":", value, fixed = TRUE)) {
+        next
+      }
+      key <- ugplot_geo_clean_metadata_name(sub(":.*$", "", value))
+      val <- trimws(sub("^[^:]+:\\s*", "", value))
+      if (!nzchar(key) || !nzchar(val)) {
+        next
+      }
+      if (!is.null(row_map[[key]]) && !identical(row_map[[key]], val)) {
+        row_map[[key]] <- paste(unique(c(row_map[[key]], val)), collapse = "; ")
+      } else {
+        row_map[[key]] <- val
+      }
+      all_keys <- union(all_keys, key)
+    }
+    parsed[[i]] <- row_map
+  }
+
+  output_keys <- all_keys
+  conflicts <- output_keys %in% names(metadata)
+  if (any(conflicts)) {
+    output_keys[conflicts] <- make.unique(c(names(metadata), output_keys[conflicts]))[-seq_along(names(metadata))]
+  }
+  names(output_keys) <- all_keys
+  for (key in all_keys) {
+    output_key <- output_keys[[key]]
+    metadata[[output_key]] <- vapply(parsed, function(row_map) {
+      value <- row_map[[key]]
+      if (is.null(value)) NA_character_ else value
+    }, character(1))
+  }
+  metadata
+}
+
+ugplot_geo_fetch_sample_metadata <- function(accession, cache_dir) {
+  if (!requireNamespace("GEOquery", quietly = TRUE)) {
+    stop("Package 'GEOquery' is required to fetch sample metadata.")
+  }
+  if (!requireNamespace("Biobase", quietly = TRUE)) {
+    stop("Package 'Biobase' is required to read GEO sample metadata.")
+  }
+  dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+  geo_sets <- GEOquery::getGEO(accession, GSEMatrix = TRUE, getGPL = FALSE, destdir = cache_dir)
+  if (!is.list(geo_sets)) {
+    geo_sets <- list(geo_sets)
+  }
+  metadata_list <- lapply(seq_along(geo_sets), function(i) {
+    pdata <- as.data.frame(Biobase::pData(geo_sets[[i]]), stringsAsFactors = FALSE, check.names = FALSE)
+    if (nrow(pdata) == 0) {
+      return(data.frame())
+    }
+    pdata <- ugplot_geo_parse_characteristics(pdata)
+    pdata$sample_id <- rownames(pdata)
+    pdata$gse_matrix <- names(geo_sets)[[i]] %||% paste0("matrix_", i)
+    pdata <- pdata[, c("sample_id", "gse_matrix", setdiff(names(pdata), c("sample_id", "gse_matrix"))), drop = FALSE]
+    rownames(pdata) <- NULL
+    pdata
+  })
+  metadata <- do.call(rbind, metadata_list)
+  if (!is.data.frame(metadata) || nrow(metadata) == 0) {
+    stop("No sample metadata table was returned by GEOquery.")
+  }
+  saveRDS(metadata, ugplot_geo_sample_metadata_path(cache_dir, "rds"))
+  utils::write.csv(metadata, ugplot_geo_sample_metadata_path(cache_dir, "csv"), row.names = FALSE)
+  metadata
+}
+
+ugplot_geo_sample_matrix_id <- function(metadata) {
+  if (!is.data.frame(metadata) || nrow(metadata) == 0) {
+    return(character(0))
+  }
+  source <- if ("title" %in% names(metadata)) metadata$title else metadata$sample_id
+  ids <- trimws(sub("\\s+.*$", "", as.character(source)))
+  ids[!nzchar(ids) | is.na(ids)] <- as.character(metadata$sample_id[!nzchar(ids) | is.na(ids)])
+  ids
+}
+
+ugplot_geo_target_candidates <- function(metadata) {
+  if (!is.data.frame(metadata) || nrow(metadata) == 0) {
+    return(character(0))
+  }
+  excluded <- c("sample_id", "gse_matrix", "title", "geo_accession", "status", "submission_date", "last_update_date")
+  candidates <- setdiff(names(metadata), excluded)
+  candidates <- candidates[vapply(metadata[candidates], function(x) {
+    values <- unique(na.omit(as.character(x)))
+    length(values) >= 2 && length(values) < nrow(metadata)
+  }, logical(1))]
+  priority <- grep("age|sex|gender|disease|status|treatment|response|case|control|group|phenotype", candidates, value = TRUE, ignore.case = TRUE)
+  unique(c(priority, candidates))
+}
+
+ugplot_geo_matrix_files <- function(cache_dir) {
+  files <- list.files(cache_dir, pattern = "\\.(txt|tsv|csv)$", full.names = TRUE)
+  files <- files[!grepl("series_matrix|sample_metadata|spearman|manifest|metadata", basename(files), ignore.case = TRUE)]
+  files <- files[file.info(files)$size > 0]
+  files[vapply(files, function(path) {
+    header <- tryCatch(readLines(path, n = 1, warn = FALSE), error = function(e) character(0))
+    length(header) == 1 && grepl("^ID_REF\\t", header)
+  }, logical(1))]
+}
+
+ugplot_geo_matrix_sample_map <- function(matrix_files, metadata) {
+  sample_ids <- ugplot_geo_sample_matrix_id(metadata)
+  metadata_lookup <- stats::setNames(seq_len(nrow(metadata)), sample_ids)
+  do.call(rbind, lapply(matrix_files, function(path) {
+    header <- strsplit(readLines(path, n = 1, warn = FALSE), "\t", fixed = TRUE)[[1]]
+    value_cols <- which(header != "ID_REF" & !grepl("\\.1$", header))
+    matrix_ids <- header[value_cols]
+    metadata_idx <- unname(metadata_lookup[matrix_ids])
+    matched <- !is.na(metadata_idx)
+    if (!any(matched)) {
+      return(data.frame(
+        File = character(),
+        Path = character(),
+        ColumnIndex = integer(),
+        MatrixSample = character(),
+        MetadataRow = integer(),
+        SampleID = character(),
+        stringsAsFactors = FALSE
+      ))
+    }
+    data.frame(
+      File = basename(path),
+      Path = path,
+      ColumnIndex = value_cols[matched],
+      MatrixSample = matrix_ids[matched],
+      MetadataRow = metadata_idx[matched],
+      SampleID = metadata$sample_id[metadata_idx[matched]],
+      stringsAsFactors = FALSE
+    )
+  }))
+}
+
+ugplot_geo_spearman_scan <- function(matrix_files, metadata, target_column,
+                                     max_cpgs = 0, top_n = 1000,
+                                     progress_callback = NULL) {
+  if (!target_column %in% names(metadata)) {
+    stop("Selected target column is not present in sample metadata.")
+  }
+  target <- suppressWarnings(as.numeric(as.character(metadata[[target_column]])))
+  if (all(is.na(target))) {
+    stop("Spearman scan currently requires a numeric target column.")
+  }
+  sample_map <- ugplot_geo_matrix_sample_map(matrix_files, metadata)
+  if (!is.data.frame(sample_map) || nrow(sample_map) == 0) {
+    stop("No matrix columns could be matched to sample metadata. Check sample IDs and GEO metadata titles.")
+  }
+  target_by_matrix <- target[sample_map$MetadataRow]
+  if (sum(!is.na(target_by_matrix)) < 3) {
+    stop("At least three matched samples with numeric target values are required.")
+  }
+
+  file_maps <- split(sample_map, sample_map$Path)
+  file_states <- lapply(names(file_maps), function(path) {
+    con <- file(path, "r")
+    header <- strsplit(readLines(con, n = 1, warn = FALSE), "\t", fixed = TRUE)[[1]]
+    list(path = path, con = con, cols = file_maps[[path]]$ColumnIndex, metadata_rows = file_maps[[path]]$MetadataRow, header = header)
+  })
+  on.exit(lapply(file_states, function(state) try(close(state$con), silent = TRUE)), add = TRUE)
+
+  max_cpgs <- suppressWarnings(as.integer(max_cpgs))
+  if (!is.finite(max_cpgs) || max_cpgs < 0) {
+    max_cpgs <- 0
+  }
+  top_n <- max(1, suppressWarnings(as.integer(top_n)))
+  results <- data.frame(CpG = character(), SpearmanRho = numeric(), PValue = numeric(), N = integer(), AbsRho = numeric(), stringsAsFactors = FALSE)
+  scanned <- 0L
+
+  repeat {
+    lines <- lapply(file_states, function(state) readLines(state$con, n = 1, warn = FALSE))
+    if (any(lengths(lines) == 0)) {
+      break
+    }
+    parts <- lapply(lines, function(line) strsplit(line, "\t", fixed = TRUE)[[1]])
+    cpg <- parts[[1]][[1]]
+    values <- rep(NA_real_, nrow(metadata))
+    for (i in seq_along(file_states)) {
+      state <- file_states[[i]]
+      numeric_values <- suppressWarnings(as.numeric(parts[[i]][state$cols]))
+      values[state$metadata_rows] <- numeric_values
+    }
+    keep <- !is.na(values) & !is.na(target)
+    if (sum(keep) >= 3) {
+      test <- suppressWarnings(stats::cor.test(values[keep], target[keep], method = "spearman", exact = FALSE))
+      results <- rbind(results, data.frame(
+        CpG = cpg,
+        SpearmanRho = unname(test$estimate),
+        PValue = test$p.value,
+        N = sum(keep),
+        AbsRho = abs(unname(test$estimate)),
+        stringsAsFactors = FALSE
+      ))
+      if (nrow(results) > top_n * 2) {
+        results <- results[order(-results$AbsRho, results$PValue), , drop = FALSE]
+        results <- utils::head(results, top_n)
+      }
+    }
+    scanned <- scanned + 1L
+    if (!is.null(progress_callback) && (scanned %% 1000L == 0L)) {
+      progress_callback(scanned)
+    }
+    if (max_cpgs > 0 && scanned >= max_cpgs) {
+      break
+    }
+  }
+  if (nrow(results) == 0) {
+    stop("No CpG had enough matched numeric values for Spearman correlation.")
+  }
+  results <- results[order(-results$AbsRho, results$PValue), , drop = FALSE]
+  rownames(results) <- NULL
+  attr(results, "scanned_cpgs") <- scanned
+  attr(results, "matched_samples") <- sum(!is.na(target_by_matrix))
+  utils::head(results, top_n)
+}
+
+ugplot_geo_list_candidate_files <- function(accession, cache_dir) {
+  files <- list.files(cache_dir, recursive = TRUE, full.names = TRUE, all.files = FALSE)
+  files <- files[basename(files) != "ugplot_geo_manifest.rds"]
+  old_corrupt_files <- files[grepl("\\.corrupt$", basename(files), ignore.case = TRUE)]
+  if (length(old_corrupt_files) > 0) {
+    unlink(old_corrupt_files)
+    files <- setdiff(files, old_corrupt_files)
+  }
+  stale_extract_partials <- files[grepl("\\.(csv|tsv|txt)\\.part$", basename(files), ignore.case = TRUE)]
+  if (length(stale_extract_partials) > 0) {
+    unlink(stale_extract_partials)
+    files <- setdiff(files, stale_extract_partials)
+  }
+  if (length(files) == 0) {
+    return(data.frame())
+  }
+  info <- file.info(files)
+  lower_names <- tolower(basename(files))
+  is_partial <- grepl("\\.part$|\\.resume$", lower_names)
+  is_idat <- grepl("\\.idat(\\.gz)?$", lower_names)
+  is_table <- grepl("\\.(csv|tsv|txt|csv\\.gz|tsv\\.gz|txt\\.gz)$", lower_names)
+  is_metadata <- grepl("\\.(xlsx|xls|soft|soft\\.gz)$", lower_names)
+  is_archive <- grepl("\\.(tar|tar\\.gz|tgz|zip)$", lower_names)
+  methylation_hint <- grepl("beta|methyl|meth|450k|850k|epic|matrix|processed|normalized|normalised", lower_names)
+  data.frame(
+    File = basename(files),
+    Path = files,
+    SizeMB = round(info$size / (1024^2), 3),
+    Type = ifelse(is_partial, "partial", ifelse(is_idat, "IDAT", ifelse(is_table, "table", ifelse(is_metadata, "metadata", ifelse(is_archive, "archive", "other"))))),
+    MethylationHint = methylation_hint,
+    Loadable = is_table & !is_partial,
+    stringsAsFactors = FALSE
+  )
+}
+
+ugplot_read_geo_table <- function(path, use_first_column_names = TRUE) {
+  lower_path <- tolower(path)
+  sep <- if (grepl("\\.csv(\\.gz)?$", lower_path)) "," else "\t"
+  data <- utils::read.table(
+    path,
+    header = TRUE,
+    sep = sep,
+    row.names = if (isTRUE(use_first_column_names)) 1 else NULL,
+    dec = ".",
+    stringsAsFactors = FALSE,
+    strip.white = TRUE,
+    check.names = FALSE,
+    comment.char = "",
+    quote = "\""
+  )
+  as.data.frame(data, stringsAsFactors = FALSE, check.names = FALSE)
 }
 
 build_missing_mask <- function(df, missing_definition = c("empty", "na"), zero_exceptions = character(0)) {
@@ -1997,6 +2730,27 @@ server <- function(input, output, session) {
   gm_nodes_metrics <- reactiveVal(data.frame())
   gm_edges_metrics <- reactiveVal(data.frame())
   pending_duplicate_row_names_upload <- reactiveVal(NULL)
+  geo_files <- reactiveVal(data.frame())
+  geo_remote_files <- reactiveVal(data.frame())
+  geo_sample_metadata <- reactiveVal(data.frame())
+  geo_spearman_results <- reactiveVal(data.frame())
+  geo_status <- reactiveVal("Waiting for GEO accession.")
+  geo_stage <- reactiveVal(list(
+    step = "Step 1",
+    title = "Inspect a GEO accession",
+    message = "Enter a GEO accession and inspect the available supplementary files."
+  ))
+  geo_download_progress <- reactiveVal(list(
+    type = "download",
+    percent = 0,
+    file = "Waiting",
+    detail = "No download running.",
+    folder = ""
+  ))
+  geo_preview_data <- reactiveVal(data.frame())
+  shinyjs::disable("geo_fetch_files")
+  shinyjs::disable("geo_extract_files")
+  shinyjs::disable("geo_fetch_metadata")
 
   finish_uploaded_dataset_load <- function(data) {
     df_pre <<- data
@@ -2004,6 +2758,847 @@ server <- function(input, output, session) {
     updateTextAreaInput(session, "textarea_columns", value = paste(names(df_pre), collapse = "\n"))
     updateTextAreaInput(session, "textarea_rows", value = paste(rownames(df_pre), collapse = "\n"))
   }
+
+  output$geo_import_status <- renderText({
+    geo_status()
+  })
+
+  output$geo_stage_status <- renderUI({
+    stage <- geo_stage()
+    tags$div(class = "geo-status-card",
+      tags$div(class = "geo-status-title", paste(stage$step, "-", stage$title)),
+      tags$div(stage$message)
+    )
+  })
+
+  render_geo_progress <- function(progress) {
+    tags$div(
+      tags$div(class = "geo-progress-shell",
+        tags$div(
+          id = "geoProgressBar",
+          class = "geo-progress-bar",
+          role = "progressbar",
+          `aria-valuemin` = "0",
+          `aria-valuemax` = "100",
+          `aria-valuenow` = round(progress$percent %||% 0),
+          style = paste0("width: ", round(progress$percent %||% 0), "%;")
+        )
+      ),
+      tags$div(class = "geo-progress-meta",
+        tags$strong(id = "geoProgressText", paste0(round(progress$percent %||% 0), "%")),
+        tags$span(" - "),
+        tags$span(id = "geoProgressFile", progress$file %||% "Waiting"),
+        tags$br(),
+        tags$span(id = "geoProgressDetail", progress$detail %||% ""),
+        if (nzchar(progress$folder %||% "")) tags$div(paste0("Folder: ", progress$folder)) else NULL
+      )
+    )
+  }
+
+  output$geo_download_progress_ui <- renderUI({
+    progress <- geo_download_progress()
+    if (identical(progress$type %||% "download", "extract")) {
+      return(NULL)
+    }
+    render_geo_progress(progress)
+  })
+
+  output$geo_extract_progress_ui <- renderUI({
+    progress <- geo_download_progress()
+    if (!identical(progress$type %||% "download", "extract")) {
+      return(NULL)
+    }
+    render_geo_progress(progress)
+  })
+
+  output$geo_files_table <- DT::renderDT({
+    files <- geo_files()
+    remote_files <- geo_remote_files()
+    if (is.data.frame(remote_files) && nrow(remote_files) > 0) {
+      if (!all(c("LocalStatus", "LocalSize", "NeedsDownload") %in% names(remote_files))) {
+        remote_files <- ugplot_geo_annotate_remote_files(remote_files, ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO")))
+      }
+      display <- remote_files[, c("File", "Size", "Type", "MethylationHint", "Loadable", "LocalStatus", "LocalSize"), drop = FALSE]
+      display$Action <- ifelse(
+        display$LocalStatus == "extracted",
+        "Extracted",
+        ifelse(display$LocalStatus == "downloaded", "Ready to extract",
+        ifelse(display$LocalStatus %in% c("deleted_corrupt", "deleted_corrupt_partial"), "Deleted invalid local copy; download again",
+        ifelse(display$LocalStatus == "partial", "Resume", ifelse(display$Loadable, "Download/load", "Skip unless raw preprocessing is needed")))
+        )
+      )
+      return(DT::datatable(display, options = list(pageLength = 8, scrollX = TRUE), rownames = FALSE))
+    }
+    req(is.data.frame(files), nrow(files) > 0)
+    display <- files[, c("File", "SizeMB", "Type", "MethylationHint", "Loadable", "Path"), drop = FALSE]
+    display$Size <- vapply(display$SizeMB * 1024^2, ugplot_format_bytes, character(1))
+    display <- display[, c("File", "Size", "Type", "MethylationHint", "Loadable", "Path"), drop = FALSE]
+    DT::datatable(display, options = list(pageLength = 8, scrollX = TRUE), rownames = FALSE)
+  })
+
+  output$geo_download_summary <- renderUI({
+    remote_files <- geo_remote_files()
+    local_files <- geo_files()
+    if (!is.data.frame(remote_files) || nrow(remote_files) == 0) {
+      if (is.data.frame(local_files) && nrow(local_files) > 0) {
+        return(tags$div(
+          tags$p(paste0("Local files: ", nrow(local_files), " file(s), ", ugplot_format_bytes(sum(local_files$SizeMB, na.rm = TRUE) * 1024^2))),
+          tags$p(paste0("Loadable tables: ", sum(local_files$Loadable))),
+          tags$p(paste0("Folder: ", unique(dirname(local_files$Path))[1]))
+        ))
+      }
+      return(tags$p("Inspect a GEO accession to preview supplementary files before downloading."))
+    }
+    if (!"NeedsDownload" %in% names(remote_files)) {
+      remote_files$NeedsDownload <- TRUE
+    }
+    known_size <- sum(ugplot_geo_size_bytes(remote_files), na.rm = TRUE)
+    unknown_size_n <- sum(is.na(ugplot_geo_size_bytes(remote_files)))
+    selected_files <- if (isTRUE(input$geo_download_loadable_only)) {
+      remote_files[remote_files$Loadable, , drop = FALSE]
+    } else {
+      remote_files
+    }
+    pending_files <- selected_files[selected_files$NeedsDownload, , drop = FALSE]
+    tags$div(
+      tags$p(paste0("Found: ", nrow(remote_files), " file(s), ", ugplot_format_bytes(known_size), if (unknown_size_n > 0) paste0(" + ", unknown_size_n, " unknown-size file(s)") else "")),
+      tags$p(paste0("Selected: ", nrow(selected_files), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(selected_files), na.rm = TRUE)))),
+      tags$p(paste0("Still needed: ", nrow(pending_files), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(pending_files), na.rm = TRUE)))),
+      tags$p(paste0("Folder: ", ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO"))))
+    )
+  })
+
+  output$geo_metadata_summary <- renderUI({
+    metadata <- geo_sample_metadata()
+    accession <- trimws(input$geo_accession %||% "GEO")
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    if (!is.data.frame(metadata) || nrow(metadata) == 0) {
+      cached_path <- ugplot_geo_sample_metadata_path(cache_dir, "rds")
+      if (file.exists(cached_path)) {
+        return(tags$div(
+          tags$p("Cached sample metadata is available locally."),
+          tags$p(paste0("File: ", cached_path))
+        ))
+      }
+      return(tags$p("Fetch sample metadata before building an analysis table."))
+    }
+    likely_targets <- grep("age|sex|gender|disease|status|treatment|response|case|control|group|phenotype", names(metadata), value = TRUE, ignore.case = TRUE)
+    tags$div(
+      tags$p(paste0("Samples: ", nrow(metadata), "; metadata columns: ", ncol(metadata), ".")),
+      if (length(likely_targets) > 0) {
+        tags$p(paste0("Likely analysis fields: ", paste(utils::head(likely_targets, 8), collapse = ", "), if (length(likely_targets) > 8) "..." else ""))
+      } else {
+        tags$p("No obvious phenotype field detected yet; inspect the table.")
+      },
+      tags$p(paste0("Saved in: ", cache_dir))
+    )
+  })
+
+  output$geo_file_selector <- renderUI({
+    files <- geo_files()
+    if (!is.data.frame(files) || nrow(files) == 0) {
+      return(tags$p("No GEO files loaded yet."))
+    }
+    loadable <- files[files$Loadable, , drop = FALSE]
+    if (nrow(loadable) == 0) {
+      return(tags$p("No directly loadable processed table found. IDAT files require a separate preprocessing pipeline."))
+    }
+    large_loadable <- loadable[loadable$SizeMB > 500, , drop = FALSE]
+    if (nrow(large_loadable) > 0) {
+      return(tags$div(
+        tags$p("Downloaded/extracted GEO matrices are too large to load directly into ugPlot."),
+        tags$p("Use the extraction step first; the next ugPlot step should summarize/subset these matrices before loading.")
+      ))
+    }
+    choices <- stats::setNames(seq_len(nrow(loadable)), paste0(loadable$File, " (", loadable$SizeMB, " MB)"))
+    selectInput("geo_selected_file", "Processed methylation table:", choices = choices, selected = choices[[1]])
+  })
+
+  output$geo_preview_table <- DT::renderDT({
+    preview <- geo_preview_data()
+    req(is.data.frame(preview), nrow(preview) > 0)
+    DT::datatable(utils::head(preview, 10), options = list(pageLength = 5, scrollX = TRUE), rownames = TRUE)
+  })
+
+  output$geo_metadata_table <- DT::renderDT({
+    metadata <- geo_sample_metadata()
+    req(is.data.frame(metadata), nrow(metadata) > 0)
+    display_cols <- c(
+      intersect(c("sample_id", "title", "geo_accession", "source_name_ch1", "organism_ch1"), names(metadata)),
+      setdiff(names(metadata), c("sample_id", "title", "geo_accession", "source_name_ch1", "organism_ch1"))
+    )
+    DT::datatable(metadata[, display_cols, drop = FALSE], options = list(pageLength = 8, scrollX = TRUE), rownames = FALSE)
+  })
+
+  output$geo_target_selector <- renderUI({
+    metadata <- geo_sample_metadata()
+    if (!is.data.frame(metadata) || nrow(metadata) == 0) {
+      return(tags$p("Fetch sample metadata first to choose a target column."))
+    }
+    candidates <- ugplot_geo_target_candidates(metadata)
+    if (length(candidates) == 0) {
+      return(tags$p("No usable target-like metadata column was detected. Inspect the sample metadata table."))
+    }
+    selected <- if ("age" %in% candidates) "age" else candidates[[1]]
+    selectInput("geo_target_column", "Target metadata column:", choices = candidates, selected = selected)
+  })
+
+  output$geo_spearman_table <- DT::renderDT({
+    results <- geo_spearman_results()
+    req(is.data.frame(results), nrow(results) > 0)
+    display <- results
+    display$SpearmanRho <- round(display$SpearmanRho, 5)
+    display$PValue <- signif(display$PValue, 5)
+    display$AbsRho <- round(display$AbsRho, 5)
+    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  })
+
+  observeEvent(input$geo_download_loadable_only, {
+    remote_files <- geo_remote_files()
+    accession <- trimws(input$geo_accession %||% "")
+    if (!is.data.frame(remote_files) || nrow(remote_files) == 0 || !nzchar(accession)) {
+      return()
+    }
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
+    geo_remote_files(remote_files)
+    selected_files <- if (isTRUE(input$geo_download_loadable_only)) {
+      remote_files[remote_files$Loadable, , drop = FALSE]
+    } else {
+      remote_files
+    }
+    pending_files <- selected_files[selected_files$NeedsDownload, , drop = FALSE]
+    if (nrow(pending_files) == 0) {
+      shinyjs::disable("geo_fetch_files")
+      if (any(selected_files$LocalStatus == "downloaded" & selected_files$Loadable & grepl("\\.gz$", selected_files$File, ignore.case = TRUE))) {
+        shinyjs::enable("geo_extract_files")
+      } else {
+        shinyjs::disable("geo_extract_files")
+      }
+      geo_stage(list(step = "Step 5", title = "Files already local", message = "All selected matrix files are already available locally. Extract compressed matrices next."))
+    } else {
+      shinyjs::enable("geo_fetch_files")
+      shinyjs::disable("geo_extract_files")
+      geo_stage(list(step = "Step 3", title = "Review matrix download plan", message = paste0("Still needed: ", nrow(pending_files), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(pending_files), na.rm = TRUE)), ".")))
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$geo_inspect_files, {
+    accession <- trimws(input$geo_accession %||% "")
+    if (!nzchar(accession)) {
+      geo_status("Please enter a GEO accession, for example GSE87571.")
+      geo_stage(list(step = "Step 1", title = "Missing accession", message = "Enter a GEO accession before inspecting files."))
+      return()
+    }
+    if (!requireNamespace("GEOquery", quietly = TRUE)) {
+      geo_status("Package 'GEOquery' is not installed. Install it with BiocManager::install('GEOquery') before using GEO import.")
+      geo_stage(list(step = "Step 1", title = "GEOquery is missing", message = "Install GEOquery before using GEO import."))
+      return()
+    }
+    geo_files(data.frame())
+    geo_sample_metadata(data.frame())
+    geo_preview_data(data.frame())
+    geo_status(ugplot_geo_append_log("", paste0("Inspecting GEO metadata for ", accession, "...")))
+    geo_stage(list(step = "Step 1", title = "Inspecting GEO", message = paste0("Reading metadata for ", accession, " and checking supplementary file sizes.")))
+    geo_download_progress(list(percent = 0, file = "Waiting", detail = "No download running.", folder = ugplot_geo_cache_dir(accession)))
+    tryCatch({
+      remote_files <- ugplot_geo_remote_supp_files(accession)
+      cache_dir <- ugplot_geo_cache_dir(accession)
+      cached_metadata_path <- ugplot_geo_sample_metadata_path(cache_dir, "rds")
+      if (file.exists(cached_metadata_path)) {
+        cached_metadata <- tryCatch(readRDS(cached_metadata_path), error = function(e) data.frame())
+        if (is.data.frame(cached_metadata) && nrow(cached_metadata) > 0) {
+          geo_sample_metadata(cached_metadata)
+          geo_status(ugplot_geo_append_log(geo_status(), paste0("Loaded cached sample metadata: ", nrow(cached_metadata), " samples.")))
+        }
+      }
+      remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
+      ugplot_geo_write_manifest(cache_dir, accession, remote_files)
+      geo_remote_files(remote_files)
+      local_files <- ugplot_geo_list_candidate_files(accession, cache_dir)
+      geo_files(local_files)
+      if (nrow(remote_files) == 0) {
+        geo_status(ugplot_geo_append_log(geo_status(), paste0("No supplementary files listed for ", accession, ".")))
+        geo_stage(list(step = "Step 2", title = "No supplementary files", message = paste0("No downloadable supplementary files were listed for ", accession, ".")))
+        shinyjs::disable("geo_fetch_files")
+      } else {
+        selected_files <- if (isTRUE(input$geo_download_loadable_only)) {
+          remote_files[remote_files$Loadable, , drop = FALSE]
+        } else {
+          remote_files
+        }
+        pending_files <- selected_files[selected_files$NeedsDownload, , drop = FALSE]
+        selected_size <- sum(ugplot_geo_size_bytes(selected_files), na.rm = TRUE)
+        geo_status(ugplot_geo_append_log(
+          geo_status(),
+          paste0(
+            "Found ", nrow(remote_files), " remote supplementary files: ",
+            ugplot_format_bytes(sum(ugplot_geo_size_bytes(remote_files), na.rm = TRUE)), " known size, ",
+            sum(remote_files$Loadable), " processed table candidates, ",
+            sum(remote_files$Type == "IDAT"), " IDAT files."
+          )
+        ))
+        geo_status(ugplot_geo_append_log(geo_status(), "Review the table, then click Download supplementary files if it looks correct."))
+        shinyjs::enable("geo_fetch_metadata")
+        geo_stage(list(
+          step = if (is.data.frame(geo_sample_metadata()) && nrow(geo_sample_metadata()) > 0) {
+            if (nrow(pending_files) == 0) "Step 5" else "Step 3"
+          } else {
+            "Step 2"
+          },
+          title = if (!is.data.frame(geo_sample_metadata()) || nrow(geo_sample_metadata()) == 0) {
+            "Fetch sample metadata"
+          } else if (nrow(pending_files) == 0) {
+            "Files already local"
+          } else {
+            "Review matrix download plan"
+          },
+          message = if (!is.data.frame(geo_sample_metadata()) || nrow(geo_sample_metadata()) == 0) {
+            "Fetch sample metadata next so phenotypes can be matched to the matrix samples."
+          } else if (nrow(pending_files) == 0) {
+            paste0("All selected matrix files are already available locally.")
+          } else {
+            paste0(
+              "Selected ", nrow(selected_files), " file(s), about ",
+              ugplot_format_bytes(selected_size), ". Still needed: ",
+              nrow(pending_files), " file(s)."
+            )
+          }
+        ))
+        if (nrow(pending_files) == 0) {
+          shinyjs::disable("geo_fetch_files")
+          if (any(selected_files$LocalStatus == "downloaded" & grepl("\\.gz$", selected_files$File, ignore.case = TRUE))) {
+            shinyjs::enable("geo_extract_files")
+          } else {
+            shinyjs::disable("geo_extract_files")
+          }
+        } else {
+          shinyjs::enable("geo_fetch_files")
+          shinyjs::disable("geo_extract_files")
+        }
+      }
+    }, error = function(e) {
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not inspect GEO metadata: ", conditionMessage(e))))
+      geo_stage(list(step = "Step 1", title = "Inspection failed", message = conditionMessage(e)))
+    })
+  })
+
+  observeEvent(input$geo_fetch_metadata, {
+    accession <- trimws(input$geo_accession %||% "")
+    if (!nzchar(accession)) {
+      geo_stage(list(step = "Step 2", title = "Missing accession", message = "Enter and inspect a GEO accession before fetching sample metadata."))
+      return()
+    }
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    geo_status(ugplot_geo_append_log(geo_status(), paste0("Fetching sample metadata for ", accession, "...")))
+    geo_stage(list(step = "Step 2", title = "Fetching sample metadata", message = "Reading GEO series matrix metadata and parsing sample characteristics."))
+    tryCatch({
+      metadata <- ugplot_geo_fetch_sample_metadata(accession, cache_dir)
+      geo_sample_metadata(metadata)
+      likely_targets <- grep("age|sex|gender|disease|status|treatment|response|case|control|group|phenotype", names(metadata), value = TRUE, ignore.case = TRUE)
+      geo_status(ugplot_geo_append_log(
+        geo_status(),
+        paste0(
+          "Sample metadata ready: ", nrow(metadata), " samples, ", ncol(metadata),
+          " columns. Saved to ", ugplot_geo_sample_metadata_path(cache_dir, "csv"), "."
+        )
+      ))
+      if (length(likely_targets) > 0) {
+        geo_status(ugplot_geo_append_log(geo_status(), paste0("Likely phenotype fields: ", paste(utils::head(likely_targets, 12), collapse = ", "), ".")))
+      }
+      remote_files <- geo_remote_files()
+      if (is.data.frame(remote_files) && nrow(remote_files) > 0) {
+        remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
+        geo_remote_files(remote_files)
+        selected_files <- if (isTRUE(input$geo_download_loadable_only)) remote_files[remote_files$Loadable, , drop = FALSE] else remote_files
+        pending_files <- selected_files[selected_files$NeedsDownload, , drop = FALSE]
+        if (nrow(pending_files) > 0) {
+          shinyjs::enable("geo_fetch_files")
+          geo_stage(list(step = "Step 3", title = "Review matrix download plan", message = paste0("Metadata is ready. Next download ", nrow(pending_files), " matrix file(s), about ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(pending_files), na.rm = TRUE)), ".")))
+        } else {
+          shinyjs::disable("geo_fetch_files")
+          if (any(selected_files$LocalStatus == "downloaded" & selected_files$Loadable & grepl("\\.gz$", selected_files$File, ignore.case = TRUE))) {
+            shinyjs::enable("geo_extract_files")
+          }
+          geo_stage(list(step = "Step 5", title = "Matrix files already local", message = "Metadata is ready and selected matrix files are local. Extract compressed matrices next."))
+        }
+      } else {
+        geo_stage(list(step = "Step 3", title = "Inspect matrix files", message = "Metadata is ready. Inspect GEO files to plan matrix downloads."))
+      }
+    }, error = function(e) {
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not fetch sample metadata: ", conditionMessage(e))))
+      geo_stage(list(step = "Step 2", title = "Metadata failed", message = conditionMessage(e)))
+    })
+  })
+
+  observeEvent(input$geo_fetch_files, {
+    accession <- trimws(input$geo_accession %||% "")
+    if (!nzchar(accession)) {
+      geo_status("Please enter a GEO accession, for example GSE87571.")
+      geo_stage(list(step = "Step 3", title = "Missing accession", message = "Enter a GEO accession before downloading."))
+      return()
+    }
+    if (!requireNamespace("GEOquery", quietly = TRUE)) {
+      geo_status("Package 'GEOquery' is not installed. Install it with BiocManager::install('GEOquery') before using GEO import.")
+      geo_stage(list(step = "Step 3", title = "GEOquery is missing", message = "Install GEOquery before using GEO import."))
+      return()
+    }
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+    geo_status(ugplot_geo_append_log(geo_status(), paste0("Download folder: ", cache_dir)))
+    geo_stage(list(step = "Step 4", title = "Preparing download", message = paste0("Files will be saved under ", cache_dir, ".")))
+    geo_download_progress(list(percent = 0, file = "Preparing", detail = "Preparing download plan.", folder = cache_dir))
+    session$sendCustomMessage("geoProgress", list(percent = 0, file = "Preparing", detail = "Preparing download plan."))
+    remote_files <- geo_remote_files()
+    if (is.data.frame(remote_files) && nrow(remote_files) > 0) {
+      remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
+      geo_remote_files(remote_files)
+      geo_status(ugplot_geo_append_log(
+        geo_status(),
+        paste0(
+          "Planned download: ", nrow(remote_files), " files; ",
+          ugplot_format_bytes(sum(ugplot_geo_size_bytes(remote_files), na.rm = TRUE)), " known size; ",
+          sum(remote_files$Loadable), " table candidates; ",
+          sum(remote_files$Type == "IDAT"), " IDAT files."
+        )
+      ))
+    } else {
+      geo_status(ugplot_geo_append_log(geo_status(), "No prior inspection found; inspecting GEO metadata before downloading."))
+      tryCatch({
+        remote_files <- ugplot_geo_remote_supp_files(accession)
+        remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
+        geo_remote_files(remote_files)
+      }, error = function(e) {
+        remote_files <- data.frame()
+        geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not inspect GEO metadata before download: ", conditionMessage(e))))
+        geo_stage(list(step = "Step 4", title = "Download blocked", message = conditionMessage(e)))
+      })
+    }
+    geo_preview_data(data.frame())
+    tryCatch({
+      if (!is.data.frame(remote_files) || nrow(remote_files) == 0) {
+        stop("No supplementary files were found to download.")
+      }
+      if (isTRUE(input$geo_download_loadable_only)) {
+        remote_files <- remote_files[remote_files$Loadable, , drop = FALSE]
+        if (nrow(remote_files) == 0) {
+          stop("No directly loadable processed tables were found. Disable 'Download only loadable processed tables' to download all supplementary files.")
+        }
+        geo_status(ugplot_geo_append_log(
+          geo_status(),
+          paste0("Download filter enabled: downloading only ", nrow(remote_files), " loadable processed table(s).")
+        ))
+      } else {
+        geo_status(ugplot_geo_append_log(geo_status(), "Download filter disabled: downloading all supplementary files."))
+      }
+      remote_files <- remote_files[remote_files$NeedsDownload, , drop = FALSE]
+      if (nrow(remote_files) == 0) {
+        files <- ugplot_geo_list_candidate_files(accession, cache_dir)
+        geo_files(files)
+        annotated_files <- ugplot_geo_annotate_remote_files(geo_remote_files(), cache_dir)
+        geo_remote_files(annotated_files)
+        ugplot_geo_write_manifest(cache_dir, accession, annotated_files)
+        shinyjs::disable("geo_fetch_files")
+        if (any(annotated_files$LocalStatus == "downloaded" & annotated_files$Loadable & grepl("\\.gz$", annotated_files$File, ignore.case = TRUE))) {
+          shinyjs::enable("geo_extract_files")
+        }
+        geo_stage(list(
+          step = "Step 5",
+          title = "Files already local",
+          message = "All selected files are already available locally. Extract compressed matrices before preprocessing."
+        ))
+        geo_download_progress(list(percent = 100, file = "Already downloaded", detail = paste0(nrow(files), " local file(s) available."), folder = cache_dir))
+        session$sendCustomMessage("geoProgress", list(percent = 100, file = "Already downloaded", detail = paste0(nrow(files), " local file(s) available.")))
+        return()
+      }
+
+      total_known_bytes <- sum(ugplot_geo_size_bytes(remote_files), na.rm = TRUE)
+      completed_known_bytes <- 0
+      geo_stage(list(step = "Step 4", title = "Downloading", message = paste0("Downloading ", nrow(remote_files), " file(s) into ", cache_dir, ".")))
+      withProgress(message = paste0("Downloading GEO files for ", accession), value = 0, {
+        for (file_i in seq_len(nrow(remote_files))) {
+          remote_file <- remote_files[file_i, , drop = FALSE]
+          destination <- file.path(cache_dir, remote_file$File)
+          file_size_bytes <- ugplot_geo_size_bytes(remote_file)[[1]]
+          file_size_label <- if (is.finite(file_size_bytes)) ugplot_format_bytes(file_size_bytes) else "unknown size"
+          start_pct <- if (total_known_bytes > 0) round(100 * completed_known_bytes / total_known_bytes, 1) else round(100 * (file_i - 1) / nrow(remote_files), 1)
+          geo_download_progress(list(
+            percent = start_pct,
+            file = remote_file$File,
+            detail = paste0("Starting ", file_i, " of ", nrow(remote_files), " - ", file_size_label),
+            folder = cache_dir
+          ))
+          session$sendCustomMessage("geoProgress", list(
+            percent = start_pct,
+            file = remote_file$File,
+            detail = paste0("Starting ", file_i, " of ", nrow(remote_files), " - ", file_size_label)
+          ))
+          geo_status(ugplot_geo_append_log(
+            geo_status(),
+            paste0(
+              "Downloading ", file_i, "/", nrow(remote_files), " (", start_pct, "%): ",
+              remote_file$File, " [", file_size_label, "] -> ", destination
+            )
+          ))
+          shiny::setProgress(
+            value = if (total_known_bytes > 0) completed_known_bytes / total_known_bytes else (file_i - 1) / nrow(remote_files),
+            detail = paste0(remote_file$File, " (", file_size_label, ")")
+          )
+
+          if (file.exists(destination)) {
+            local_size <- file.info(destination)$size
+            if ((!is.finite(file_size_bytes) || identical(as.numeric(local_size), as.numeric(file_size_bytes))) && ugplot_geo_gzip_valid(destination)) {
+              geo_status(ugplot_geo_append_log(geo_status(), paste0("Already present, skipping: ", destination)))
+            } else {
+              if (!ugplot_geo_gzip_valid(destination)) {
+                geo_status(ugplot_geo_append_log(geo_status(), paste0("Existing gzip failed integrity check; re-downloading: ", destination)))
+              } else {
+                geo_status(ugplot_geo_append_log(geo_status(), paste0("Existing file size differs; re-downloading: ", destination)))
+              }
+              last_sent_pct <- start_pct
+              ugplot_geo_download_file(remote_file$URL, destination, expected_size = file_size_bytes, progress_callback = function(downloaded_bytes, total_bytes) {
+                current_file_bytes <- if (is.finite(downloaded_bytes)) downloaded_bytes else 0
+                current_total_bytes <- if (is.finite(total_bytes) && total_bytes > 0) total_bytes else file_size_bytes
+                overall_pct <- if (total_known_bytes > 0) {
+                  round(100 * min(total_known_bytes, completed_known_bytes + current_file_bytes) / total_known_bytes, 1)
+                } else if (is.finite(current_total_bytes) && current_total_bytes > 0) {
+                  round(100 * ((file_i - 1) + current_file_bytes / current_total_bytes) / nrow(remote_files), 1)
+                } else {
+                  start_pct
+                }
+                if (overall_pct >= last_sent_pct + 1 || overall_pct >= 100) {
+                  last_sent_pct <<- overall_pct
+                  shiny::setProgress(value = overall_pct / 100, detail = paste0(remote_file$File, " - ", overall_pct, "%"))
+                  session$sendCustomMessage("geoProgress", list(
+                    percent = overall_pct,
+                    file = remote_file$File,
+                    detail = paste0("Downloaded ", ugplot_format_bytes(current_file_bytes), " of ", ugplot_format_bytes(current_total_bytes))
+                  ))
+                }
+              })
+            }
+          } else {
+            last_sent_pct <- start_pct
+            ugplot_geo_download_file(remote_file$URL, destination, expected_size = file_size_bytes, progress_callback = function(downloaded_bytes, total_bytes) {
+              current_file_bytes <- if (is.finite(downloaded_bytes)) downloaded_bytes else 0
+              current_total_bytes <- if (is.finite(total_bytes) && total_bytes > 0) total_bytes else file_size_bytes
+              overall_pct <- if (total_known_bytes > 0) {
+                round(100 * min(total_known_bytes, completed_known_bytes + current_file_bytes) / total_known_bytes, 1)
+              } else if (is.finite(current_total_bytes) && current_total_bytes > 0) {
+                round(100 * ((file_i - 1) + current_file_bytes / current_total_bytes) / nrow(remote_files), 1)
+              } else {
+                start_pct
+              }
+              if (overall_pct >= last_sent_pct + 1 || overall_pct >= 100) {
+                last_sent_pct <<- overall_pct
+                shiny::setProgress(value = overall_pct / 100, detail = paste0(remote_file$File, " - ", overall_pct, "%"))
+                session$sendCustomMessage("geoProgress", list(
+                  percent = overall_pct,
+                  file = remote_file$File,
+                  detail = paste0("Downloaded ", ugplot_format_bytes(current_file_bytes), " of ", ugplot_format_bytes(current_total_bytes))
+                ))
+              }
+            })
+          }
+
+          if (is.finite(file_size_bytes)) {
+            completed_known_bytes <- completed_known_bytes + file_size_bytes
+          }
+          done_pct <- if (total_known_bytes > 0) round(100 * completed_known_bytes / total_known_bytes, 1) else round(100 * file_i / nrow(remote_files), 1)
+          progress_increment <- if (total_known_bytes > 0 && is.finite(file_size_bytes)) file_size_bytes / total_known_bytes else 1 / nrow(remote_files)
+          shiny::incProgress(
+            progress_increment,
+            detail = paste0("Finished ", remote_file$File, " (", done_pct, "%)")
+          )
+          geo_download_progress(list(
+            percent = done_pct,
+            file = remote_file$File,
+            detail = paste0("Finished ", file_i, " of ", nrow(remote_files), "."),
+            folder = cache_dir
+          ))
+          session$sendCustomMessage("geoProgress", list(
+            percent = done_pct,
+            file = remote_file$File,
+            detail = paste0("Finished ", file_i, " of ", nrow(remote_files), ".")
+          ))
+          geo_status(ugplot_geo_append_log(geo_status(), paste0("Finished ", remote_file$File, ". Progress: ", done_pct, "%.")))
+        }
+      })
+      geo_status(ugplot_geo_append_log(geo_status(), "Download finished. Scanning local files."))
+      files <- ugplot_geo_list_candidate_files(accession, cache_dir)
+      geo_files(files)
+      annotated_files <- ugplot_geo_annotate_remote_files(geo_remote_files(), cache_dir)
+      geo_remote_files(annotated_files)
+      ugplot_geo_write_manifest(cache_dir, accession, annotated_files)
+      if (nrow(files) == 0) {
+        geo_status(ugplot_geo_append_log(geo_status(), paste0("No supplementary files found for ", accession, ".")))
+      } else {
+        loadable_n <- sum(files$Loadable)
+        idat_n <- sum(files$Type == "IDAT")
+        geo_status(ugplot_geo_append_log(geo_status(), paste0(
+          "Fetched ", nrow(files), " files for ", accession, ". ",
+          loadable_n, " processed table candidates are directly loadable. ",
+          idat_n, " IDAT files detected; IDAT preprocessing is not implemented in this first version."
+        )))
+        geo_stage(list(
+          step = "Step 5",
+          title = "Ready to extract",
+          message = paste0("Download complete. Extract compressed matrix files before building an analysis table.")
+        ))
+        geo_download_progress(list(percent = 100, file = "Download complete", detail = paste0(nrow(files), " file(s) available."), folder = cache_dir))
+        session$sendCustomMessage("geoProgress", list(percent = 100, file = "Download complete", detail = paste0(nrow(files), " file(s) available.")))
+        if (!any(annotated_files$NeedsDownload[if (isTRUE(input$geo_download_loadable_only)) annotated_files$Loadable else rep(TRUE, nrow(annotated_files))])) {
+          shinyjs::disable("geo_fetch_files")
+          if (any(annotated_files$LocalStatus == "downloaded" & annotated_files$Loadable & grepl("\\.gz$", annotated_files$File, ignore.case = TRUE))) {
+            shinyjs::enable("geo_extract_files")
+          }
+        }
+      }
+    }, error = function(e) {
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not fetch GEO files: ", conditionMessage(e))))
+      files <- ugplot_geo_list_candidate_files(accession, cache_dir)
+      geo_files(files)
+      geo_stage(list(step = "Step 4", title = "Download failed", message = conditionMessage(e)))
+    })
+  })
+
+  observeEvent(input$geo_extract_files, {
+    accession <- trimws(input$geo_accession %||% "")
+    if (!nzchar(accession)) {
+      geo_stage(list(step = "Step 5", title = "Missing accession", message = "Enter and inspect a GEO accession before extracting."))
+      return()
+    }
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    remote_files <- geo_remote_files()
+    if (!is.data.frame(remote_files) || nrow(remote_files) == 0) {
+      geo_stage(list(step = "Step 5", title = "No downloaded files", message = "Inspect and download GEO files before extracting."))
+      return()
+    }
+    remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
+    extract_files <- remote_files[
+      remote_files$Loadable &
+        remote_files$LocalStatus == "downloaded" &
+        grepl("\\.gz$", remote_files$LocalPath, ignore.case = TRUE),
+      ,
+      drop = FALSE
+    ]
+    if (nrow(extract_files) == 0) {
+      geo_stage(list(step = "Step 5", title = "Nothing to extract", message = "No downloaded compressed matrix is waiting for extraction."))
+      return()
+    }
+
+    total_bytes <- sum(suppressWarnings(as.numeric(extract_files$LocalSizeBytes)), na.rm = TRUE)
+    if (!is.finite(total_bytes) || total_bytes <= 0) {
+      total_bytes <- sum(file.info(extract_files$LocalPath)$size, na.rm = TRUE)
+    }
+    completed_bytes <- 0
+    geo_stage(list(step = "Step 5", title = "Extracting files", message = paste0("Extracting ", nrow(extract_files), " compressed matrix file(s).")))
+    geo_download_progress(list(type = "extract", percent = 0, file = "Preparing extraction", detail = "Extraction can take time for GB-scale matrices.", folder = cache_dir))
+    session$sendCustomMessage("geoProgress", list(percent = 0, file = "Preparing extraction", detail = "Extraction can take time for GB-scale matrices."))
+    tryCatch({
+      withProgress(message = paste0("Extracting GEO files for ", accession), value = 0, {
+        for (file_i in seq_len(nrow(extract_files))) {
+          source_path <- extract_files$LocalPath[[file_i]]
+          source_size <- file.info(source_path)$size
+          start_pct <- if (total_bytes > 0) round(100 * completed_bytes / total_bytes, 1) else round(100 * (file_i - 1) / nrow(extract_files), 1)
+          last_sent_pct <- start_pct
+          geo_download_progress(list(
+            type = "extract",
+            percent = start_pct,
+            file = basename(source_path),
+            detail = paste0("Extracting ", file_i, " of ", nrow(extract_files), " - ", ugplot_format_bytes(source_size)),
+            folder = cache_dir
+          ))
+          session$sendCustomMessage("geoProgress", list(
+            percent = start_pct,
+            file = basename(source_path),
+            detail = paste0("Extracting ", file_i, " of ", nrow(extract_files), " - ", ugplot_format_bytes(source_size))
+          ))
+          ugplot_geo_extract_gzip(source_path, progress_callback = function(read_bytes, total_file_bytes) {
+            overall_pct <- if (total_bytes > 0) {
+              round(100 * min(total_bytes, completed_bytes + read_bytes) / total_bytes, 1)
+            } else if (is.finite(total_file_bytes) && total_file_bytes > 0) {
+              round(100 * ((file_i - 1) + read_bytes / total_file_bytes) / nrow(extract_files), 1)
+            } else {
+              start_pct
+            }
+            if (overall_pct >= last_sent_pct + 1 || overall_pct >= 100) {
+              last_sent_pct <<- overall_pct
+              shiny::setProgress(value = overall_pct / 100, detail = paste0(basename(source_path), " - ", overall_pct, "%"))
+              session$sendCustomMessage("geoProgress", list(
+                percent = overall_pct,
+                file = basename(source_path),
+                detail = paste0("Read ", ugplot_format_bytes(read_bytes), " of ", ugplot_format_bytes(total_file_bytes))
+              ))
+            }
+          })
+          completed_bytes <- completed_bytes + source_size
+          done_pct <- if (total_bytes > 0) round(100 * completed_bytes / total_bytes, 1) else round(100 * file_i / nrow(extract_files), 1)
+          shiny::incProgress(if (total_bytes > 0) source_size / total_bytes else 1 / nrow(extract_files), detail = paste0("Finished ", basename(source_path)))
+          session$sendCustomMessage("geoProgress", list(
+            percent = done_pct,
+            file = basename(source_path),
+            detail = paste0("Extraction complete for ", file_i, " of ", nrow(extract_files), ". Compressed .gz removed.")
+          ))
+        }
+      })
+      remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
+      geo_remote_files(remote_files)
+      ugplot_geo_write_manifest(cache_dir, accession, remote_files)
+      files <- ugplot_geo_list_candidate_files(accession, cache_dir)
+      geo_files(files)
+      shinyjs::disable("geo_extract_files")
+      geo_stage(list(
+        step = "Step 6",
+        title = "Extraction complete",
+        message = "Files were extracted. They are still large; the next step should subset/summarize them before loading into ugPlot."
+      ))
+      geo_download_progress(list(type = "extract", percent = 100, file = "Extraction complete", detail = paste0(nrow(extract_files), " file(s) extracted."), folder = cache_dir))
+      session$sendCustomMessage("geoProgress", list(percent = 100, file = "Extraction complete", detail = paste0(nrow(extract_files), " file(s) extracted.")))
+    }, error = function(e) {
+      remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
+      geo_remote_files(remote_files)
+      files <- ugplot_geo_list_candidate_files(accession, cache_dir)
+      geo_files(files)
+      geo_stage(list(step = "Step 5", title = "Extraction failed", message = conditionMessage(e)))
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not extract GEO files: ", conditionMessage(e))))
+    })
+  })
+
+  observeEvent(input$geo_run_spearman, {
+    accession <- trimws(input$geo_accession %||% "")
+    if (!nzchar(accession)) {
+      geo_stage(list(step = "Step 6", title = "Missing accession", message = "Enter and inspect a GEO accession before running CpG correlation."))
+      return()
+    }
+    metadata <- geo_sample_metadata()
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    if ((!is.data.frame(metadata) || nrow(metadata) == 0) && file.exists(ugplot_geo_sample_metadata_path(cache_dir, "rds"))) {
+      metadata <- tryCatch(readRDS(ugplot_geo_sample_metadata_path(cache_dir, "rds")), error = function(e) data.frame())
+      geo_sample_metadata(metadata)
+    }
+    if (!is.data.frame(metadata) || nrow(metadata) == 0) {
+      geo_stage(list(step = "Step 6", title = "Missing sample metadata", message = "Fetch sample metadata before running Spearman by CpG."))
+      return()
+    }
+    target_column <- input$geo_target_column %||% ""
+    if (!nzchar(target_column) || !target_column %in% names(metadata)) {
+      geo_stage(list(step = "Step 6", title = "Select target", message = "Choose a metadata target column before running Spearman by CpG."))
+      return()
+    }
+    matrix_files <- ugplot_geo_matrix_files(cache_dir)
+    if (length(matrix_files) == 0) {
+      geo_stage(list(step = "Step 6", title = "Missing matrix files", message = "Download and extract matrix files before running CpG correlation."))
+      return()
+    }
+
+    max_cpgs <- suppressWarnings(as.integer(input$geo_spearman_max_cpgs %||% 50000))
+    top_n <- suppressWarnings(as.integer(input$geo_spearman_top_n %||% 1000))
+    geo_spearman_results(data.frame())
+    geo_status(ugplot_geo_append_log(
+      geo_status(),
+      paste0("Running Spearman scan for target '", target_column, "' across ", length(matrix_files), " matrix file(s).")
+    ))
+    geo_stage(list(
+      step = "Step 6",
+      title = "Running CpG Spearman scan",
+      message = paste0("Scanning ", if (max_cpgs > 0) max_cpgs else "all", " CpGs without loading the full matrix into memory.")
+    ))
+    tryCatch({
+      scanned_last <- 0L
+      withProgress(message = "Scanning CpGs", value = 0, {
+        results <- ugplot_geo_spearman_scan(
+          matrix_files = matrix_files,
+          metadata = metadata,
+          target_column = target_column,
+          max_cpgs = max_cpgs,
+          top_n = top_n,
+          progress_callback = function(scanned) {
+            scanned_last <<- scanned
+            if (max_cpgs > 0) {
+              shiny::setProgress(value = min(1, scanned / max_cpgs), detail = paste0(scanned, " CpGs scanned"))
+            } else {
+              shiny::setProgress(detail = paste0(scanned, " CpGs scanned"))
+            }
+          }
+        )
+      })
+      scanned <- attr(results, "scanned_cpgs") %||% scanned_last
+      matched_samples <- attr(results, "matched_samples") %||% NA_integer_
+      results_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, ".csv"))
+      utils::write.csv(results, results_path, row.names = FALSE)
+      geo_spearman_results(results)
+      geo_status(ugplot_geo_append_log(
+        geo_status(),
+        paste0("Spearman scan complete: ", scanned, " CpGs scanned, ", matched_samples, " matched samples. Results saved to ", results_path, ".")
+      ))
+      geo_stage(list(
+        step = "Step 6",
+        title = "CpG Spearman scan complete",
+        message = paste0("Showing top ", nrow(results), " CpGs for target '", target_column, "'.")
+      ))
+    }, error = function(e) {
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not run CpG Spearman scan: ", conditionMessage(e))))
+      geo_stage(list(step = "Step 6", title = "CpG scan failed", message = conditionMessage(e)))
+    })
+  })
+
+  observeEvent(input$geo_load_selected_file, {
+    files <- geo_files()
+    if (!is.data.frame(files) || nrow(files) == 0) {
+      geo_status("Fetch GEO files before loading.")
+      geo_stage(list(step = "Step 6", title = "No downloaded files", message = "Download GEO files before loading a matrix into ugPlot."))
+      return()
+    }
+    loadable <- files[files$Loadable, , drop = FALSE]
+    selected_idx <- suppressWarnings(as.integer(input$geo_selected_file %||% NA_integer_))
+    if (!is.finite(selected_idx) || selected_idx < 1 || selected_idx > nrow(loadable)) {
+      geo_status("Please select a valid processed table.")
+      geo_stage(list(step = "Step 6", title = "Select a table", message = "Choose one downloaded processed table before loading."))
+      return()
+    }
+    selected_path <- loadable$Path[[selected_idx]]
+    selected_size_mb <- suppressWarnings(as.numeric(file.info(selected_path)$size / 1024^2))
+    if (is.finite(selected_size_mb) && selected_size_mb > 500) {
+      geo_stage(list(
+        step = "Step 6",
+        title = "Matrix too large to load directly",
+        message = paste0(
+          basename(selected_path), " is ", ugplot_format_bytes(file.info(selected_path)$size),
+          ". This should be preprocessed/subset before loading into ugPlot."
+        )
+      ))
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Blocked direct load of large GEO matrix: ", selected_path)))
+      return()
+    }
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Loading ", basename(selected_path), "...")))
+      geo_stage(list(step = "Step 6", title = "Loading table", message = paste0("Reading ", basename(selected_path), " into ugPlot.")))
+    tryCatch({
+      data <- ugplot_read_geo_table(selected_path, isTRUE(input$geo_use_first_column_names))
+      if (identical(input$geo_loaded_orientation, "cpgs_rows")) {
+        data <- as.data.frame(t(as.matrix(data)), stringsAsFactors = FALSE, check.names = FALSE)
+      }
+      original_dataset_filename(paste0(trimws(input$geo_accession %||% "GEO"), "_", basename(selected_path)))
+      dff <<- data
+      geo_preview_data(data)
+      load_dataset_into_table(session)
+      refresh_counter(refresh_counter() + 1)
+      update_scramble_selector()
+      geo_status(ugplot_geo_append_log(geo_status(), paste0(
+        "Loaded ", basename(selected_path), ": ",
+        nrow(data), " rows x ", ncol(data), " columns. ",
+        "Use TABLE to select columns/rows and add phenotype columns before ML."
+      )))
+      geo_stage(list(
+        step = "Done",
+        title = "GEO matrix loaded",
+        message = paste0("Loaded ", nrow(data), " rows x ", ncol(data), " columns. Continue in TABLE to select features and add phenotype columns.")
+      ))
+    }, error = function(e) {
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not load selected GEO table: ", conditionMessage(e))))
+      geo_stage(list(step = "Step 6", title = "Load failed", message = conditionMessage(e)))
+    })
+  })
 
   load_uploaded_dataset_with_sequential_row_names <- function(upload_info) {
     data <- read.table(upload_info$filepath, header = TRUE, sep = upload_info$separator, row.names = NULL,
@@ -5626,6 +7221,7 @@ observeEvent(input$model_file, {
   dl_history <- reactiveVal(data.frame())
   dl_metrics <- reactiveVal(data.frame())
   dl_predictions <- reactiveVal(data.frame())
+  dl_tune_results <- reactiveVal(data.frame())
   dl_log <- reactiveVal("Deep Learning idle. Load data and click train.")
   dl_task_used <- reactiveVal("classification")
   dl_weight_summary <- reactiveVal(data.frame())
@@ -5707,7 +7303,7 @@ observeEvent(input$model_file, {
         label = paste0("Dropout layer ", i, ":"),
         min = 0,
         max = 0.6,
-        value = if (i == 1) 0.15 else 0.10,
+        value = if (i == 1) 0.20 else 0.15,
         step = 0.05
       )
     }))
@@ -5720,6 +7316,7 @@ observeEvent(input$model_file, {
     dl_path_edges(data.frame())
     dl_path_nodes(data.frame())
     dl_top_paths(data.frame())
+    dl_tune_results(data.frame())
     dl_model_shape("Training in progress...")
 
     if (!requireNamespace("torch", quietly = TRUE)) {
@@ -6249,9 +7846,246 @@ observeEvent(input$model_file, {
 
       y_train <- torch::torch_tensor(y_train_scaled, dtype = torch::torch_float())
       y_test <- torch::torch_tensor(y_test_scaled, dtype = torch::torch_float())
+      y_test_truth <- y_numeric[test_idx]
 
-      model <- torch::nn_module(
-        initialize = function(in_features, hidden_sizes, dropout_rates) {
+      make_regression_model <- function(model_hidden_sizes, model_dropout_rates) {
+        torch::nn_module(
+          initialize = function(in_features, hidden_sizes, dropout_rates) {
+            self$hidden_layers <- torch::nn_module_list()
+            self$bn_layers <- torch::nn_module_list()
+            self$drop_layers <- torch::nn_module_list()
+            prev_features <- in_features
+            for (i in seq_along(hidden_sizes)) {
+              hidden_i <- as.integer(hidden_sizes[i])
+              self$hidden_layers$append(torch::nn_linear(prev_features, hidden_i))
+              self$bn_layers$append(torch::nn_batch_norm1d(hidden_i))
+              self$drop_layers$append(torch::nn_dropout(p = as.numeric(dropout_rates[i])))
+              prev_features <- hidden_i
+            }
+            self$out <- torch::nn_linear(prev_features, 1)
+          },
+          forward = function(x) {
+            layer_count <- length(self$hidden_layers)
+            for (i in seq_len(layer_count)) {
+              x <- self$hidden_layers[[i]](x)
+              x <- self$bn_layers[[i]](x)
+              x <- torch::nnf_relu(x)
+              x <- self$drop_layers[[i]](x)
+            }
+            self$out(x)
+          }
+        )(input_size, model_hidden_sizes, model_dropout_rates)
+      }
+
+      criterion <- torch::nn_smooth_l1_loss()
+      clone_state_dict <- function(state_dict) {
+        cloned <- lapply(state_dict, function(value) value$clone())
+        names(cloned) <- names(state_dict)
+        cloned
+      }
+      train_regression_network <- function(model_hidden_sizes, model_dropout_rates, lr, wd,
+                                           x_train_tensor, y_train_tensor, train_n,
+                                           x_eval_tensor, y_eval_tensor, y_eval_truth,
+                                           n_epochs, progress_detail = "Training",
+                                           track_history = TRUE, restore_best = TRUE,
+                                           update_views = FALSE) {
+        model_obj <- make_regression_model(model_hidden_sizes, model_dropout_rates)
+        optimizer <- torch::optim_adam(model_obj$parameters, lr = lr, weight_decay = wd)
+        train_state <- new.env(parent = emptyenv())
+        train_state$best_metric <- Inf
+        train_state$best_epoch <- NA_integer_
+        train_state$best_state <- clone_state_dict(model_obj$state_dict())
+        train_state$history <- data.frame(epoch = integer(), train_loss = numeric(), test_loss = numeric(), metric = numeric())
+
+        for (epoch in seq_len(n_epochs)) {
+          model_obj$train()
+          train_order <- sample.int(train_n)
+          batch_list <- split(train_order, ceiling(seq_along(train_order) / batch_size))
+          batch_losses <- numeric(length(batch_list))
+          for (b in seq_along(batch_list)) {
+            batch_ids <- batch_list[[b]]
+            optimizer$zero_grad()
+            pred_train <- model_obj(x_train_tensor[batch_ids, ])
+            loss_train <- criterion(pred_train, y_train_tensor[batch_ids, ])
+            loss_train$backward()
+            optimizer$step()
+            batch_losses[b] <- as.numeric(loss_train$item())
+          }
+          mean_train_loss <- mean(batch_losses)
+
+          model_obj$eval()
+          torch::with_no_grad({
+            pred_eval <- model_obj(x_eval_tensor)
+            loss_eval <- criterion(pred_eval, y_eval_tensor)
+            pred_eval_num <- as.numeric(pred_eval$to(device = "cpu")) * y_scale + y_center
+            eval_rmse <- sqrt(mean((pred_eval_num - y_eval_truth)^2))
+            if (track_history) {
+              train_state$history <- rbind(train_state$history, data.frame(
+                epoch = epoch,
+                train_loss = mean_train_loss,
+                test_loss = as.numeric(loss_eval$item()),
+                metric = eval_rmse
+              ))
+            }
+            if (is.finite(eval_rmse) && eval_rmse < train_state$best_metric) {
+              train_state$best_metric <- eval_rmse
+              train_state$best_epoch <- epoch
+              train_state$best_state <- clone_state_dict(model_obj$state_dict())
+            }
+          })
+          if (update_views) {
+            update_dl_views(model_obj, predictor_names, build_dl_weight_views, epoch, n_epochs)
+          }
+          incProgress(1, detail = paste(progress_detail, "epoch", epoch, "of", n_epochs))
+        }
+
+        if (restore_best && is.finite(train_state$best_metric)) {
+          model_obj$load_state_dict(train_state$best_state)
+        }
+        model_obj$eval()
+        torch::with_no_grad({
+          final_pred <- as.numeric(model_obj(x_eval_tensor)$to(device = "cpu")) * y_scale + y_center
+        })
+        list(
+          model = model_obj,
+          history = train_state$history,
+          best_metric = train_state$best_metric,
+          best_epoch = train_state$best_epoch,
+          pred = final_pred
+        )
+      }
+
+      if (isTRUE(input$dl_auto_tune)) {
+        tune_trials <- max(2, as.integer(input$dl_tune_trials %||% 20))
+        validation_fraction <- min(0.4, max(0.1, as.numeric(input$dl_validation_split %||% 20) / 100))
+        train_n <- length(train_idx)
+        validation_n <- max(2, floor(train_n * validation_fraction))
+        if ((train_n - validation_n) < 5) {
+          dl_log("Auto tune needs at least five training samples after validation split.")
+          return()
+        }
+
+        local_order <- sample.int(train_n)
+        validation_local_idx <- local_order[seq_len(validation_n)]
+        tune_train_local_idx <- setdiff(seq_len(train_n), validation_local_idx)
+
+        hidden_grid <- list(c(32), c(64, 32), c(128, 64), c(128, 32), c(64, 32, 16))
+        learning_rate_grid <- c(0.0001, 0.0003, 0.0005, 0.001)
+        weight_decay_grid <- c(0, 0.0001, 0.0005, 0.001, 0.002)
+        dropout1_grid <- c(0.10, 0.15, 0.20, 0.25, 0.30)
+        dropout2_grid <- c(0.05, 0.10, 0.15, 0.20, 0.25)
+
+        tune_state <- new.env(parent = emptyenv())
+        tune_state$tune_results <- data.frame()
+        tune_state$best_metric <- Inf
+        tune_state$best_config <- NULL
+        tune_state$best_epoch <- epochs
+        tune_state$final_result <- NULL
+        tune_state$failed <- FALSE
+        progress_steps <- tune_trials * epochs + epochs
+
+        withProgress(message = "Auto tuning torch regression model", value = 0, {
+          for (trial in seq_len(tune_trials)) {
+            trial_hidden <- hidden_grid[[sample.int(length(hidden_grid), 1)]]
+            trial_dropout <- c(
+              sample(dropout1_grid, 1),
+              rep(sample(dropout2_grid, 1), max(0, length(trial_hidden) - 1))
+            )
+            trial_lr <- sample(learning_rate_grid, 1)
+            trial_wd <- sample(weight_decay_grid, 1)
+            trial_seed <- as.integer(input$dl_seed) + trial
+            set.seed(trial_seed)
+            torch::torch_manual_seed(trial_seed)
+
+            trial_result <- train_regression_network(
+              model_hidden_sizes = trial_hidden,
+              model_dropout_rates = trial_dropout,
+              lr = trial_lr,
+              wd = trial_wd,
+              x_train_tensor = x_train[tune_train_local_idx, ],
+              y_train_tensor = y_train[tune_train_local_idx, ],
+              train_n = length(tune_train_local_idx),
+              x_eval_tensor = x_train[validation_local_idx, ],
+              y_eval_tensor = y_train[validation_local_idx, ],
+              y_eval_truth = y_numeric[train_idx][validation_local_idx],
+              n_epochs = epochs,
+              progress_detail = paste("Trial", trial, "of", tune_trials),
+              track_history = FALSE,
+              restore_best = TRUE,
+              update_views = FALSE
+            )
+
+            tune_state$tune_results <- rbind(tune_state$tune_results, data.frame(
+              Trial = trial,
+              ValidationRMSE = trial_result$best_metric,
+              BestEpoch = trial_result$best_epoch,
+              Hidden = paste(trial_hidden, collapse = " -> "),
+              LearningRate = trial_lr,
+              WeightDecay = trial_wd,
+              Dropout = paste(trial_dropout, collapse = " -> "),
+              stringsAsFactors = FALSE
+            ))
+            if (is.finite(trial_result$best_metric) && trial_result$best_metric < tune_state$best_metric) {
+              tune_state$best_metric <- trial_result$best_metric
+              tune_state$best_epoch <- trial_result$best_epoch
+              tune_state$best_config <- list(
+                hidden = trial_hidden,
+                dropout = trial_dropout,
+                lr = trial_lr,
+                wd = trial_wd
+              )
+            }
+            incProgress(0, detail = paste("Best validation RMSE:", round(tune_state$best_metric, 4)))
+          }
+
+          if (is.null(tune_state$best_config)) {
+            dl_log("Auto tune did not find a finite validation RMSE.")
+            tune_state$failed <- TRUE
+            return()
+          }
+
+          final_epochs <- max(1, as.integer(tune_state$best_epoch %||% epochs))
+          set.seed(as.integer(input$dl_seed))
+          torch::torch_manual_seed(as.integer(input$dl_seed))
+          tune_state$final_result <- train_regression_network(
+            model_hidden_sizes = tune_state$best_config$hidden,
+            model_dropout_rates = tune_state$best_config$dropout,
+            lr = tune_state$best_config$lr,
+            wd = tune_state$best_config$wd,
+            x_train_tensor = x_train,
+            y_train_tensor = y_train,
+            train_n = length(train_idx),
+            x_eval_tensor = x_test,
+            y_eval_tensor = y_test,
+            y_eval_truth = y_test_truth,
+            n_epochs = final_epochs,
+            progress_detail = "Final model",
+            track_history = TRUE,
+            restore_best = FALSE,
+            update_views = TRUE
+          )
+        }, max = progress_steps)
+
+        if (isTRUE(tune_state$failed)) {
+          return()
+        }
+        if (is.null(tune_state$final_result)) {
+          dl_log("Auto tune did not finish a final model.")
+          return()
+        }
+        final_result <- tune_state$final_result
+        tune_results <- tune_state$tune_results
+        best_tune_metric <- tune_state$best_metric
+        best_tune_config <- tune_state$best_config
+        model <- final_result$model
+        pred_test_num <- final_result$pred
+        best_metric <- best_tune_metric
+        history_df <- final_result$history
+        tune_results <- tune_results[order(tune_results$ValidationRMSE), , drop = FALSE]
+        dl_tune_results(tune_results)
+      } else {
+        model <- torch::nn_module(
+          initialize = function(in_features, hidden_sizes, dropout_rates) {
           self$hidden_layers <- torch::nn_module_list()
           self$bn_layers <- torch::nn_module_list()
           self$drop_layers <- torch::nn_module_list()
@@ -6275,64 +8109,60 @@ observeEvent(input$model_file, {
           }
           self$out(x)
         }
-      )(input_size, hidden_sizes, dropout_rates)
+        )(input_size, hidden_sizes, dropout_rates)
 
-      optimizer <- torch::optim_adam(model$parameters, lr = learning_rate, weight_decay = weight_decay)
-      criterion <- torch::nn_smooth_l1_loss()
-      clone_state_dict <- function(state_dict) {
-        cloned <- lapply(state_dict, function(value) value$clone())
-        names(cloned) <- names(state_dict)
-        cloned
-      }
-      best_metric <- Inf
-      best_state <- clone_state_dict(model$state_dict())
+        optimizer <- torch::optim_adam(model$parameters, lr = learning_rate, weight_decay = weight_decay)
+        best_metric <- Inf
+        best_state <- clone_state_dict(model$state_dict())
 
-      withProgress(message = "Training torch regression model", value = 0, {
-        for (epoch in seq_len(epochs)) {
-          model$train()
-          train_order <- sample.int(length(train_idx))
-          batch_list <- split(train_order, ceiling(seq_along(train_order) / batch_size))
-          batch_losses <- numeric(length(batch_list))
-          for (b in seq_along(batch_list)) {
-            batch_ids <- batch_list[[b]]
-            optimizer$zero_grad()
-            pred_train <- model(x_train[batch_ids, ])
-            loss_train <- criterion(pred_train, y_train[batch_ids, ])
-            loss_train$backward()
-            optimizer$step()
-            batch_losses[b] <- as.numeric(loss_train$item())
-          }
-          mean_train_loss <- mean(batch_losses)
-
-          model$eval()
-          torch::with_no_grad({
-            pred_test <- model(x_test)
-            loss_test <- criterion(pred_test, y_test)
-            pred_test_num <- as.numeric(pred_test$to(device = "cpu")) * y_scale + y_center
-            y_test_num <- as.numeric(y_test$to(device = "cpu")) * y_scale + y_center
-            rmse <- sqrt(mean((pred_test_num - y_test_num)^2))
-            history_df <<- rbind(history_df, data.frame(
-              epoch = epoch,
-              train_loss = mean_train_loss,
-              test_loss = as.numeric(loss_test$item()),
-              metric = rmse
-            ))
-            if (is.finite(rmse) && rmse < best_metric) {
-              best_metric <<- rmse
-              best_state <<- clone_state_dict(model$state_dict())
+        withProgress(message = "Training torch regression model", value = 0, {
+          for (epoch in seq_len(epochs)) {
+            model$train()
+            train_order <- sample.int(length(train_idx))
+            batch_list <- split(train_order, ceiling(seq_along(train_order) / batch_size))
+            batch_losses <- numeric(length(batch_list))
+            for (b in seq_along(batch_list)) {
+              batch_ids <- batch_list[[b]]
+              optimizer$zero_grad()
+              pred_train <- model(x_train[batch_ids, ])
+              loss_train <- criterion(pred_train, y_train[batch_ids, ])
+              loss_train$backward()
+              optimizer$step()
+              batch_losses[b] <- as.numeric(loss_train$item())
             }
-          })
-          update_dl_views(model, predictor_names, build_dl_weight_views, epoch, epochs)
-          incProgress(1 / epochs, detail = paste("Epoch", epoch, "of", epochs))
-        }
-      })
+            mean_train_loss <- mean(batch_losses)
 
-      model$load_state_dict(best_state)
-      model$eval()
-      torch::with_no_grad({
-        pred_test <- model(x_test)
-        pred_test_num <- as.numeric(pred_test$to(device = "cpu")) * y_scale + y_center
-      })
+            model$eval()
+            torch::with_no_grad({
+              pred_test <- model(x_test)
+              loss_test <- criterion(pred_test, y_test)
+              pred_test_num <- as.numeric(pred_test$to(device = "cpu")) * y_scale + y_center
+              rmse <- sqrt(mean((pred_test_num - y_test_truth)^2))
+              history_df <<- rbind(history_df, data.frame(
+                epoch = epoch,
+                train_loss = mean_train_loss,
+                test_loss = as.numeric(loss_test$item()),
+                metric = rmse
+              ))
+              if (is.finite(rmse) && rmse < best_metric) {
+                best_metric <<- rmse
+                best_state <<- clone_state_dict(model$state_dict())
+              }
+            })
+            update_dl_views(model, predictor_names, build_dl_weight_views, epoch, epochs)
+            incProgress(1 / epochs, detail = paste("Epoch", epoch, "of", epochs))
+          }
+        })
+
+        if (is.finite(best_metric)) {
+          model$load_state_dict(best_state)
+        }
+        model$eval()
+        torch::with_no_grad({
+          pred_test <- model(x_test)
+          pred_test_num <- as.numeric(pred_test$to(device = "cpu")) * y_scale + y_center
+        })
+      }
       truth_num <- y_numeric[test_idx]
       mae <- mean(abs(pred_test_num - truth_num))
       rmse <- sqrt(mean((pred_test_num - truth_num)^2))
@@ -6344,17 +8174,37 @@ observeEvent(input$model_file, {
         Residual = round(pred_test_num - truth_num, 6),
         stringsAsFactors = FALSE
       )
+      best_metric_name <- if (isTRUE(input$dl_auto_tune)) "Selected validation RMSE" else "Best epoch RMSE"
       metrics_df <- data.frame(
-        Metric = c("Task", "Train samples", "Test samples", "MAE", "RMSE", "R2", "Best epoch RMSE"),
+        Metric = c("Task", "Train samples", "Test samples", "MAE", "RMSE", "R2", best_metric_name),
         Value = c("regression", length(train_idx), length(test_idx), round(mae, 4), round(rmse, 4), round(r2, 4), round(best_metric, 4)),
         stringsAsFactors = FALSE
       )
+      if (isTRUE(input$dl_auto_tune)) {
+        best_tune_row <- tune_results[1, , drop = FALSE]
+        metrics_df <- rbind(
+          metrics_df,
+          data.frame(
+            Metric = c("Auto tune trials", "Best validation RMSE", "Selected hidden units", "Selected learning rate", "Selected weight decay", "Selected dropout"),
+            Value = c(
+              tune_trials,
+              round(best_tune_metric, 4),
+              best_tune_row$Hidden,
+              best_tune_row$LearningRate,
+              best_tune_row$WeightDecay,
+              best_tune_row$Dropout
+            ),
+            stringsAsFactors = FALSE
+          )
+        )
+      }
       dl_log(paste0(
-        "Deep Learning (regression) finished. RMSE: ",
+        if (isTRUE(input$dl_auto_tune)) "Deep Learning auto tune (regression) finished. " else "Deep Learning (regression) finished. ",
+        "RMSE: ",
         round(rmse, 4),
         " | R2: ",
         round(r2, 4),
-        " | Best epoch RMSE: ",
+        if (isTRUE(input$dl_auto_tune)) " | Selected validation RMSE: " else " | Best epoch RMSE: ",
         round(best_metric, 4)
       ))
     }
@@ -6461,6 +8311,11 @@ observeEvent(input$model_file, {
   output$dl_metrics_table <- DT::renderDT({
     req(nrow(dl_metrics()) > 0)
     DT::datatable(dl_metrics(), options = list(dom = "t", paging = FALSE, scrollX = TRUE), rownames = FALSE)
+  })
+
+  output$dl_tune_table <- DT::renderDT({
+    req(nrow(dl_tune_results()) > 0)
+    DT::datatable(dl_tune_results(), options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
   })
 
   output$dl_predictions_table <- DT::renderDT({

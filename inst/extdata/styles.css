@@ -619,3 +619,73 @@ table.dataTable tbody tr.remote-job-row-active.selected td:nth-child(5) {
 table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
   color: #9f2f2f !important;
 }
+.geo-workflow {
+  display: grid;
+  gap: 12px;
+}
+
+.geo-step {
+  border: 1px solid #e3e8ef;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fff;
+}
+
+.geo-step-title {
+  font-weight: 700;
+  color: #2b3440;
+  margin-bottom: 8px;
+}
+
+.geo-step-note {
+  color: #64748b;
+  font-size: 13px;
+  margin: 4px 0 10px 0;
+}
+
+.geo-status-card {
+  border: 1px solid #dbeafe;
+  background: #f8fbff;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+
+.geo-status-title {
+  font-weight: 700;
+  color: #1f3a5f;
+  margin-bottom: 4px;
+}
+
+.geo-progress-shell {
+  height: 18px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+  margin: 8px 0;
+}
+
+.geo-progress-bar {
+  height: 18px;
+  width: 0%;
+  background: #2f7fc1;
+  transition: width 0.2s ease;
+}
+
+.geo-progress-meta {
+  color: #1f2937;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.geo-progress-meta strong,
+.geo-progress-meta span,
+.geo-progress-meta div {
+  color: #1f2937;
+}
+
+.geo-debug-log summary {
+  cursor: pointer;
+  color: #475569;
+  margin-top: 10px;
+}

@@ -43,8 +43,11 @@ Imports:
     ConsensusClusterPlus,
     gam
 Suggests:
+    Biobase,
     callr,
     BiocManager,
+    curl,
+    GEOquery,
     httr,
     jsonlite,
     methyLImp2,
