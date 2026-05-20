@@ -736,6 +736,10 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
   width: 100%;
 }
 
+.geo-workflow-tables {
+  margin-top: 10px;
+}
+
 .geo-table-section {
   border: 1px solid #e3e8ef;
   border-radius: 8px;
@@ -764,6 +768,10 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
 .geo-table-section > .shiny-html-output,
 .geo-table-section > .datatables {
   margin: 12px 14px;
+}
+
+.geo-table-section .dataTables_wrapper {
+  overflow-x: auto;
 }
 
 .geo-table-actions {

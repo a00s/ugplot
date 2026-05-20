@@ -2149,9 +2149,9 @@ server <- function(input, output, session) {
     files_done <- FALSE
     needs_extract <- FALSE
     if (is.data.frame(remote_files) && nrow(remote_files) > 0) {
-      selected_files <- if (isTRUE(loadable_only)) remote_files[remote_files$Loadable, , drop = FALSE] else remote_files
-      files_done <- nrow(selected_files) > 0 && !any(selected_files$NeedsDownload %||% TRUE)
-      needs_extract <- any(selected_files$LocalStatus == "downloaded" & selected_files$Loadable & grepl("\\.gz$", selected_files$File, ignore.case = TRUE))
+      processed_files <- remote_files[remote_files$Loadable, , drop = FALSE]
+      files_done <- nrow(processed_files) > 0 && !any(processed_files$NeedsDownload %||% TRUE)
+      needs_extract <- any(processed_files$LocalStatus == "downloaded" & grepl("\\.gz$", processed_files$File, ignore.case = TRUE))
     }
     matrix_files <- if (nzchar(trimws(accession_value))) ugplot_geo_matrix_files(ugplot_geo_cache_dir(trimws(accession_value))) else character(0)
     extract_done <- length(matrix_files) > 0
@@ -2160,98 +2160,86 @@ server <- function(input, output, session) {
     transcript_done <- is.data.frame(transcript_table) && nrow(transcript_table) > 0
     preview_done <- is.data.frame(preview) && nrow(preview) > 0
 
-    tags$div(class = "geo-workflow geo-workflow-top",
-      render_geo_step_card(1, "Inspect GEO accession", files_seen || metadata_done,
-        tags$div(
-          textInput("geo_accession", "GEO accession:", value = accession_value, placeholder = "GSE87571"),
-          actionButton("geo_inspect_files", if (files_seen || metadata_done) "Refresh GEO status" else "Inspect files")
+    tagList(
+      tags$div(class = "geo-workflow geo-workflow-top",
+        render_geo_step_card(1, "Inspect GEO accession", files_seen || metadata_done,
+          tags$div(
+            textInput("geo_accession", "GEO accession:", value = accession_value, placeholder = "GSE87571"),
+            actionButton("geo_inspect_files", if (files_seen || metadata_done) "Refresh GEO status" else "Inspect files")
+          )
+        ),
+        render_geo_step_card(2, "Sample metadata", metadata_done,
+          tags$div(
+            tags$p(class = "geo-step-note", "Sample metadata contains age, sex, tissue, disease, treatment, response, and other phenotype fields when GEO provides them."),
+            uiOutput("geo_metadata_summary"),
+            if (!metadata_done) actionButton("geo_fetch_metadata", "Fetch sample metadata") else NULL
+          )
+        ),
+        render_geo_step_card(3, "Matrix files", files_done,
+          tags$div(
+            tags$p(class = "geo-step-note", "Processed matrix tables are the required files for this workflow; raw archives remain optional."),
+            checkboxInput("geo_download_loadable_only", "Download only loadable processed tables", value = loadable_only),
+            uiOutput("geo_download_summary"),
+            if (!files_done) actionButton("geo_fetch_files", "Download matrix files") else NULL
+          )
+        ),
+        render_geo_step_card(4, "Download progress", files_done,
+          tags$div(
+            if (files_done) tags$p(class = "geo-step-note", "Required processed matrices are already local.") else NULL,
+            uiOutput("geo_download_progress_ui")
+          )
+        ),
+        render_geo_step_card(5, "Extract matrix files", extract_done,
+          tags$div(
+            if (needs_extract) {
+              tags$div(
+                tags$p(class = "geo-step-note", "Large .gz matrices must be extracted before preprocessing. They are still too large to load directly into ugPlot."),
+                actionButton("geo_extract_files", "Extract downloaded .gz files"),
+                uiOutput("geo_extract_progress_ui")
+              )
+            } else {
+              tags$div(
+                tags$p(class = "geo-step-note", if (extract_done) "Extracted matrix files are available locally." else "No compressed matrix is waiting for extraction."),
+                uiOutput("geo_extract_progress_ui")
+              )
+            }
+          )
+        ),
+        render_geo_step_card(6, "Analyze CpGs and transcripts", spearman_done && transcript_done,
+          tags$div(
+            uiOutput("geo_target_selector"),
+            tags$p(class = "geo-step-note", "Spearman scan uses numeric targets such as age. Transcript candidate tables are built automatically when annotation is available."),
+            numericInput("geo_spearman_max_cpgs", "Max CpGs to scan (0 = all):", value = max_cpgs_value, min = 0, step = 10000),
+            numericInput("geo_transcript_absrho_threshold", "Transcript CpG threshold |rho|:", value = threshold_value, min = 0, max = 1, step = 0.01),
+            uiOutput("geo_annotation_summary"),
+            if (!annotation_done) actionButton("geo_build_annotation", "Build/load CpG annotation cache") else NULL,
+            actionButton("geo_run_spearman", if (spearman_done) "Re-run CpG Spearman scan" else "Run CpG Spearman scan")
+          )
+        ),
+        render_geo_step_card(7, "Optional direct load", preview_done,
+          tags$div(
+            uiOutput("geo_file_selector"),
+            checkboxInput("geo_use_first_column_names", "Use first column as row names", value = TRUE),
+            selectInput("geo_loaded_orientation", "Loaded matrix orientation:", choices = c("Samples x CpGs" = "samples_rows", "CpGs x Samples" = "cpgs_rows"), selected = "samples_rows"),
+            actionButton("geo_load_selected_file", "Load selected file")
+          )
         )
       ),
-      render_geo_step_card(2, "Sample metadata", metadata_done,
-        tags$div(
-          if (!metadata_done) {
-            tags$div(
-              tags$p(class = "geo-step-note", "Sample metadata contains age, sex, tissue, disease, treatment, response, and other phenotype fields when GEO provides them."),
-              uiOutput("geo_metadata_summary"),
-              actionButton("geo_fetch_metadata", "Fetch sample metadata")
-            )
-          } else {
-            tags$div(
-              uiOutput("geo_metadata_summary"),
-              render_geo_table_details("Open sample metadata table", uiOutput("geo_metadata_table_title"), DT::DTOutput("geo_metadata_table"), open = FALSE)
-            )
-          }
-        )
-      ),
-      render_geo_step_card(3, "Matrix files", files_done,
-        tags$div(
-          if (!files_done) {
-            tags$div(
-              tags$p(class = "geo-step-note", "Processed matrix tables are selected by default; raw archives can be very large."),
-              checkboxInput("geo_download_loadable_only", "Download only loadable processed tables", value = loadable_only),
-              uiOutput("geo_download_summary"),
-              actionButton("geo_fetch_files", "Download matrix files")
-            )
-          } else {
-            tags$div(
-              checkboxInput("geo_download_loadable_only", "Download only loadable processed tables", value = loadable_only),
-              uiOutput("geo_download_summary"),
-              render_geo_table_details("Open GEO files table", uiOutput("geo_files_table_title"), DT::DTOutput("geo_files_table"), open = FALSE)
-            )
-          }
-        )
-      ),
-      render_geo_step_card(4, "Download progress", files_done,
-        tags$div(
-          uiOutput("geo_download_progress_ui")
-        )
-      ),
-      render_geo_step_card(5, "Extract matrix files", extract_done,
-        tags$div(
-          if (needs_extract) {
-            tags$div(
-              tags$p(class = "geo-step-note", "Large .gz matrices must be extracted before preprocessing. They are still too large to load directly into ugPlot."),
-              actionButton("geo_extract_files", "Extract downloaded .gz files"),
-              uiOutput("geo_extract_progress_ui")
-            )
-          } else {
-            tags$div(
-              tags$p(class = "geo-step-note", if (extract_done) "Extracted matrix files are available locally." else "No compressed matrix is waiting for extraction."),
-              uiOutput("geo_extract_progress_ui")
-            )
-          }
-        )
-      ),
-      render_geo_step_card(6, "Analyze CpGs and transcripts", spearman_done && transcript_done,
-        tags$div(
-          uiOutput("geo_target_selector"),
-          tags$p(class = "geo-step-note", "Spearman scan uses numeric targets such as age. Transcript candidate tables are built automatically when annotation is available."),
-          numericInput("geo_spearman_max_cpgs", "Max CpGs to scan (0 = all):", value = max_cpgs_value, min = 0, step = 10000),
-          numericInput("geo_transcript_absrho_threshold", "Transcript CpG threshold |rho|:", value = threshold_value, min = 0, max = 1, step = 0.01),
-          uiOutput("geo_annotation_summary"),
-          if (!annotation_done) actionButton("geo_build_annotation", "Build/load CpG annotation cache") else NULL,
-          actionButton("geo_run_spearman", if (spearman_done) "Re-run CpG Spearman scan" else "Run CpG Spearman scan"),
-          if (annotation_done) render_geo_table_details("Open CpG annotation table", uiOutput("geo_annotation_table_title"), DT::DTOutput("geo_annotation_table"), open = FALSE) else NULL,
-          if (spearman_done) render_geo_table_details("Open CpG Spearman table", uiOutput("geo_spearman_table_title"), DT::DTOutput("geo_spearman_table"), open = FALSE) else NULL,
-          if (transcript_done) {
-            render_geo_table_details(
-              "Open transcript candidate CpG table",
-              uiOutput("geo_transcript_candidates_table_title"),
-              DT::DTOutput("geo_transcript_candidates_table"),
-              open = FALSE,
-              extra = tags$div(class = "geo-table-actions", actionButton("geo_load_transcript_candidates", "Load transcript table into TABLE"))
-            )
-          } else NULL
-        )
-      ),
-      render_geo_step_card(7, "Optional direct load", preview_done,
-        tags$div(
-          uiOutput("geo_file_selector"),
-          checkboxInput("geo_use_first_column_names", "Use first column as row names", value = TRUE),
-          selectInput("geo_loaded_orientation", "Loaded matrix orientation:", choices = c("Samples x CpGs" = "samples_rows", "CpGs x Samples" = "cpgs_rows"), selected = "samples_rows"),
-          actionButton("geo_load_selected_file", "Load selected file"),
-          if (preview_done) render_geo_table_details("Open loaded ugPlot preview", uiOutput("geo_preview_table_title"), DT::DTOutput("geo_preview_table"), open = FALSE) else NULL
-        )
+      tags$div(class = "geo-table-stack geo-workflow-tables",
+        if (metadata_done) render_geo_table_details("Open sample metadata table", uiOutput("geo_metadata_table_title"), DT::DTOutput("geo_metadata_table"), open = FALSE) else NULL,
+        if (files_seen) render_geo_table_details("Open GEO files table", uiOutput("geo_files_table_title"), DT::DTOutput("geo_files_table"), open = FALSE) else NULL,
+        if (annotation_done) render_geo_table_details("Open CpG annotation table", uiOutput("geo_annotation_table_title"), DT::DTOutput("geo_annotation_table"), open = FALSE) else NULL,
+        if (spearman_done) render_geo_table_details("Open CpG Spearman table", uiOutput("geo_spearman_table_title"), DT::DTOutput("geo_spearman_table"), open = FALSE) else NULL,
+        if (transcript_done) {
+          render_geo_table_details(
+            "Open transcript candidate CpG table",
+            uiOutput("geo_transcript_candidates_table_title"),
+            DT::DTOutput("geo_transcript_candidates_table"),
+            open = FALSE,
+            extra = tags$div(class = "geo-table-actions", actionButton("geo_load_transcript_candidates", "Load transcript table into TABLE"))
+          )
+        } else NULL,
+        if (preview_done) render_geo_table_details("Open loaded ugPlot preview", uiOutput("geo_preview_table_title"), DT::DTOutput("geo_preview_table"), open = FALSE) else NULL
       )
     )
   })
@@ -2299,16 +2287,17 @@ server <- function(input, output, session) {
     }
     known_size <- sum(ugplot_geo_size_bytes(remote_files), na.rm = TRUE)
     unknown_size_n <- sum(is.na(ugplot_geo_size_bytes(remote_files)))
-    selected_files <- if (isTRUE(input$geo_download_loadable_only)) {
-      remote_files[remote_files$Loadable, , drop = FALSE]
-    } else {
-      remote_files
-    }
-    pending_files <- selected_files[selected_files$NeedsDownload, , drop = FALSE]
+    processed_files <- remote_files[remote_files$Loadable, , drop = FALSE]
+    processed_pending <- processed_files[processed_files$NeedsDownload, , drop = FALSE]
+    optional_files <- remote_files[!remote_files$Loadable, , drop = FALSE]
+    optional_pending <- optional_files[optional_files$NeedsDownload, , drop = FALSE]
     tags$div(
       tags$p(paste0("Found: ", nrow(remote_files), " file(s), ", ugplot_format_bytes(known_size), if (unknown_size_n > 0) paste0(" + ", unknown_size_n, " unknown-size file(s)") else "")),
-      tags$p(paste0("Selected: ", nrow(selected_files), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(selected_files), na.rm = TRUE)))),
-      tags$p(paste0("Still needed: ", nrow(pending_files), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(pending_files), na.rm = TRUE)))),
+      tags$p(paste0("Required processed matrices: ", nrow(processed_files), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(processed_files), na.rm = TRUE)), ".")),
+      tags$p(paste0("Still needed for required workflow: ", nrow(processed_pending), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(processed_pending), na.rm = TRUE)), ".")),
+      if (!isTRUE(input$geo_download_loadable_only) && nrow(optional_files) > 0) {
+        tags$p(paste0("Optional raw/metadata files selected: ", nrow(optional_files), " file(s); still missing ", nrow(optional_pending), "."))
+      } else NULL,
       tags$p(paste0("Folder: ", ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO"))))
     )
   })
@@ -2549,24 +2538,20 @@ server <- function(input, output, session) {
     cache_dir <- ugplot_geo_cache_dir(accession)
     remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
     geo_remote_files(remote_files)
-    selected_files <- if (isTRUE(input$geo_download_loadable_only)) {
-      remote_files[remote_files$Loadable, , drop = FALSE]
-    } else {
-      remote_files
-    }
-    pending_files <- selected_files[selected_files$NeedsDownload, , drop = FALSE]
-    if (nrow(pending_files) == 0) {
+    processed_files <- remote_files[remote_files$Loadable, , drop = FALSE]
+    pending_files <- processed_files[processed_files$NeedsDownload, , drop = FALSE]
+    if (nrow(processed_files) > 0 && nrow(pending_files) == 0) {
       shinyjs::disable("geo_fetch_files")
-      if (any(selected_files$LocalStatus == "downloaded" & selected_files$Loadable & grepl("\\.gz$", selected_files$File, ignore.case = TRUE))) {
+      if (any(processed_files$LocalStatus == "downloaded" & grepl("\\.gz$", processed_files$File, ignore.case = TRUE))) {
         shinyjs::enable("geo_extract_files")
       } else {
         shinyjs::disable("geo_extract_files")
       }
-      geo_stage(list(step = "Step 5", title = "Files already local", message = "All selected matrix files are already available locally. Extract compressed matrices next."))
+      geo_stage(list(step = "Step 5", title = "Matrix files already local", message = "Required processed matrix files are already available locally. Extract compressed matrices next."))
     } else {
       shinyjs::enable("geo_fetch_files")
       shinyjs::disable("geo_extract_files")
-      geo_stage(list(step = "Step 3", title = "Review matrix download plan", message = paste0("Still needed: ", nrow(pending_files), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(pending_files), na.rm = TRUE)), ".")))
+      geo_stage(list(step = "Step 3", title = "Review matrix download plan", message = paste0("Required processed matrices still needed: ", nrow(pending_files), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(pending_files), na.rm = TRUE)), ".")))
     }
   }, ignoreInit = TRUE)
 
@@ -2613,18 +2598,15 @@ server <- function(input, output, session) {
       geo_remote_files(remote_files)
       local_files <- ugplot_geo_list_candidate_files(accession, cache_dir)
       geo_files(local_files)
+      load_geo_cached_state(accession)
       if (nrow(remote_files) == 0) {
         geo_status(ugplot_geo_append_log(geo_status(), paste0("No supplementary files listed for ", accession, ".")))
         geo_stage(list(step = "Step 2", title = "No supplementary files", message = paste0("No downloadable supplementary files were listed for ", accession, ".")))
         shinyjs::disable("geo_fetch_files")
       } else {
-        selected_files <- if (isTRUE(input$geo_download_loadable_only)) {
-          remote_files[remote_files$Loadable, , drop = FALSE]
-        } else {
-          remote_files
-        }
-        pending_files <- selected_files[selected_files$NeedsDownload, , drop = FALSE]
-        selected_size <- sum(ugplot_geo_size_bytes(selected_files), na.rm = TRUE)
+        processed_files <- remote_files[remote_files$Loadable, , drop = FALSE]
+        pending_files <- processed_files[processed_files$NeedsDownload, , drop = FALSE]
+        selected_size <- sum(ugplot_geo_size_bytes(processed_files), na.rm = TRUE)
         geo_status(ugplot_geo_append_log(
           geo_status(),
           paste0(
@@ -2638,32 +2620,32 @@ server <- function(input, output, session) {
         shinyjs::enable("geo_fetch_metadata")
         geo_stage(list(
           step = if (is.data.frame(geo_sample_metadata()) && nrow(geo_sample_metadata()) > 0) {
-            if (nrow(pending_files) == 0) "Step 5" else "Step 3"
+            if (nrow(processed_files) > 0 && nrow(pending_files) == 0) "Step 5" else "Step 3"
           } else {
             "Step 2"
           },
           title = if (!is.data.frame(geo_sample_metadata()) || nrow(geo_sample_metadata()) == 0) {
             "Fetch sample metadata"
-          } else if (nrow(pending_files) == 0) {
-            "Files already local"
+          } else if (nrow(processed_files) > 0 && nrow(pending_files) == 0) {
+            "Matrix files already local"
           } else {
             "Review matrix download plan"
           },
           message = if (!is.data.frame(geo_sample_metadata()) || nrow(geo_sample_metadata()) == 0) {
             "Fetch sample metadata next so phenotypes can be matched to the matrix samples."
-          } else if (nrow(pending_files) == 0) {
-            paste0("All selected matrix files are already available locally.")
+          } else if (nrow(processed_files) > 0 && nrow(pending_files) == 0) {
+            paste0("Required processed matrix files are already available locally.")
           } else {
             paste0(
-              "Selected ", nrow(selected_files), " file(s), about ",
+              "Required processed matrices: ", nrow(processed_files), " file(s), about ",
               ugplot_format_bytes(selected_size), ". Still needed: ",
               nrow(pending_files), " file(s)."
             )
           }
         ))
-        if (nrow(pending_files) == 0) {
+        if (nrow(processed_files) > 0 && nrow(pending_files) == 0) {
           shinyjs::disable("geo_fetch_files")
-          if (any(selected_files$LocalStatus == "downloaded" & grepl("\\.gz$", selected_files$File, ignore.case = TRUE))) {
+          if (any(processed_files$LocalStatus == "downloaded" & grepl("\\.gz$", processed_files$File, ignore.case = TRUE))) {
             shinyjs::enable("geo_extract_files")
           } else {
             shinyjs::disable("geo_extract_files")
@@ -2710,17 +2692,17 @@ server <- function(input, output, session) {
       if (is.data.frame(remote_files) && nrow(remote_files) > 0) {
         remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
         geo_remote_files(remote_files)
-        selected_files <- if (isTRUE(input$geo_download_loadable_only)) remote_files[remote_files$Loadable, , drop = FALSE] else remote_files
-        pending_files <- selected_files[selected_files$NeedsDownload, , drop = FALSE]
-        if (nrow(pending_files) > 0) {
+        processed_files <- remote_files[remote_files$Loadable, , drop = FALSE]
+        pending_files <- processed_files[processed_files$NeedsDownload, , drop = FALSE]
+        if (nrow(processed_files) == 0 || nrow(pending_files) > 0) {
           shinyjs::enable("geo_fetch_files")
-          geo_stage(list(step = "Step 3", title = "Review matrix download plan", message = paste0("Metadata is ready. Next download ", nrow(pending_files), " matrix file(s), about ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(pending_files), na.rm = TRUE)), ".")))
+          geo_stage(list(step = "Step 3", title = "Review matrix download plan", message = paste0("Metadata is ready. Required processed matrices still needed: ", nrow(pending_files), " file(s), about ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(pending_files), na.rm = TRUE)), ".")))
         } else {
           shinyjs::disable("geo_fetch_files")
-          if (any(selected_files$LocalStatus == "downloaded" & selected_files$Loadable & grepl("\\.gz$", selected_files$File, ignore.case = TRUE))) {
+          if (any(processed_files$LocalStatus == "downloaded" & grepl("\\.gz$", processed_files$File, ignore.case = TRUE))) {
             shinyjs::enable("geo_extract_files")
           }
-          geo_stage(list(step = "Step 5", title = "Matrix files already local", message = "Metadata is ready and selected matrix files are local. Extract compressed matrices next."))
+          geo_stage(list(step = "Step 5", title = "Matrix files already local", message = "Metadata is ready and required processed matrix files are local. Extract compressed matrices next."))
         }
       } else {
         geo_stage(list(step = "Step 3", title = "Inspect matrix files", message = "Metadata is ready. Inspect GEO files to plan matrix downloads."))
@@ -3208,6 +3190,12 @@ server <- function(input, output, session) {
       candidates <- ugplot_geo_target_candidates(metadata)
       target_column <- if ("age" %in% candidates) "age" else if (length(candidates) > 0) candidates[[1]] else ""
     }
+    spearman_paths <- list.files(cache_dir, pattern = "^ugplot_geo_spearman_.*\\.csv$", full.names = TRUE)
+    spearman_paths <- spearman_paths[!grepl("_annotated|_by_gene|_by_transcript", basename(spearman_paths))]
+    if (!nzchar(target_column) && length(spearman_paths) > 0) {
+      spearman_names <- sub("^ugplot_geo_spearman_(.*)\\.csv$", "\\1", basename(spearman_paths))
+      target_column <- if ("age" %in% spearman_names) "age" else spearman_names[[1]]
+    }
     spearman_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, ".csv"))
     if (nzchar(target_column) && file.exists(spearman_path)) {
       spearman_results <- tryCatch(utils::read.csv(spearman_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
@@ -3220,6 +3208,16 @@ server <- function(input, output, session) {
         } else {
           geo_spearman_results(spearman_results)
         }
+      }
+    }
+    candidate_paths <- list.files(cache_dir, pattern = "^ugplot_geo_transcript_candidates_.*\\.csv$", full.names = TRUE)
+    if (length(candidate_paths) > 0 && (!is.data.frame(geo_transcript_candidates()) || nrow(geo_transcript_candidates()) == 0)) {
+      target_matches <- if (nzchar(target_column)) grepl(paste0("^ugplot_geo_transcript_candidates_", target_column, "_"), basename(candidate_paths)) else rep(FALSE, length(candidate_paths))
+      preferred_paths <- candidate_paths[target_matches]
+      candidate_path <- if (length(preferred_paths) > 0) preferred_paths[[which.max(file.info(preferred_paths)$mtime)]] else candidate_paths[[which.max(file.info(candidate_paths)$mtime)]]
+      transcript_candidates <- tryCatch(utils::read.csv(candidate_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+      if (is.data.frame(transcript_candidates) && nrow(transcript_candidates) > 0) {
+        geo_transcript_candidates(transcript_candidates)
       }
     }
     geo_stage(list(
@@ -3236,6 +3234,13 @@ server <- function(input, output, session) {
       load_geo_cached_state(accession)
     }
   }, ignoreInit = TRUE)
+
+  session$onFlushed(function() {
+    accession <- trimws(input$geo_accession %||% "")
+    if (nchar(accession) >= 6) {
+      load_geo_cached_state(accession)
+    }
+  }, once = TRUE)
 
   observeEvent(input$geo_build_annotation, {
     accession <- trimws(input$geo_accession %||% "")
