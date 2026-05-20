@@ -882,6 +882,75 @@ ugplot_geo_spearman_scan <- function(matrix_files, metadata, target_column,
   results
 }
 
+ugplot_geo_transcript_dataset <- function(matrix_files, metadata, target_column, cpgs,
+                                          progress_callback = NULL) {
+  if (!target_column %in% names(metadata)) {
+    stop("Selected target column is not present in sample metadata.")
+  }
+  cpgs <- unique(as.character(stats::na.omit(cpgs)))
+  if (length(cpgs) == 0) {
+    stop("No CpGs were selected for this transcript.")
+  }
+  sample_map <- ugplot_geo_matrix_sample_map(matrix_files, metadata)
+  if (!is.data.frame(sample_map) || nrow(sample_map) == 0) {
+    stop("No matrix columns could be matched to sample metadata. Check sample IDs and GEO metadata titles.")
+  }
+
+  values <- matrix(NA_real_, nrow = nrow(metadata), ncol = length(cpgs))
+  colnames(values) <- cpgs
+  rownames(values) <- metadata$sample_id
+  cpg_index <- stats::setNames(seq_along(cpgs), cpgs)
+  found <- rep(FALSE, length(cpgs))
+
+  file_maps <- split(sample_map, sample_map$Path)
+  scanned <- 0L
+  for (path in names(file_maps)) {
+    map <- file_maps[[path]]
+    con <- file(path, "r")
+    on.exit(try(close(con), silent = TRUE), add = TRUE)
+    readLines(con, n = 1, warn = FALSE)
+    repeat {
+      line <- readLines(con, n = 1, warn = FALSE)
+      if (length(line) == 0) {
+        break
+      }
+      parts <- strsplit(line, "\t", fixed = TRUE)[[1]]
+      cpg <- parts[[1]]
+      if (cpg %in% names(cpg_index)) {
+        numeric_values <- suppressWarnings(as.numeric(parts[map$ColumnIndex]))
+        values[map$MetadataRow, cpg_index[[cpg]]] <- numeric_values
+        found[[cpg_index[[cpg]]]] <- TRUE
+      }
+      scanned <- scanned + 1L
+      if (!is.null(progress_callback) && scanned %% 10000L == 0L) {
+        progress_callback(scanned, sum(found), length(cpgs))
+      }
+      if (all(found)) {
+        break
+      }
+    }
+    try(close(con), silent = TRUE)
+    if (all(found)) {
+      break
+    }
+  }
+
+  kept_cpgs <- colnames(values)[found]
+  if (length(kept_cpgs) == 0) {
+    stop("None of the transcript CpGs were found in the extracted GEO matrix files.")
+  }
+  values <- values[, kept_cpgs, drop = FALSE]
+  data <- data.frame(
+    sample_id = metadata$sample_id,
+    target = metadata[[target_column]],
+    values,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  names(data)[names(data) == "target"] <- target_column
+  data
+}
+
 ugplot_geo_list_candidate_files <- function(accession, cache_dir) {
   files <- list.files(cache_dir, recursive = TRUE, full.names = TRUE, all.files = FALSE)
   files <- files[basename(files) != "ugplot_geo_manifest.rds"]
@@ -934,4 +1003,3 @@ ugplot_read_geo_table <- function(path, use_first_column_names = TRUE) {
   )
   as.data.frame(data, stringsAsFactors = FALSE, check.names = FALSE)
 }
-
