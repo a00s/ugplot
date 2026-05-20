@@ -2531,7 +2531,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$geo_download_loadable_only, {
     remote_files <- geo_remote_files()
-    accession <- trimws(input$geo_accession %||% "")
+    accession <- isolate(trimws(input$geo_accession %||% ""))
     if (!is.data.frame(remote_files) || nrow(remote_files) == 0 || !nzchar(accession)) {
       return()
     }
@@ -3084,7 +3084,7 @@ server <- function(input, output, session) {
       return(invisible(data.frame()))
     }
     cache_dir <- ugplot_geo_cache_dir(accession)
-    target_column <- input$geo_target_column %||% ""
+    target_column <- isolate(input$geo_target_column %||% "")
     results <- geo_spearman_raw_results()
     if (!is.data.frame(results) || nrow(results) == 0) {
       spearman_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, ".csv"))
@@ -3115,7 +3115,7 @@ server <- function(input, output, session) {
       return(invisible(data.frame()))
     }
 
-    threshold <- suppressWarnings(as.numeric(input$geo_transcript_absrho_threshold %||% 0.8))
+    threshold <- suppressWarnings(as.numeric(isolate(input$geo_transcript_absrho_threshold %||% 0.8)))
     candidates <- ugplot_geo_transcript_candidates(results, annotation_map, threshold)
     geo_transcript_candidates(candidates)
     safe_threshold <- gsub("[^0-9]+", "_", format(threshold, trim = TRUE, scientific = FALSE))
@@ -3185,7 +3185,7 @@ server <- function(input, output, session) {
     }
 
     metadata <- geo_sample_metadata()
-    target_column <- input$geo_target_column %||% ""
+    target_column <- isolate(input$geo_target_column %||% "")
     if ((!nzchar(target_column) || !target_column %in% names(metadata)) && is.data.frame(metadata) && nrow(metadata) > 0) {
       candidates <- ugplot_geo_target_candidates(metadata)
       target_column <- if ("age" %in% candidates) "age" else if (length(candidates) > 0) candidates[[1]] else ""
@@ -3236,7 +3236,7 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   session$onFlushed(function() {
-    accession <- trimws(input$geo_accession %||% "")
+    accession <- isolate(trimws(input$geo_accession %||% ""))
     if (nchar(accession) >= 6) {
       load_geo_cached_state(accession)
     }
