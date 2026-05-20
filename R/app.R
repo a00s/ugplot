@@ -2234,11 +2234,7 @@ server <- function(input, output, session) {
             "Open transcript candidate CpG table",
             uiOutput("geo_transcript_candidates_table_title"),
             DT::DTOutput("geo_transcript_candidates_table"),
-            open = FALSE,
-            extra = tags$div(class = "geo-table-actions",
-              uiOutput("geo_transcript_dataset_selector"),
-              actionButton("geo_load_transcript_candidates", "Load selected transcript dataset into TABLE")
-            )
+            open = FALSE
           )
         } else NULL,
         if (preview_done) render_geo_table_details("Open loaded ugPlot preview", uiOutput("geo_preview_table_title"), DT::DTOutput("geo_preview_table"), open = FALSE) else NULL
@@ -2407,29 +2403,6 @@ server <- function(input, output, session) {
     )
   })
 
-  output$geo_transcript_dataset_selector <- renderUI({
-    candidates <- geo_transcript_candidates()
-    if (!is.data.frame(candidates) || nrow(candidates) == 0 || !"Transcript" %in% names(candidates)) {
-      return(NULL)
-    }
-    summary <- candidates
-    if ("TriggerMaxAbsRho" %in% names(summary)) {
-      transcript_order <- stats::aggregate(
-        suppressWarnings(as.numeric(summary$TriggerMaxAbsRho)),
-        list(Transcript = as.character(summary$Transcript)),
-        max,
-        na.rm = TRUE
-      )
-      names(transcript_order)[[2]] <- "MaxAbsRho"
-      transcript_order <- transcript_order[order(-transcript_order$MaxAbsRho, transcript_order$Transcript), , drop = FALSE]
-      labels <- paste0(transcript_order$Transcript, " (max |rho|=", round(transcript_order$MaxAbsRho, 3), ")")
-      choices <- stats::setNames(transcript_order$Transcript, labels)
-    } else {
-      choices <- sort(unique(as.character(summary$Transcript)))
-    }
-    selectInput("geo_selected_transcript", "Transcript to load as sample x CpG dataset:", choices = choices)
-  })
-
   output$geo_preview_table_title <- renderUI({
     preview <- geo_preview_data()
     req(is.data.frame(preview), nrow(preview) > 0)
@@ -2551,7 +2524,33 @@ server <- function(input, output, session) {
     if ("PValue" %in% names(display)) {
       display$PValue <- signif(display$PValue, 5)
     }
-    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+    if ("Transcript" %in% names(display)) {
+      transcript_values <- as.character(display$Transcript)
+      display <- cbind(
+        Load = vapply(transcript_values, function(transcript) {
+          as.character(tags$button(
+            type = "button",
+            class = "btn btn-default btn-xs",
+            `data-transcript` = transcript,
+            onclick = "Shiny.setInputValue('geo_load_transcript_from_row', this.getAttribute('data-transcript'), {priority: 'event'});",
+            "Load"
+          ))
+        }, character(1)),
+        display,
+        stringsAsFactors = FALSE
+      )
+    }
+    escape_cols <- which(names(display) != "Load")
+    DT::datatable(
+      display,
+      options = list(
+        pageLength = 10,
+        scrollX = TRUE,
+        columnDefs = list(list(targets = 0, orderable = FALSE, searchable = FALSE))
+      ),
+      rownames = FALSE,
+      escape = escape_cols
+    )
   })
 
   observeEvent(input$geo_download_loadable_only, {
@@ -3499,29 +3498,28 @@ server <- function(input, output, session) {
     }
   }, ignoreInit = TRUE)
 
-  observeEvent(input$geo_load_transcript_candidates, {
+  load_geo_transcript_dataset <- function(selected_transcript) {
     candidates <- geo_transcript_candidates()
     if (!is.data.frame(candidates) || nrow(candidates) == 0) {
       geo_stage(list(step = "Step 6", title = "No transcript table", message = "Build transcript candidates by running Spearman with annotation first."))
-      return()
+      return(invisible(FALSE))
     }
     accession <- trimws(input$geo_accession %||% "GEO")
     target_column <- input$geo_target_column %||% ""
-    selected_transcript <- input$geo_selected_transcript %||% ""
     if (!nzchar(selected_transcript) || !selected_transcript %in% as.character(candidates$Transcript)) {
-      geo_stage(list(step = "Step 6", title = "Select a transcript", message = "Choose one transcript before loading a transcript CpG dataset."))
-      return()
+      geo_stage(list(step = "Step 6", title = "Select a transcript", message = "Click Load beside a transcript before loading a transcript CpG dataset."))
+      return(invisible(FALSE))
     }
     metadata <- geo_sample_metadata()
     if (!is.data.frame(metadata) || nrow(metadata) == 0 || !target_column %in% names(metadata)) {
       geo_stage(list(step = "Step 6", title = "Missing target metadata", message = "Fetch sample metadata and choose a valid target column first."))
-      return()
+      return(invisible(FALSE))
     }
     cache_dir <- ugplot_geo_cache_dir(accession)
     matrix_files <- ugplot_geo_matrix_files(cache_dir)
     if (length(matrix_files) == 0) {
       geo_stage(list(step = "Step 6", title = "No extracted matrix files", message = "Extract downloaded GEO matrix files before building a transcript dataset."))
-      return()
+      return(invisible(FALSE))
     }
     transcript_rows <- candidates[as.character(candidates$Transcript) == selected_transcript, , drop = FALSE]
     transcript_cpgs <- unique(as.character(stats::na.omit(transcript_rows$CpG)))
@@ -3550,7 +3548,7 @@ server <- function(input, output, session) {
       }
     )
     if (!is.data.frame(transcript_dataset) || nrow(transcript_dataset) == 0) {
-      return()
+      return(invisible(FALSE))
     }
     safe_transcript <- gsub("[^A-Za-z0-9_.-]+", "_", selected_transcript)
     safe_target <- gsub("[^A-Za-z0-9_.-]+", "_", target_column)
@@ -3572,6 +3570,11 @@ server <- function(input, output, session) {
       )
     ))
     geo_status(ugplot_geo_append_log(geo_status(), paste0("Loaded transcript dataset into TABLE: ", selected_transcript, "; ", nrow(dff), " rows x ", ncol(dff), " columns. Saved to ", dataset_path, ".")))
+    invisible(TRUE)
+  }
+
+  observeEvent(input$geo_load_transcript_from_row, {
+    load_geo_transcript_dataset(input$geo_load_transcript_from_row %||% "")
   })
 
   observeEvent(input$geo_load_selected_file, {
