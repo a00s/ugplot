@@ -2228,7 +2228,6 @@ server <- function(input, output, session) {
       tags$div(class = "geo-table-stack geo-workflow-tables",
         if (metadata_done) render_geo_table_details("Open sample metadata table", uiOutput("geo_metadata_table_title"), DT::DTOutput("geo_metadata_table"), open = FALSE) else NULL,
         if (files_seen) render_geo_table_details("Open GEO files table", uiOutput("geo_files_table_title"), DT::DTOutput("geo_files_table"), open = FALSE) else NULL,
-        if (annotation_done) render_geo_table_details("Open CpG annotation table", uiOutput("geo_annotation_table_title"), DT::DTOutput("geo_annotation_table"), open = FALSE) else NULL,
         if (spearman_done) render_geo_table_details("Open CpG Spearman table", uiOutput("geo_spearman_table_title"), DT::DTOutput("geo_spearman_table"), open = FALSE) else NULL,
         if (transcript_done) {
           render_geo_table_details(
