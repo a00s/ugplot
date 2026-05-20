@@ -544,88 +544,10 @@ ui <- fluidPage(
       fluidPage(
         tags$h4("GEO methylation import"),
         uiOutput("geo_stage_status"),
-        tags$div(class = "geo-workflow geo-workflow-top",
-          tags$div(class = "geo-step",
-            tags$div(class = "geo-step-title", "1. Inspect GEO accession"),
-            textInput("geo_accession", "GEO accession:", value = "", placeholder = "GSE87571"),
-            actionButton("geo_inspect_files", "Inspect files")
-          ),
-          tags$div(class = "geo-step",
-            tags$div(class = "geo-step-title", "2. Fetch sample metadata"),
-            tags$p(class = "geo-step-note", "Sample metadata contains age, sex, tissue, disease, treatment, response, and other phenotype fields when GEO provides them."),
-            uiOutput("geo_metadata_summary"),
-            actionButton("geo_fetch_metadata", "Fetch sample metadata")
-          ),
-          tags$div(class = "geo-step",
-            tags$div(class = "geo-step-title", "3. Review matrix download plan"),
-            tags$p(class = "geo-step-note", "Processed matrix tables are selected by default; raw archives can be very large."),
-            checkboxInput("geo_download_loadable_only", "Download only loadable processed tables", value = TRUE),
-            uiOutput("geo_download_summary"),
-            actionButton("geo_fetch_files", "Download matrix files")
-          ),
-          tags$div(class = "geo-step",
-            tags$div(class = "geo-step-title", "4. Matrix download progress"),
-            uiOutput("geo_download_progress_ui")
-          ),
-          tags$div(class = "geo-step",
-            tags$div(class = "geo-step-title", "5. Extract matrix files"),
-            tags$p(class = "geo-step-note", "Large .gz matrices must be extracted before preprocessing. They are still too large to load directly into ugPlot."),
-            actionButton("geo_extract_files", "Extract downloaded .gz files"),
-            uiOutput("geo_extract_progress_ui")
-          ),
-          tags$div(class = "geo-step",
-            tags$div(class = "geo-step-title", "6. Analyze CpGs and transcripts"),
-            uiOutput("geo_target_selector"),
-            tags$p(class = "geo-step-note", "Spearman scan uses numeric targets such as age. Transcript candidate tables are built automatically when annotation is available."),
-            numericInput("geo_spearman_max_cpgs", "Max CpGs to scan (0 = all):", value = 50000, min = 0, step = 10000),
-            numericInput("geo_transcript_absrho_threshold", "Transcript CpG threshold |rho|:", value = 0.8, min = 0, max = 1, step = 0.01),
-            uiOutput("geo_annotation_summary"),
-            actionButton("geo_build_annotation", "Build/load CpG annotation cache"),
-            actionButton("geo_run_spearman", "Run CpG Spearman scan")
-          ),
-          tags$div(class = "geo-step",
-            tags$div(class = "geo-step-title", "7. Optional direct load"),
-            uiOutput("geo_file_selector"),
-            checkboxInput("geo_use_first_column_names", "Use first column as row names", value = TRUE),
-            selectInput("geo_loaded_orientation", "Loaded matrix orientation:", choices = c("Samples x CpGs" = "samples_rows", "CpGs x Samples" = "cpgs_rows"), selected = "samples_rows"),
-            actionButton("geo_load_selected_file", "Load selected file")
-          )
-        ),
-        tags$div(class = "geo-table-stack",
-          tags$details(class = "geo-table-section", open = TRUE,
-            tags$summary("Sample metadata"),
-            uiOutput("geo_metadata_table_title"),
-            DT::DTOutput("geo_metadata_table")
-          ),
-          tags$details(class = "geo-table-section", open = TRUE,
-            tags$summary("GEO files"),
-            uiOutput("geo_files_table_title"),
-            DT::DTOutput("geo_files_table")
-          ),
-          tags$details(class = "geo-table-section",
-            tags$summary("CpG annotation map"),
-            uiOutput("geo_annotation_table_title"),
-            DT::DTOutput("geo_annotation_table")
-          ),
-          tags$details(class = "geo-table-section", open = TRUE,
-            tags$summary("CpG Spearman results"),
-            uiOutput("geo_spearman_table_title"),
-            DT::DTOutput("geo_spearman_table")
-          ),
-          tags$details(class = "geo-table-section", open = TRUE,
-            tags$summary("Transcript candidate CpG table"),
-            uiOutput("geo_transcript_candidates_table_title"),
-            DT::DTOutput("geo_transcript_candidates_table")
-          ),
-          tags$details(class = "geo-table-section",
-            tags$summary("Loaded ugPlot preview"),
-            uiOutput("geo_preview_table_title"),
-            DT::DTOutput("geo_preview_table")
-          ),
-          tags$details(class = "geo-debug-log geo-table-section",
-            tags$summary("Technical log"),
-            tags$div(class = "dl-status-box", verbatimTextOutput("geo_import_status"))
-          )
+        uiOutput("geo_workflow_ui"),
+        tags$details(class = "geo-debug-log geo-table-section",
+          tags$summary("Technical log"),
+          tags$div(class = "dl-status-box", verbatimTextOutput("geo_import_status"))
         )
       )
     ),
@@ -2187,6 +2109,153 @@ server <- function(input, output, session) {
     render_geo_progress(progress)
   })
 
+  render_geo_step_card <- function(number, title, done = FALSE, body = NULL) {
+    tags$div(
+      class = paste("geo-step", if (isTRUE(done)) "geo-step-done" else "geo-step-pending"),
+      tags$div(class = "geo-step-title",
+        tags$span(paste0(number, ". ", title)),
+        tags$span(class = paste("geo-step-badge", if (isTRUE(done)) "geo-step-badge-done" else "geo-step-badge-pending"),
+          if (isTRUE(done)) "done" else "pending"
+        )
+      ),
+      body
+    )
+  }
+
+  render_geo_table_details <- function(summary, title_output, table_output, open = FALSE, extra = NULL) {
+    tags$details(class = "geo-table-section geo-step-table", open = if (isTRUE(open)) TRUE else NULL,
+      tags$summary(summary),
+      title_output,
+      table_output,
+      extra
+    )
+  }
+
+  output$geo_workflow_ui <- renderUI({
+    accession_value <- isolate(input$geo_accession %||% "")
+    loadable_only <- isolate(isTRUE(input$geo_download_loadable_only))
+    threshold_value <- isolate(input$geo_transcript_absrho_threshold %||% 0.8)
+    max_cpgs_value <- isolate(input$geo_spearman_max_cpgs %||% 0)
+    metadata <- geo_sample_metadata()
+    remote_files <- geo_remote_files()
+    local_files <- geo_files()
+    annotation_map <- geo_cpg_annotation()
+    spearman_results <- geo_spearman_raw_results()
+    transcript_table <- geo_transcript_candidates()
+    preview <- geo_preview_data()
+
+    metadata_done <- is.data.frame(metadata) && nrow(metadata) > 0
+    files_seen <- (is.data.frame(remote_files) && nrow(remote_files) > 0) || (is.data.frame(local_files) && nrow(local_files) > 0)
+    files_done <- FALSE
+    needs_extract <- FALSE
+    if (is.data.frame(remote_files) && nrow(remote_files) > 0) {
+      selected_files <- if (isTRUE(loadable_only)) remote_files[remote_files$Loadable, , drop = FALSE] else remote_files
+      files_done <- nrow(selected_files) > 0 && !any(selected_files$NeedsDownload %||% TRUE)
+      needs_extract <- any(selected_files$LocalStatus == "downloaded" & selected_files$Loadable & grepl("\\.gz$", selected_files$File, ignore.case = TRUE))
+    }
+    matrix_files <- if (nzchar(trimws(accession_value))) ugplot_geo_matrix_files(ugplot_geo_cache_dir(trimws(accession_value))) else character(0)
+    extract_done <- length(matrix_files) > 0
+    annotation_done <- is.data.frame(annotation_map) && nrow(annotation_map) > 0
+    spearman_done <- is.data.frame(spearman_results) && nrow(spearman_results) > 0
+    transcript_done <- is.data.frame(transcript_table) && nrow(transcript_table) > 0
+    preview_done <- is.data.frame(preview) && nrow(preview) > 0
+
+    tags$div(class = "geo-workflow geo-workflow-top",
+      render_geo_step_card(1, "Inspect GEO accession", files_seen || metadata_done,
+        tags$div(
+          textInput("geo_accession", "GEO accession:", value = accession_value, placeholder = "GSE87571"),
+          actionButton("geo_inspect_files", if (files_seen || metadata_done) "Refresh GEO status" else "Inspect files")
+        )
+      ),
+      render_geo_step_card(2, "Sample metadata", metadata_done,
+        tags$div(
+          if (!metadata_done) {
+            tags$div(
+              tags$p(class = "geo-step-note", "Sample metadata contains age, sex, tissue, disease, treatment, response, and other phenotype fields when GEO provides them."),
+              uiOutput("geo_metadata_summary"),
+              actionButton("geo_fetch_metadata", "Fetch sample metadata")
+            )
+          } else {
+            tags$div(
+              uiOutput("geo_metadata_summary"),
+              render_geo_table_details("Open sample metadata table", uiOutput("geo_metadata_table_title"), DT::DTOutput("geo_metadata_table"), open = FALSE)
+            )
+          }
+        )
+      ),
+      render_geo_step_card(3, "Matrix files", files_done,
+        tags$div(
+          if (!files_done) {
+            tags$div(
+              tags$p(class = "geo-step-note", "Processed matrix tables are selected by default; raw archives can be very large."),
+              checkboxInput("geo_download_loadable_only", "Download only loadable processed tables", value = loadable_only),
+              uiOutput("geo_download_summary"),
+              actionButton("geo_fetch_files", "Download matrix files")
+            )
+          } else {
+            tags$div(
+              checkboxInput("geo_download_loadable_only", "Download only loadable processed tables", value = loadable_only),
+              uiOutput("geo_download_summary"),
+              render_geo_table_details("Open GEO files table", uiOutput("geo_files_table_title"), DT::DTOutput("geo_files_table"), open = FALSE)
+            )
+          }
+        )
+      ),
+      render_geo_step_card(4, "Download progress", files_done,
+        tags$div(
+          uiOutput("geo_download_progress_ui")
+        )
+      ),
+      render_geo_step_card(5, "Extract matrix files", extract_done,
+        tags$div(
+          if (needs_extract) {
+            tags$div(
+              tags$p(class = "geo-step-note", "Large .gz matrices must be extracted before preprocessing. They are still too large to load directly into ugPlot."),
+              actionButton("geo_extract_files", "Extract downloaded .gz files"),
+              uiOutput("geo_extract_progress_ui")
+            )
+          } else {
+            tags$div(
+              tags$p(class = "geo-step-note", if (extract_done) "Extracted matrix files are available locally." else "No compressed matrix is waiting for extraction."),
+              uiOutput("geo_extract_progress_ui")
+            )
+          }
+        )
+      ),
+      render_geo_step_card(6, "Analyze CpGs and transcripts", spearman_done && transcript_done,
+        tags$div(
+          uiOutput("geo_target_selector"),
+          tags$p(class = "geo-step-note", "Spearman scan uses numeric targets such as age. Transcript candidate tables are built automatically when annotation is available."),
+          numericInput("geo_spearman_max_cpgs", "Max CpGs to scan (0 = all):", value = max_cpgs_value, min = 0, step = 10000),
+          numericInput("geo_transcript_absrho_threshold", "Transcript CpG threshold |rho|:", value = threshold_value, min = 0, max = 1, step = 0.01),
+          uiOutput("geo_annotation_summary"),
+          if (!annotation_done) actionButton("geo_build_annotation", "Build/load CpG annotation cache") else NULL,
+          actionButton("geo_run_spearman", if (spearman_done) "Re-run CpG Spearman scan" else "Run CpG Spearman scan"),
+          if (annotation_done) render_geo_table_details("Open CpG annotation table", uiOutput("geo_annotation_table_title"), DT::DTOutput("geo_annotation_table"), open = FALSE) else NULL,
+          if (spearman_done) render_geo_table_details("Open CpG Spearman table", uiOutput("geo_spearman_table_title"), DT::DTOutput("geo_spearman_table"), open = FALSE) else NULL,
+          if (transcript_done) {
+            render_geo_table_details(
+              "Open transcript candidate CpG table",
+              uiOutput("geo_transcript_candidates_table_title"),
+              DT::DTOutput("geo_transcript_candidates_table"),
+              open = FALSE,
+              extra = tags$div(class = "geo-table-actions", actionButton("geo_load_transcript_candidates", "Load transcript table into TABLE"))
+            )
+          } else NULL
+        )
+      ),
+      render_geo_step_card(7, "Optional direct load", preview_done,
+        tags$div(
+          uiOutput("geo_file_selector"),
+          checkboxInput("geo_use_first_column_names", "Use first column as row names", value = TRUE),
+          selectInput("geo_loaded_orientation", "Loaded matrix orientation:", choices = c("Samples x CpGs" = "samples_rows", "CpGs x Samples" = "cpgs_rows"), selected = "samples_rows"),
+          actionButton("geo_load_selected_file", "Load selected file"),
+          if (preview_done) render_geo_table_details("Open loaded ugPlot preview", uiOutput("geo_preview_table_title"), DT::DTOutput("geo_preview_table"), open = FALSE) else NULL
+        )
+      )
+    )
+  })
+
   output$geo_files_table <- DT::renderDT({
     files <- geo_files()
     remote_files <- geo_remote_files()
@@ -3099,6 +3168,75 @@ server <- function(input, output, session) {
     invisible(candidates)
   }
 
+  load_geo_cached_state <- function(accession) {
+    accession <- trimws(accession %||% "")
+    if (!nzchar(accession)) {
+      return(invisible(FALSE))
+    }
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    if (!dir.exists(cache_dir)) {
+      return(invisible(FALSE))
+    }
+
+    metadata_path <- ugplot_geo_sample_metadata_path(cache_dir, "rds")
+    if (file.exists(metadata_path)) {
+      metadata <- tryCatch(readRDS(metadata_path), error = function(e) data.frame())
+      if (is.data.frame(metadata) && nrow(metadata) > 0) {
+        geo_sample_metadata(metadata)
+        annotation_map <- ugplot_geo_load_annotation_cache(ugplot_geo_detect_platform(metadata))
+        if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
+          geo_cpg_annotation(annotation_map)
+        }
+      }
+    }
+
+    manifest_path <- ugplot_geo_manifest_path(cache_dir)
+    if (file.exists(manifest_path)) {
+      manifest <- tryCatch(readRDS(manifest_path), error = function(e) NULL)
+      if (is.list(manifest) && is.data.frame(manifest$files)) {
+        geo_remote_files(ugplot_geo_annotate_remote_files(manifest$files, cache_dir))
+      }
+    }
+    files <- ugplot_geo_list_candidate_files(accession, cache_dir)
+    if (is.data.frame(files)) {
+      geo_files(files)
+    }
+
+    metadata <- geo_sample_metadata()
+    target_column <- input$geo_target_column %||% ""
+    if ((!nzchar(target_column) || !target_column %in% names(metadata)) && is.data.frame(metadata) && nrow(metadata) > 0) {
+      candidates <- ugplot_geo_target_candidates(metadata)
+      target_column <- if ("age" %in% candidates) "age" else if (length(candidates) > 0) candidates[[1]] else ""
+    }
+    spearman_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, ".csv"))
+    if (nzchar(target_column) && file.exists(spearman_path)) {
+      spearman_results <- tryCatch(utils::read.csv(spearman_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+      if (is.data.frame(spearman_results) && nrow(spearman_results) > 0) {
+        geo_spearman_raw_results(spearman_results)
+        annotation_map <- geo_cpg_annotation()
+        if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
+          geo_spearman_results(ugplot_geo_join_spearman_annotation(spearman_results, annotation_map))
+          build_geo_transcript_candidates(update_stage = FALSE)
+        } else {
+          geo_spearman_results(spearman_results)
+        }
+      }
+    }
+    geo_stage(list(
+      step = "Local cache",
+      title = "Loaded GEO cache",
+      message = paste0("Loaded local files and cached results for ", accession, " from ", cache_dir, ".")
+    ))
+    invisible(TRUE)
+  }
+
+  observeEvent(input$geo_accession, {
+    accession <- trimws(input$geo_accession %||% "")
+    if (nchar(accession) >= 6) {
+      load_geo_cached_state(accession)
+    }
+  }, ignoreInit = TRUE)
+
   observeEvent(input$geo_build_annotation, {
     accession <- trimws(input$geo_accession %||% "")
     cache_dir <- if (nzchar(accession)) ugplot_geo_cache_dir(accession) else ""
@@ -3330,6 +3468,27 @@ server <- function(input, output, session) {
       build_geo_transcript_candidates(update_stage = TRUE)
     }
   }, ignoreInit = TRUE)
+
+  observeEvent(input$geo_load_transcript_candidates, {
+    candidates <- geo_transcript_candidates()
+    if (!is.data.frame(candidates) || nrow(candidates) == 0) {
+      geo_stage(list(step = "Step 6", title = "No transcript table", message = "Build transcript candidates by running Spearman with annotation first."))
+      return()
+    }
+    dff <<- as.data.frame(candidates, stringsAsFactors = FALSE, check.names = FALSE)
+    original_dataset_filename(paste0(trimws(input$geo_accession %||% "GEO"), "_transcript_candidates"))
+    geo_preview_data(utils::head(dff, 100))
+    load_dataset_into_table(session)
+    refresh_counter(refresh_counter() + 1)
+    update_scramble_selector()
+    updateTabsetPanel(session, "tabs", selected = "TABLE")
+    geo_stage(list(
+      step = "TABLE",
+      title = "Transcript table loaded",
+      message = paste0("Loaded ", nrow(dff), " transcript/CpG rows into TABLE for downstream selection and analysis.")
+    ))
+    geo_status(ugplot_geo_append_log(geo_status(), paste0("Loaded transcript candidate table into TABLE: ", nrow(dff), " rows x ", ncol(dff), " columns.")))
+  })
 
   observeEvent(input$geo_load_selected_file, {
     files <- geo_files()

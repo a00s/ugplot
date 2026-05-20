@@ -290,7 +290,25 @@ ugPlotCheckModelDeps()
 ugPlotInstallModelDeps()
 ```
 
-### 5.4 Interpreting output
+### 5.4 Remote jobs and loading results
+
+![doc18 - remote jobs overview](man/img/doc18.png)
+
+Use **JOBS** to monitor model runs submitted to local or remote ugPlot servers.
+
+- Server cards summarize connection state, active jobs, and version mismatches.
+- The job table shows server, job name, type, state, progress, target, model list, timestamps, and actions.
+- **Load** imports the selected job preview/results back into the app.
+- **Stop** asks a running remote server to stop the active job.
+- **Delete** removes finished job records when they are no longer needed.
+
+If a server card shows **VERSION MISMATCH**, update the remote server package so the interface and server use the same ugPlot version.
+
+![doc17 - remote job loaded result](man/img/doc17.png)
+
+After loading a job result, ugPlot displays the best-result summary, metric distribution, stability information, and job logs. For multi-seed jobs, prefer the median and interquartile range over the best single seed when reporting model performance.
+
+### 5.5 Interpreting output
 
 ![doc11 - machine learning results](man/img/doc11.png)
 
@@ -386,6 +404,27 @@ Practical tip: start with auto architecture + moderate epochs, then tune hidden 
 
 ---
 
+## 8) GRAPH MODELS — visualize feature correlation networks
+
+![doc19 - graph models 3d controls](man/img/doc19.png)
+
+Use **GRAPH MODELS** when you want to inspect how selected variables relate to each other as a correlation network.
+
+- **Target column (optional)** can keep the outcome visible while selecting features.
+- **Max nodes** limits the graph to the most variable columns, preventing unreadable dense networks.
+- **Edge threshold |correlation|** controls how strong a relationship must be before an edge is drawn.
+- **Minimum degree** removes isolated or weakly connected nodes.
+- **Layout** changes how nodes are positioned.
+- **Render in 3D (plotly)** enables interactive rotation/zoom for spatial inspection.
+
+The graph summary reports the number of nodes, edges, average degree, and maximum absolute correlation. Use these values as a quick density check before interpreting individual edges.
+
+![doc20 - graph models outputs](man/img/doc20.png)
+
+When 3D rendering is disabled or when reviewing static output, ugPlot shows a 2D feature graph, node degree distribution, and node metrics table. The download buttons export node metrics and edge lists as CSV files for external network analysis or figure preparation.
+
+---
+
 ## Suggested end-to-end workflow (quick checklist)
 
 1. Install with Podman image (recommended).
@@ -396,5 +435,6 @@ Practical tip: start with auto architecture + moderate epochs, then tune hidden 
 6. Install missing libraries (Check all → Install libraries).
 7. Train multiple models and compare metrics.
 8. Optionally refine results with DEEP LEARNING (`torch`) and inspect network diagnostics.
-9. Validate final `.rds` model in MODEL ANALYSIS.
-10. Export processed dataset and analysis tables.
+9. Use GRAPH MODELS to inspect feature networks and export edge/node tables.
+10. Validate final `.rds` model in MODEL ANALYSIS.
+11. Export processed dataset and analysis tables.

@@ -625,7 +625,7 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
 }
 
 .geo-workflow-top {
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
   align-items: start;
   margin-bottom: 18px;
 }
@@ -635,12 +635,46 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
   border-radius: 8px;
   padding: 14px;
   background: #fff;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .geo-step-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   font-weight: 700;
   color: #2b3440;
   margin-bottom: 8px;
+}
+
+.geo-step-done {
+  border-color: #b7e4c7;
+  background: #fbfffc;
+}
+
+.geo-step-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.geo-step-badge-done {
+  color: #166534;
+  background: #dcfce7;
+  border: 1px solid #bbf7d0;
+}
+
+.geo-step-badge-pending {
+  color: #6b5b13;
+  background: #fef9c3;
+  border: 1px solid #fde68a;
 }
 
 .geo-step-note {
@@ -710,6 +744,10 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
   overflow: hidden;
 }
 
+.geo-step-table {
+  margin-top: 12px;
+}
+
 .geo-table-section > summary {
   cursor: pointer;
   padding: 12px 14px;
@@ -726,6 +764,10 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
 .geo-table-section > .shiny-html-output,
 .geo-table-section > .datatables {
   margin: 12px 14px;
+}
+
+.geo-table-actions {
+  margin: 12px 14px 14px 14px;
 }
 
 .geo-table-title h4 {
