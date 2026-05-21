@@ -3350,7 +3350,7 @@ server <- function(input, output, session) {
     group_id <- groups$GroupID[[selected[[1]]]]
     display <- details[details$GroupID == group_id, , drop = FALSE]
     display_cols <- intersect(
-      c("Transcript", "Gene", "CpG", "CpGKeptForML", "GeneRegion", "Chr", "Position", "CpGIslandRelation", "RegulatoryFeature", "ProbeType", "SpearmanRho", "AbsRho", "PValue"),
+      c("Transcript", "Gene", "CpG", "CpGKeptForML", "GeneRegion", "Chr", "Position", "Strand", "CpGIslandRelation", "RegulatoryFeature", "ProbeType", "SpearmanRho", "AbsRho", "PValue"),
       names(display)
     )
     display <- display[, display_cols, drop = FALSE]
@@ -3385,54 +3385,75 @@ server <- function(input, output, session) {
     req(nrow(track) > 0)
 
     track$Transcript <- factor(track$Transcript, levels = rev(unique(as.character(track$Transcript))))
+    if (!"Strand" %in% names(track)) {
+      track$Strand <- NA_character_
+    }
     track$CpGKeptForML <- as.logical(track$CpGKeptForML)
     track$RhoScaled <- pmax(-1, pmin(1, suppressWarnings(as.numeric(track$SpearmanRho))))
     track$YOffset <- ifelse(is.finite(track$RhoScaled), 0.34 * track$RhoScaled, 0)
     track$YBase <- as.numeric(track$Transcript)
     track$YEnd <- track$YBase + track$YOffset
+    track$StrandDisplay <- ifelse(is.na(track$Strand) | !nzchar(trimws(track$Strand)), "genomic coordinate ->", track$Strand)
     track$Label <- paste0(
       "Transcript: ", track$Transcript,
       "<br>CpG: ", track$CpG,
       "<br>Gene region: ", track$GeneRegion,
       "<br>Position: ", track$Chr, ":", track$Position,
+      "<br>Direction: ", track$StrandDisplay,
       "<br>Spearman rho: ", signif(track$SpearmanRho, 4),
       "<br>|rho|: ", signif(track$AbsRho, 4),
       "<br>Kept for ML: ", ifelse(track$CpGKeptForML, "yes", "no")
     )
     segment_df <- do.call(rbind, lapply(split(track, track$Transcript), function(df) {
+      strand_values <- trimws(as.character(df$Strand))
+      strand_values <- strand_values[!is.na(strand_values) & nzchar(strand_values)]
+      strand <- if (length(strand_values) > 0) strand_values[[1]] else NA_character_
+      is_reverse <- !is.na(strand) && tolower(strand) %in% c("-", "-1", "minus", "reverse")
+      x_start <- min(df$PositionNumeric, na.rm = TRUE)
+      x_end <- max(df$PositionNumeric, na.rm = TRUE)
       data.frame(
         Transcript = df$Transcript[[1]],
-        x_start = min(df$PositionNumeric, na.rm = TRUE),
-        x_end = max(df$PositionNumeric, na.rm = TRUE),
+        x_start = x_start,
+        x_end = x_end,
+        arrow_start = if (is_reverse) x_end else x_start,
+        arrow_end = if (is_reverse) x_start else x_end,
         stringsAsFactors = FALSE
       )
     }))
 
-	    p <- ggplot(track, aes(x = PositionNumeric, y = Transcript)) +
-	      geom_segment(
-	        data = segment_df,
-	        aes(x = x_start, xend = x_end, y = Transcript, yend = Transcript),
+    p <- ggplot(track, aes(x = PositionNumeric, y = Transcript)) +
+      geom_segment(
+        data = segment_df,
+        aes(x = x_start, xend = x_end, y = Transcript, yend = Transcript),
         inherit.aes = FALSE,
         color = "#aeb8c4",
-	        linewidth = 2,
-	        lineend = "round"
-	      ) +
-	      geom_segment(
-	        aes(xend = PositionNumeric, y = YBase, yend = YEnd, color = SpearmanRho, alpha = CpGKeptForML, text = Label),
-	        linewidth = 1.2,
-	        lineend = "round"
-	      ) +
-	      geom_point(
-	        aes(y = YEnd, color = SpearmanRho, alpha = CpGKeptForML, text = Label),
-	        shape = 21,
-	        size = 3.2,
-	        stroke = 0.7,
-	        fill = "white"
-	      ) +
-	      scale_color_gradient2(low = "#2f6fdd", mid = "#f7f9fc", high = "#d84a3a", midpoint = 0, na.value = "#8792a2") +
-	      scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.3), guide = "none") +
-	      scale_y_discrete(expand = expansion(mult = c(0.35, 0.35))) +
-	      labs(x = x_label, y = NULL, color = "rho") +
+        linewidth = 2,
+        lineend = "round"
+      ) +
+      geom_segment(
+        data = segment_df,
+        aes(x = arrow_start, xend = arrow_end, y = Transcript, yend = Transcript),
+        inherit.aes = FALSE,
+        color = "#5f6f7f",
+        linewidth = 0.65,
+        arrow = grid::arrow(length = grid::unit(0.16, "cm"), type = "closed")
+      ) +
+      geom_segment(
+        aes(xend = PositionNumeric, y = YBase, yend = YEnd, color = SpearmanRho, alpha = CpGKeptForML, text = Label),
+        linewidth = 1.2,
+        lineend = "round"
+      ) +
+      geom_point(
+        aes(y = YEnd, color = SpearmanRho, alpha = CpGKeptForML, text = Label),
+        shape = 21,
+        size = 3.2,
+        stroke = 0.7,
+        fill = "white"
+      ) +
+      scale_color_gradient2(low = "#d84a3a", mid = "#f7f9fc", high = "#2f6fdd", midpoint = 0, na.value = "#8792a2") +
+      scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.3), guide = "none") +
+      scale_y_discrete(expand = expansion(mult = c(0.35, 0.35))) +
+      labs(x = x_label, y = NULL, color = "rho") +
       theme_minimal(base_size = 12) +
       theme(
         panel.grid.major.y = element_blank(),

@@ -569,6 +569,7 @@ ugplot_geo_expand_probe_annotation <- function(annotation, platform_id, source_p
   group_col <- ugplot_first_existing_col(annotation, c("UCSC_RefGene_Group", "Relation_to_Gene", "gene_group"))
   chr_col <- ugplot_first_existing_col(annotation, c("chr", "CHR", "Chromosome"))
   pos_col <- ugplot_first_existing_col(annotation, c("pos", "MAPINFO", "mapinfo", "Position"))
+  strand_col <- ugplot_first_existing_col(annotation, c("strand", "Strand", "UCSC_RefGene_Strand"))
   island_col <- ugplot_first_existing_col(annotation, c("Relation_to_Island", "Relation_to_UCSC_CpG_Island"))
   feature_col <- ugplot_first_existing_col(annotation, c("Regulatory_Feature_Group", "Regulatory_Feature_Name"))
   probe_type_col <- ugplot_first_existing_col(annotation, c("Type", "Probe_Type"))
@@ -603,6 +604,7 @@ ugplot_geo_expand_probe_annotation <- function(annotation, platform_id, source_p
     GeneRegion = expand_split_values(groups_split),
     Chr = if (!is.na(chr_col)) rep(as.character(annotation[[chr_col]]), max_links) else NA_character_,
     Position = if (!is.na(pos_col)) rep(suppressWarnings(as.numeric(annotation[[pos_col]])), max_links) else NA_real_,
+    Strand = if (!is.na(strand_col)) rep(as.character(annotation[[strand_col]]), max_links) else NA_character_,
     CpGIslandRelation = if (!is.na(island_col)) rep(as.character(annotation[[island_col]]), max_links) else NA_character_,
     RegulatoryFeature = if (!is.na(feature_col)) rep(as.character(annotation[[feature_col]]), max_links) else NA_character_,
     ProbeType = if (!is.na(probe_type_col)) rep(as.character(annotation[[probe_type_col]]), max_links) else NA_character_,
