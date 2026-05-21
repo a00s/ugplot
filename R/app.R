@@ -775,6 +775,7 @@ ui <- fluidPage(
                     choices = c("Empty string" = "empty", "NA" = "na", "Zero (0, 0.0, 0.0000)" = "zero"),
                     selected = c("empty", "na")
                   ),
+                  uiOutput("ml_missing_definition_stats"),
                   conditionalPanel(
                     condition = "input.ml_missing_definition && input.ml_missing_definition.indexOf('zero') !== -1",
                     selectizeInput(
@@ -827,7 +828,15 @@ ui <- fluidPage(
                       min = 0, max = 100, value = 100, step = 1
                     )
                   ),
-                  actionButton("ml_run_threshold_scan", "Run exhaustive threshold scan (0-100%)"),
+                  div(
+                    class = "ml-threshold-input",
+                    numericInput(
+                      "ml_complete_case_min_samples",
+                      "Complete-case scan: keep at least this many samples (%)",
+                      min = 0, max = 100, value = 80, step = 1
+                    )
+                  ),
+                  actionButton("ml_run_threshold_scan", "Find complete-case thresholds"),
                   tags$div(style = "margin-top: 8px;", textOutput("ml_threshold_scan_status"))
                 ),
                 htmlOutput("ml_missing_summary"),
@@ -1167,11 +1176,12 @@ build_missing_mask <- function(df, missing_definition = c("empty", "na"), zero_e
   for (j in seq_along(df)) {
     col_data <- df[[j]]
     missing_col <- rep(FALSE, length(col_data))
+    normalized_text <- trimws(as.character(col_data))
     if ("na" %in% missing_definition) {
-      missing_col <- missing_col | is.na(col_data)
+      missing_col <- missing_col | is.na(col_data) | (!is.na(col_data) & toupper(normalized_text) == "NA")
     }
     if ("empty" %in% missing_definition) {
-      missing_col <- missing_col | (!is.na(col_data) & trimws(as.character(col_data)) == "")
+      missing_col <- missing_col | (!is.na(col_data) & normalized_text == "")
     }
     if ("zero" %in% missing_definition && !(colnames(df)[j] %in% zero_exceptions)) {
       suppressWarnings({
@@ -1182,6 +1192,34 @@ build_missing_mask <- function(df, missing_definition = c("empty", "na"), zero_e
     mask[, j] <- missing_col
   }
   mask
+}
+
+missing_definition_counts <- function(df, zero_exceptions = character(0)) {
+  if (!is.data.frame(df) || nrow(df) == 0 || ncol(df) == 0) {
+    return(data.frame(
+      Rule = c("Empty string", "NA / NA-like text", "Zero"),
+      Cells = 0L,
+      Columns = 0L,
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  count_rule <- function(rule) {
+    mask <- build_missing_mask(df, missing_definition = rule, zero_exceptions = zero_exceptions)
+    data.frame(
+      Cells = as.integer(sum(mask)),
+      Columns = as.integer(sum(colSums(mask) > 0)),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  counts <- rbind(
+    cbind(Rule = "Empty string", count_rule("empty")),
+    cbind(Rule = "NA / NA-like text", count_rule("na")),
+    cbind(Rule = "Zero", count_rule("zero"))
+  )
+  rownames(counts) <- NULL
+  counts
 }
 
 apply_missing_filters_with_order <- function(predictors, missing_definition,
@@ -1250,9 +1288,130 @@ apply_missing_filters <- function(predictors, missing_definition,
   )
 }
 
+normalize_missing_filter_order <- function(filter_order, allow_auto = TRUE) {
+  filter_order <- as.character(filter_order)
+  valid_orders <- if (isTRUE(allow_auto)) {
+    c("auto", "cols_first", "rows_first")
+  } else {
+    c("cols_first", "rows_first")
+  }
+  if (length(filter_order) == 0 || !filter_order[[1]] %in% valid_orders) {
+    return(if (isTRUE(allow_auto)) "auto" else "cols_first")
+  }
+  filter_order[[1]]
+}
+
+rank_threshold_scan_results <- function(results, min_rows_retained = 0.8,
+                                        mode = c("complete_case", "balanced")) {
+  mode <- match.arg(mode)
+  if (is.null(results) || nrow(results) == 0) {
+    return(results)
+  }
+
+  min_rows_retained <- suppressWarnings(as.numeric(min_rows_retained))
+  if (!is.finite(min_rows_retained)) {
+    min_rows_retained <- 0
+  }
+  min_rows_retained <- max(0, min(1, min_rows_retained))
+
+  results$complete_case <- results$missing_cells_after == 0 &
+    results$n_cols_after > 0 & results$n_rows_after > 0
+  results$meets_min_samples <- results$rows_retained >= min_rows_retained
+
+  if (identical(mode, "complete_case")) {
+    recommendation_group <- ifelse(results$complete_case & results$meets_min_samples, 0,
+      ifelse(results$complete_case, 1, 2))
+    primary <- ifelse(recommendation_group == 0, -results$n_cols_after,
+      ifelse(recommendation_group == 1, -results$n_rows_after, -results$tradeoff_score))
+    secondary <- ifelse(recommendation_group == 0, -results$n_rows_after,
+      ifelse(recommendation_group == 1, -results$n_cols_after, results$missing_pct_after))
+    tertiary <- ifelse(recommendation_group == 2, -results$filled_cells, results$thr_row)
+    results$recommendation_group <- recommendation_group
+    return(results[order(
+      recommendation_group, primary, secondary,
+      -results$cross_point, -results$pareto, tertiary, results$thr_col
+    ), , drop = FALSE])
+  }
+
+  results$recommendation_group <- 2
+  results[order(-results$cross_point, -results$pareto, -results$tradeoff_score,
+    results$missing_pct_after, -results$filled_cells), , drop = FALSE]
+}
+
+missing_filter_metrics <- function(filtered, original_rows, original_cols,
+                                   thr_col, thr_row, scan_order) {
+  filtered_mask <- filtered$filtered_mask
+  n_cols_after <- ncol(filtered_mask)
+  n_rows_after <- nrow(filtered_mask)
+  missing_after <- if (length(filtered_mask) > 0) sum(filtered_mask) else 0
+  total_after <- n_cols_after * n_rows_after
+  missing_pct_after <- if (total_after > 0) (100 * missing_after / total_after) else 0
+  filled_cells <- total_after - missing_after
+  rows_retained <- if (original_rows > 0) n_rows_after / original_rows else 0
+  cols_retained <- if (original_cols > 0) n_cols_after / original_cols else 0
+  data.frame(
+    thr_col = thr_col, thr_row = thr_row, scan_order = scan_order,
+    n_cols_after = n_cols_after, n_rows_after = n_rows_after,
+    total_cells_after = total_after, missing_cells_after = missing_after,
+    filled_cells = filled_cells, missing_pct_after = round(missing_pct_after, 2),
+    rows_retained = rows_retained, cols_retained = cols_retained,
+    tradeoff_score = ((rows_retained + cols_retained) / 2) - (missing_pct_after / 100),
+    cross_point = FALSE, pareto = TRUE
+  )
+}
+
+apply_missing_filters_resolved <- function(predictors, missing_definition,
+                                           zero_exceptions = character(0),
+                                           threshold_cols = 100, threshold_rows = 100,
+                                           filter_order = "auto",
+                                           min_rows_retained = 0.8,
+                                           mode = c("complete_case", "balanced")) {
+  mode <- match.arg(mode)
+  filter_order <- normalize_missing_filter_order(filter_order, allow_auto = TRUE)
+  if (!identical(filter_order, "auto")) {
+    filtered <- apply_missing_filters_with_order(
+      predictors = predictors,
+      missing_definition = missing_definition,
+      zero_exceptions = zero_exceptions,
+      threshold_cols = threshold_cols,
+      threshold_rows = threshold_rows,
+      order = filter_order
+    )
+    filtered$resolved_order <- filter_order
+    return(filtered)
+  }
+
+  candidates <- lapply(c("cols_first", "rows_first"), function(order) {
+    filtered <- apply_missing_filters_with_order(
+      predictors = predictors,
+      missing_definition = missing_definition,
+      zero_exceptions = zero_exceptions,
+      threshold_cols = threshold_cols,
+      threshold_rows = threshold_rows,
+      order = order
+    )
+    metrics <- missing_filter_metrics(
+      filtered, nrow(predictors), ncol(predictors),
+      threshold_cols, threshold_rows, order
+    )
+    filtered$resolved_order <- order
+    list(filtered = filtered, metrics = metrics)
+  })
+  metrics <- do.call(rbind, lapply(candidates, `[[`, "metrics"))
+  cross_key <- paste(metrics$n_cols_after, metrics$n_rows_after,
+    metrics$missing_pct_after, sep = "|")
+  metrics$cross_point <- as.logical(table(cross_key)[cross_key] >= 2)
+  ranked <- rank_threshold_scan_results(metrics, min_rows_retained = min_rows_retained, mode = mode)
+  best_order <- ranked$scan_order[[1]]
+  candidates[[match(best_order, c("cols_first", "rows_first"))]]$filtered
+}
+
 compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
                                               zero_exceptions = character(0),
+                                              min_rows_retained = 0.8,
+                                              mode = c("complete_case", "balanced"),
                                               progress_callback = NULL, status_callback = NULL) {
+  mode <- match.arg(mode)
   original_rows <- nrow(predictors)
   original_cols <- ncol(predictors)
   full_mask <- build_missing_mask(predictors, missing_definition, zero_exceptions)
@@ -1401,8 +1560,7 @@ compute_exhaustive_threshold_scan <- function(predictors, missing_definition,
     dominated[i] <- any(better_or_equal & strictly_better)
   }
   results$pareto <- !dominated
-  results[order(-results$cross_point, -results$pareto, -results$tradeoff_score,
-    results$missing_pct_after, -results$filled_cells), , drop = FALSE]
+  rank_threshold_scan_results(results, min_rows_retained = min_rows_retained, mode = mode)
 }
 
 run_methylimp2 <- function(data_with_na) {
@@ -1440,7 +1598,10 @@ apply_saved_preprocess <- function(df, preprocess_meta) {
 apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, missing_definition,
                                    zero_exceptions = character(0),
                                    threshold_cols = 50, threshold_rows = 50,
-                                   threshold_scope = "train_only") {
+                                   threshold_scope = "train_only",
+                                   filter_order = "auto",
+                                   min_rows_retained = 0.8) {
+  filter_order <- normalize_missing_filter_order(filter_order, allow_auto = TRUE)
   train_set <- as.data.frame(trainSet)
   test_set <- as.data.frame(testSet)
 
@@ -1459,12 +1620,15 @@ apply_missing_strategy <- function(trainSet, testSet, target_name, strategy, mis
       keep_rows = seq_len(nrow(predictors_train))
     )
   } else {
-    filtered_train <- apply_missing_filters(
+    filtered_train <- apply_missing_filters_resolved(
       predictors = predictors_train,
       missing_definition = missing_definition,
       zero_exceptions = zero_exceptions,
       threshold_cols = threshold_cols,
-      threshold_rows = threshold_rows
+      threshold_rows = threshold_rows,
+      filter_order = filter_order,
+      min_rows_retained = min_rows_retained,
+      mode = if (identical(strategy, "none")) "complete_case" else "balanced"
     )
   }
   predictors_train <- filtered_train$filtered_predictors
@@ -2032,6 +2196,18 @@ server <- function(input, output, session) {
   geo_spearman_results <- reactiveVal(data.frame())
   geo_spearman_raw_results <- reactiveVal(data.frame())
   geo_transcript_candidates <- reactiveVal(data.frame())
+  geo_transcript_groups <- reactiveVal(data.frame())
+  geo_transcript_group_details <- reactiveVal(data.frame())
+  geo_transcript_build_progress <- reactiveVal(list(
+    phase = "idle",
+    message = "Transcript CSV build has not started.",
+    processed = 0L,
+    total = 0L,
+    compatible = 0L,
+    excluded = 0L,
+    current = "",
+    cache = ""
+  ))
   geo_status <- reactiveVal("Waiting for GEO accession.")
   geo_stage <- reactiveVal(list(
     step = "Step 1",
@@ -2142,6 +2318,8 @@ server <- function(input, output, session) {
     annotation_map <- geo_cpg_annotation()
     spearman_results <- geo_spearman_raw_results()
     transcript_table <- geo_transcript_candidates()
+    transcript_groups <- geo_transcript_groups()
+    transcript_progress <- geo_transcript_build_progress()
     preview <- geo_preview_data()
 
     metadata_done <- is.data.frame(metadata) && nrow(metadata) > 0
@@ -2157,7 +2335,7 @@ server <- function(input, output, session) {
     extract_done <- length(matrix_files) > 0
     annotation_done <- is.data.frame(annotation_map) && nrow(annotation_map) > 0
     spearman_done <- is.data.frame(spearman_results) && nrow(spearman_results) > 0
-    transcript_done <- is.data.frame(transcript_table) && nrow(transcript_table) > 0
+    transcript_done <- (transcript_progress$phase %||% "") %in% c("complete", "loaded from cache")
     preview_done <- is.data.frame(preview) && nrow(preview) > 0
 
     tagList(
@@ -2205,7 +2383,7 @@ server <- function(input, output, session) {
             }
           )
         ),
-        render_geo_step_card(6, "Analyze CpGs and transcripts", spearman_done && transcript_done,
+        render_geo_step_card(6, "Analyze CpGs and transcripts", spearman_done,
           tags$div(
             uiOutput("geo_target_selector"),
             tags$p(class = "geo-step-note", "Spearman scan uses numeric targets such as age. Transcript candidate tables are built automatically when annotation is available."),
@@ -2216,12 +2394,17 @@ server <- function(input, output, session) {
             actionButton("geo_run_spearman", if (spearman_done) "Re-run CpG Spearman scan" else "Run CpG Spearman scan")
           )
         ),
-        render_geo_step_card(7, "Optional direct load", preview_done,
+        render_geo_step_card(7, "Build transcript ML datasets", transcript_done,
           tags$div(
-            uiOutput("geo_file_selector"),
-            checkboxInput("geo_use_first_column_names", "Use first column as row names", value = TRUE),
-            selectInput("geo_loaded_orientation", "Loaded matrix orientation:", choices = c("Samples x CpGs" = "samples_rows", "CpGs x Samples" = "cpgs_rows"), selected = "samples_rows"),
-            actionButton("geo_load_selected_file", "Load selected file")
+            tags$p(class = "geo-step-note", "Build complete-case transcript CSVs and group transcripts that produce identical ML datasets."),
+            numericInput("geo_transcript_min_samples", "Transcript complete-case minimum samples (%):", value = 80, min = 0, max = 100, step = 1),
+            tags$p(class = "geo-step-note", "Transcript complete-case treats empty strings, NA/na text, true NA, and zero as missing."),
+            if (spearman_done && annotation_done) {
+              actionButton("geo_build_transcript_groups", "Build/continue transcript CSVs")
+            } else {
+              tags$p(class = "geo-step-note", "Run Spearman and load annotation before building transcript datasets.")
+            },
+            uiOutput("geo_transcript_build_progress_ui")
           )
         )
       ),
@@ -2231,9 +2414,14 @@ server <- function(input, output, session) {
         if (spearman_done) render_geo_table_details("Open CpG Spearman table", uiOutput("geo_spearman_table_title"), DT::DTOutput("geo_spearman_table"), open = FALSE) else NULL,
         if (transcript_done) {
           render_geo_table_details(
-            "Open transcript candidate CpG table",
+            "Open transcript ML candidate groups",
             uiOutput("geo_transcript_candidates_table_title"),
-            DT::DTOutput("geo_transcript_candidates_table"),
+            tagList(
+              DT::DTOutput("geo_transcript_groups_table"),
+              uiOutput("geo_transcript_group_details_title"),
+              plotlyOutput("geo_transcript_group_track", height = "280px"),
+              DT::DTOutput("geo_transcript_group_details_table")
+            ),
             open = FALSE
           )
         } else NULL,
@@ -2391,14 +2579,16 @@ server <- function(input, output, session) {
   })
 
   output$geo_transcript_candidates_table_title <- renderUI({
-    candidates <- geo_transcript_candidates()
-    req(is.data.frame(candidates), nrow(candidates) > 0)
+    groups <- geo_transcript_groups()
+    req(is.data.frame(groups), nrow(groups) > 0)
     threshold <- suppressWarnings(as.numeric(input$geo_transcript_absrho_threshold %||% 0.8))
+    min_samples <- suppressWarnings(as.numeric(input$geo_transcript_min_samples %||% 80))
     render_geo_table_title(
-      "Transcript candidate CpG table",
+      "Transcript ML candidate groups",
       paste0(
-        "Automatically built from CpGs with |rho| >= ", threshold,
-        ". For every transcript hit by a passing CpG, this table lists all annotated CpGs in that transcript."
+        "Transcripts with at least one CpG |rho| >= ", threshold,
+        " and a complete-case dataset retaining at least ", min_samples,
+        "% samples. Transcripts with identical final CpGs and samples are grouped to avoid repeated ML runs."
       )
     )
   })
@@ -2496,6 +2686,591 @@ server <- function(input, output, session) {
     DT::datatable(annotation_map[, display_cols, drop = FALSE], options = list(pageLength = 8, scrollX = TRUE), rownames = FALSE)
   })
 
+  geo_safe_cache_token <- function(value) {
+    gsub("[^A-Za-z0-9_.-]+", "_", as.character(value))
+  }
+
+  geo_transcript_cache_version <- function() {
+    "reader_v2"
+  }
+
+  geo_transcript_group_cache_paths <- function(cache_dir, target_column, threshold, min_samples_pct) {
+    safe_target <- geo_safe_cache_token(target_column)
+    safe_threshold <- geo_safe_cache_token(format(threshold, trim = TRUE, scientific = FALSE))
+    safe_min_samples <- geo_safe_cache_token(format(min_samples_pct, trim = TRUE, scientific = FALSE))
+    safe_missing <- geo_safe_cache_token(paste(geo_transcript_missing_definition(), collapse = "_"))
+    prefix <- file.path(cache_dir, paste0(
+      "ugplot_geo_transcript_ml_groups_", safe_target,
+      "_", geo_transcript_cache_version(),
+      "_absrho_", safe_threshold,
+      "_minsamples_", safe_min_samples,
+      "_missing_", safe_missing
+    ))
+    list(
+      summary = paste0(prefix, "_summary.csv"),
+      details = paste0(prefix, "_details.csv"),
+      progress = paste0(prefix, "_progress.rds")
+    )
+  }
+
+  geo_group_key <- function(values) {
+    paste(sort(unique(as.character(values))), collapse = "\r")
+  }
+
+  geo_transcript_missing_definition <- function() {
+    c("empty", "na", "zero")
+  }
+
+  geo_build_group_tables <- function(progress_rows, candidates) {
+    compatible <- progress_rows[progress_rows$Status == "compatible", , drop = FALSE]
+    if (nrow(compatible) == 0) {
+      return(list(summary = data.frame(), details = data.frame()))
+    }
+
+    compatible$GroupKey <- paste(compatible$CpGKey, compatible$SampleKey, sep = "\f")
+    group_keys <- unique(compatible$GroupKey)
+    summary_rows <- lapply(seq_along(group_keys), function(group_index) {
+      group_df <- compatible[compatible$GroupKey == group_keys[[group_index]], , drop = FALSE]
+      group_df <- group_df[order(-group_df$TriggerMaxAbsRho, -group_df$Columns, -group_df$Samples, group_df$Transcript), , drop = FALSE]
+      principal <- group_df[1, , drop = FALSE]
+      data.frame(
+        GroupID = paste0("TG", group_index),
+        PrincipalTranscript = principal$Transcript[[1]],
+        Gene = principal$Gene[[1]],
+        Columns = principal$Columns[[1]],
+        Samples = principal$Samples[[1]],
+        TranscriptCount = nrow(group_df),
+        ExtraTranscripts = paste(setdiff(group_df$Transcript, principal$Transcript[[1]]), collapse = ";"),
+        CpGs = principal$KeptCpGs[[1]],
+        TriggerMaxAbsRho = principal$TriggerMaxAbsRho[[1]],
+        DatasetPath = principal$DatasetPath[[1]],
+        GroupKey = group_keys[[group_index]],
+        stringsAsFactors = FALSE
+      )
+    })
+    summary <- do.call(rbind, summary_rows)
+    summary <- summary[order(-summary$TriggerMaxAbsRho, -summary$Columns, -summary$Samples, summary$PrincipalTranscript), , drop = FALSE]
+    summary$GroupID <- paste0("TG", seq_len(nrow(summary)))
+
+    group_lookup <- stats::setNames(summary$GroupID, summary$GroupKey)
+    detail_rows <- lapply(seq_len(nrow(compatible)), function(i) {
+      transcript_row <- compatible[i, , drop = FALSE]
+      transcript_candidates <- candidates[as.character(candidates$Transcript) == transcript_row$Transcript[[1]], , drop = FALSE]
+      kept_cpgs <- strsplit(transcript_row$KeptCpGs[[1]], ";", fixed = TRUE)[[1]]
+      transcript_candidates$GroupID <- unname(group_lookup[[transcript_row$GroupKey[[1]]]])
+      transcript_candidates$PrincipalTranscript <- summary$PrincipalTranscript[match(transcript_candidates$GroupID, summary$GroupID)]
+      transcript_candidates$CpGKeptForML <- as.character(transcript_candidates$CpG) %in% kept_cpgs
+      transcript_candidates
+    })
+    details <- unique(do.call(rbind, detail_rows))
+    rownames(summary) <- NULL
+    rownames(details) <- NULL
+    list(summary = summary, details = details)
+  }
+
+  write_geo_transcript_group_cache <- function(paths, tables, progress_rows) {
+    if (is.data.frame(tables$summary)) {
+      utils::write.csv(tables$summary, paths$summary, row.names = FALSE)
+    }
+    if (is.data.frame(tables$details)) {
+      utils::write.csv(tables$details, paths$details, row.names = FALSE)
+    }
+    saveRDS(progress_rows, paths$progress)
+  }
+
+  update_geo_transcript_build_progress <- function(phase = NULL, message = NULL,
+                                                   processed = NULL, total = NULL,
+                                                   compatible = NULL, excluded = NULL,
+                                                   current = NULL, cache = NULL) {
+    progress <- geo_transcript_build_progress()
+    if (!is.null(phase)) progress$phase <- phase
+    if (!is.null(message)) progress$message <- message
+    if (!is.null(processed)) progress$processed <- processed
+    if (!is.null(total)) progress$total <- total
+    if (!is.null(compatible)) progress$compatible <- compatible
+    if (!is.null(excluded)) progress$excluded <- excluded
+    if (!is.null(current)) progress$current <- current
+    if (!is.null(cache)) progress$cache <- cache
+    geo_transcript_build_progress(progress)
+    invisible(progress)
+  }
+
+  output$geo_transcript_build_progress_ui <- renderUI({
+    progress <- geo_transcript_build_progress()
+    total <- suppressWarnings(as.integer(progress$total %||% 0L))
+    processed <- suppressWarnings(as.integer(progress$processed %||% 0L))
+    compatible <- suppressWarnings(as.integer(progress$compatible %||% 0L))
+    excluded <- suppressWarnings(as.integer(progress$excluded %||% 0L))
+    percent <- if (is.finite(total) && total > 0) round(100 * processed / total, 1) else 0
+    tags$div(
+      style = "margin-top: 10px; padding: 10px; border: 1px solid #dbe7f3; background: #f8fbff; border-radius: 4px;",
+      tags$p(style = "margin: 0 0 4px 0;", tags$strong("Transcript build status: "), progress$phase %||% "idle"),
+      tags$p(style = "margin: 0 0 4px 0;", progress$message %||% ""),
+      tags$p(style = "margin: 0 0 4px 0;", paste0(
+        "Processed ", processed, " / ", total,
+        " (", percent, "%); remaining ", max(0L, total - processed),
+        "; compatible ", compatible,
+        "; excluded ", excluded, "."
+      )),
+      if (nzchar(progress$current %||% "")) tags$p(style = "margin: 0 0 4px 0;", paste0("Current transcript: ", progress$current)) else NULL,
+      if (nzchar(progress$cache %||% "")) tags$p(style = "margin: 0; font-size: 12px; color: #596273;", paste0("Cache: ", progress$cache)) else NULL
+    )
+  })
+
+  geo_transcript_dataset_cache_path <- function(cache_dir, transcript, target_column) {
+    transcript_dir <- file.path(cache_dir, "transcript_datasets", geo_safe_cache_token(target_column))
+    if (!dir.exists(transcript_dir)) {
+      dir.create(transcript_dir, recursive = TRUE, showWarnings = FALSE)
+    }
+    file.path(transcript_dir, paste0(geo_safe_cache_token(transcript), ".csv"))
+  }
+
+  geo_transcript_raw_dataset_cache_path <- function(cache_dir, transcript, target_column) {
+    transcript_dir <- file.path(cache_dir, "transcript_datasets", geo_safe_cache_token(target_column), "_raw")
+    if (!dir.exists(transcript_dir)) {
+      dir.create(transcript_dir, recursive = TRUE, showWarnings = FALSE)
+    }
+    file.path(transcript_dir, paste0(geo_safe_cache_token(transcript), "_raw.csv"))
+  }
+
+  geo_quarantine_legacy_raw_transcript_files <- function(cache_dir, target_column) {
+    transcript_dir <- file.path(cache_dir, "transcript_datasets", geo_safe_cache_token(target_column))
+    if (!dir.exists(transcript_dir)) {
+      return(invisible(character(0)))
+    }
+    legacy_files <- list.files(transcript_dir, pattern = "_raw\\.csv$", full.names = TRUE, recursive = FALSE)
+    if (length(legacy_files) == 0) {
+      return(invisible(character(0)))
+    }
+    legacy_dir <- file.path(transcript_dir, "_legacy_raw")
+    if (!dir.exists(legacy_dir)) {
+      dir.create(legacy_dir, recursive = TRUE, showWarnings = FALSE)
+    }
+    moved <- character(0)
+    for (legacy_file in legacy_files) {
+      target_file <- file.path(legacy_dir, basename(legacy_file))
+      if (file.rename(legacy_file, target_file)) {
+        moved <- c(moved, target_file)
+      }
+    }
+    invisible(moved)
+  }
+
+  geo_transcript_dataset_has_missing <- function(dataset, target_column) {
+    if (!is.data.frame(dataset) || nrow(dataset) == 0) {
+      return(TRUE)
+    }
+    predictor_cols <- setdiff(names(dataset), c("sample_id", target_column))
+    if (length(predictor_cols) == 0) {
+      return(TRUE)
+    }
+    mask <- build_missing_mask(
+      dataset[, predictor_cols, drop = FALSE],
+      missing_definition = geo_transcript_missing_definition()
+    )
+    sum(mask) > 0
+  }
+
+  geo_transcript_all_missing_row_fraction <- function(dataset, target_column) {
+    if (!is.data.frame(dataset) || nrow(dataset) == 0) {
+      return(1)
+    }
+    predictor_cols <- setdiff(names(dataset), c("sample_id", target_column))
+    if (length(predictor_cols) == 0) {
+      return(1)
+    }
+    mask <- build_missing_mask(
+      dataset[, predictor_cols, drop = FALSE],
+      missing_definition = geo_transcript_missing_definition()
+    )
+    mean(rowSums(mask) == length(predictor_cols))
+  }
+
+  geo_candidate_cpg_matrix_cache_path <- function(cache_dir, target_column, threshold) {
+    transcript_dir <- file.path(cache_dir, "transcript_datasets", geo_safe_cache_token(target_column))
+    if (!dir.exists(transcript_dir)) {
+      dir.create(transcript_dir, recursive = TRUE, showWarnings = FALSE)
+    }
+    file.path(transcript_dir, paste0(
+      "_candidate_cpg_matrix_absrho_",
+      geo_transcript_cache_version(), "_",
+      geo_safe_cache_token(format(threshold, trim = TRUE, scientific = FALSE)),
+      ".csv"
+    ))
+  }
+
+  build_geo_transcript_groups <- function(candidates, cache_dir, target_column, threshold,
+                                          min_samples_pct, paths, update_stage = FALSE,
+                                          progress_callback = NULL) {
+    metadata <- geo_sample_metadata()
+    if ((!nzchar(target_column) || !target_column %in% names(metadata)) && is.data.frame(metadata) && nrow(metadata) > 0) {
+      target_candidates <- ugplot_geo_target_candidates(metadata)
+      target_column <- if ("age" %in% target_candidates) "age" else if (length(target_candidates) > 0) target_candidates[[1]] else ""
+    }
+    matrix_files <- ugplot_geo_matrix_files(cache_dir)
+    if (!is.data.frame(metadata) || nrow(metadata) == 0 || !target_column %in% names(metadata) || length(matrix_files) == 0) {
+      missing_reasons <- c(
+        if (!is.data.frame(metadata) || nrow(metadata) == 0) "metadata" else character(0),
+        if (!nzchar(target_column) || !target_column %in% names(metadata)) paste0("target column '", target_column, "'") else character(0),
+        if (length(matrix_files) == 0) "extracted GEO matrix files" else character(0)
+      )
+      geo_transcript_groups(data.frame())
+      geo_transcript_group_details(data.frame())
+      update_geo_transcript_build_progress(
+        phase = "blocked",
+        message = paste0("Missing prerequisite(s): ", paste(missing_reasons, collapse = ", "), "."),
+        cache = cache_dir
+      )
+      return(invisible(FALSE))
+    }
+    moved_legacy_raw <- geo_quarantine_legacy_raw_transcript_files(cache_dir, target_column)
+    if (length(moved_legacy_raw) > 0) {
+      geo_status(ugplot_geo_append_log(
+        geo_status(),
+        paste0("Moved ", length(moved_legacy_raw), " legacy raw transcript CSV(s) to _legacy_raw.")
+      ))
+    }
+
+    transcripts <- unique(as.character(stats::na.omit(candidates$Transcript)))
+    transcripts <- transcripts[nzchar(transcripts)]
+    progress_rows <- if (file.exists(paths$progress)) {
+      tryCatch(readRDS(paths$progress), error = function(e) data.frame())
+    } else {
+      data.frame()
+    }
+    if (is.data.frame(progress_rows) && nrow(progress_rows) > 0 && all(c("Transcript", "Status", "DatasetPath", "RawDatasetPath") %in% names(progress_rows))) {
+      for (progress_i in seq_len(nrow(progress_rows))) {
+        final_path <- geo_transcript_dataset_cache_path(cache_dir, progress_rows$Transcript[[progress_i]], target_column)
+        raw_path <- geo_transcript_raw_dataset_cache_path(cache_dir, progress_rows$Transcript[[progress_i]], target_column)
+        old_final_path <- as.character(progress_rows$DatasetPath[[progress_i]])
+        old_raw_path <- as.character(progress_rows$RawDatasetPath[[progress_i]])
+        if (file.exists(final_path) && !file.exists(raw_path)) {
+          legacy_dataset <- tryCatch(utils::read.csv(final_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+          if (geo_transcript_dataset_has_missing(legacy_dataset, target_column)) {
+            file.copy(final_path, raw_path, overwrite = TRUE)
+          }
+        }
+        if (identical(progress_rows$Status[[progress_i]], "compatible") &&
+            nzchar(old_final_path) && file.exists(old_final_path) && !identical(old_final_path, final_path)) {
+          file.copy(old_final_path, final_path, overwrite = TRUE)
+          progress_rows$DatasetPath[[progress_i]] <- final_path
+        }
+        progress_rows$RawDatasetPath[[progress_i]] <- raw_path
+      }
+      progress_rows <- progress_rows[vapply(seq_len(nrow(progress_rows)), function(progress_i) {
+        if (identical(progress_rows$Status[[progress_i]], "compatible")) {
+          final_path <- as.character(progress_rows$DatasetPath[[progress_i]])
+          return(nzchar(final_path) && file.exists(final_path))
+        }
+        raw_path <- as.character(progress_rows$RawDatasetPath[[progress_i]])
+        nzchar(raw_path) && file.exists(raw_path)
+      }, logical(1)), , drop = FALSE]
+    }
+    processed <- if (is.data.frame(progress_rows) && "Transcript" %in% names(progress_rows)) {
+      unique(as.character(progress_rows$Transcript))
+    } else {
+      character(0)
+    }
+    compatible_n <- if (is.data.frame(progress_rows) && "Status" %in% names(progress_rows)) sum(progress_rows$Status == "compatible") else 0L
+    excluded_n <- if (is.data.frame(progress_rows) && "Status" %in% names(progress_rows)) sum(progress_rows$Status != "compatible") else 0L
+    update_geo_transcript_build_progress(
+      phase = "starting",
+      message = "Preparing transcript CSV build from cached Spearman candidates.",
+      processed = length(processed),
+      total = length(transcripts),
+      compatible = compatible_n,
+      excluded = excluded_n,
+      current = "",
+      cache = dirname(paths$summary)
+    )
+    if (!is.null(progress_callback)) {
+      progress_callback(0.02, paste0("Preparing ", length(transcripts), " transcript(s)"))
+    }
+
+    candidate_matrix_path <- geo_candidate_cpg_matrix_cache_path(cache_dir, target_column, threshold)
+    candidate_matrix <- if (file.exists(candidate_matrix_path)) {
+      tryCatch(utils::read.csv(candidate_matrix_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    } else {
+      data.frame()
+    }
+    if (is.data.frame(candidate_matrix) && nrow(candidate_matrix) > 0) {
+      predictor_cols <- setdiff(names(candidate_matrix), c("sample_id", target_column))
+      if (length(predictor_cols) > 0) {
+        all_missing_rows <- rowSums(is.na(candidate_matrix[, predictor_cols, drop = FALSE])) == length(predictor_cols)
+        if (mean(all_missing_rows) > 0.1) {
+          candidate_matrix <- data.frame()
+          try(unlink(candidate_matrix_path), silent = TRUE)
+          progress_rows <- data.frame()
+          if (!is.null(progress_callback)) {
+            progress_callback(0.03, "Discarded stale candidate matrix with too many all-missing sample rows")
+          }
+        }
+      }
+    }
+    if (!is.data.frame(candidate_matrix) || nrow(candidate_matrix) == 0) {
+      all_candidate_cpgs <- unique(as.character(stats::na.omit(candidates$CpG)))
+      all_candidate_cpgs <- all_candidate_cpgs[nzchar(all_candidate_cpgs)]
+      if (length(all_candidate_cpgs) > 0) {
+        update_geo_transcript_build_progress(
+          phase = "building candidate CpG matrix",
+          message = paste0("Reading ", length(all_candidate_cpgs), " unique candidate CpGs once from the extracted GEO matrix files."),
+          processed = length(processed),
+          total = length(transcripts),
+          compatible = compatible_n,
+          excluded = excluded_n,
+          current = "",
+          cache = candidate_matrix_path
+        )
+        if (isTRUE(update_stage)) {
+          geo_stage(list(
+            step = "Step 6",
+            title = "Building candidate CpG matrix",
+            message = paste0("Reading ", length(all_candidate_cpgs), " unique CpGs once; this avoids rescanning GEO matrices for every transcript.")
+          ))
+        }
+        if (!is.null(progress_callback)) {
+          progress_callback(0.05, paste0("Reading ", length(all_candidate_cpgs), " candidate CpG(s) from GEO matrices"))
+        }
+        candidate_matrix <- tryCatch(
+          ugplot_geo_transcript_dataset(
+            matrix_files = matrix_files,
+            metadata = metadata,
+            target_column = target_column,
+            cpgs = all_candidate_cpgs,
+            progress_callback = function(scanned, found, total) {
+              update_geo_transcript_build_progress(
+                phase = "building candidate CpG matrix",
+                message = paste0("Scanned ", scanned, " matrix rows; found ", found, " of ", total, " candidate CpG(s)."),
+                processed = length(processed),
+                total = length(transcripts),
+                compatible = compatible_n,
+                excluded = excluded_n,
+                current = "",
+                cache = candidate_matrix_path
+              )
+              if (isTRUE(update_stage)) {
+                geo_stage(list(
+                  step = "Step 6",
+                  title = "Building candidate CpG matrix",
+                  message = paste0("Scanned ", scanned, " matrix rows; found ", found, " of ", total, " candidate CpG(s).")
+                ))
+              }
+              if (!is.null(progress_callback)) {
+                progress_callback(
+                  0.05 + 0.30 * min(1, found / max(1, total)),
+                  paste0("Candidate matrix: scanned ", scanned, " rows; found ", found, " / ", total, " CpG(s)")
+                )
+              }
+            }
+          ),
+          error = function(e) data.frame()
+        )
+        if (is.data.frame(candidate_matrix) && nrow(candidate_matrix) > 0) {
+          utils::write.csv(candidate_matrix, candidate_matrix_path, row.names = FALSE)
+          update_geo_transcript_build_progress(
+            phase = "candidate CpG matrix cached",
+            message = paste0("Candidate CpG matrix ready with ", nrow(candidate_matrix), " samples and ", max(0, ncol(candidate_matrix) - 2), " CpG columns."),
+            processed = length(processed),
+            total = length(transcripts),
+            compatible = compatible_n,
+            excluded = excluded_n,
+            cache = candidate_matrix_path
+          )
+          if (!is.null(progress_callback)) {
+            progress_callback(0.35, "Candidate CpG matrix cached")
+          }
+        }
+      }
+    }
+
+    for (transcript_id in setdiff(transcripts, processed)) {
+      update_geo_transcript_build_progress(
+        phase = "processing transcripts",
+        message = paste0("Building/reusing CSV and complete-case filter for transcript ", transcript_id, "."),
+        processed = nrow(progress_rows),
+        total = length(transcripts),
+        compatible = if (is.data.frame(progress_rows) && "Status" %in% names(progress_rows)) sum(progress_rows$Status == "compatible") else 0L,
+        excluded = if (is.data.frame(progress_rows) && "Status" %in% names(progress_rows)) sum(progress_rows$Status != "compatible") else 0L,
+        current = transcript_id,
+        cache = geo_transcript_dataset_cache_path(cache_dir, transcript_id, target_column)
+      )
+      transcript_rows <- candidates[as.character(candidates$Transcript) == transcript_id, , drop = FALSE]
+      transcript_cpgs <- unique(as.character(stats::na.omit(transcript_rows$CpG)))
+      transcript_cpgs <- transcript_cpgs[nzchar(transcript_cpgs)]
+      dataset_path <- geo_transcript_dataset_cache_path(cache_dir, transcript_id, target_column)
+      raw_dataset_path <- geo_transcript_raw_dataset_cache_path(cache_dir, transcript_id, target_column)
+      transcript_dataset <- data.frame()
+      if (file.exists(raw_dataset_path)) {
+        transcript_dataset <- tryCatch(utils::read.csv(raw_dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+        if (is.data.frame(transcript_dataset) && nrow(transcript_dataset) > 0 &&
+            geo_transcript_all_missing_row_fraction(transcript_dataset, target_column) > 0.1 &&
+            is.data.frame(candidate_matrix) && nrow(candidate_matrix) > 0) {
+          try(unlink(raw_dataset_path), silent = TRUE)
+          transcript_dataset <- data.frame()
+        }
+      } else if (file.exists(dataset_path)) {
+        cached_dataset <- tryCatch(utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+        if (geo_transcript_dataset_has_missing(cached_dataset, target_column)) {
+          file.copy(dataset_path, raw_dataset_path, overwrite = TRUE)
+          transcript_dataset <- cached_dataset
+        } else {
+          transcript_dataset <- cached_dataset
+        }
+      }
+      if ((!is.data.frame(transcript_dataset) || nrow(transcript_dataset) == 0) &&
+          is.data.frame(candidate_matrix) && nrow(candidate_matrix) > 0) {
+        available_cpgs <- intersect(transcript_cpgs, names(candidate_matrix))
+        if (length(available_cpgs) > 0) {
+          transcript_dataset <- candidate_matrix[, c("sample_id", target_column, available_cpgs), drop = FALSE]
+          utils::write.csv(transcript_dataset, raw_dataset_path, row.names = FALSE)
+        } else {
+          transcript_dataset <- data.frame()
+        }
+      } else if (!is.data.frame(transcript_dataset) || nrow(transcript_dataset) == 0) {
+        transcript_dataset <- tryCatch(
+          ugplot_geo_transcript_dataset(
+            matrix_files = matrix_files,
+            metadata = metadata,
+            target_column = target_column,
+            cpgs = transcript_cpgs
+          ),
+          error = function(e) data.frame()
+        )
+        if (is.data.frame(transcript_dataset) && nrow(transcript_dataset) > 0) {
+          utils::write.csv(transcript_dataset, raw_dataset_path, row.names = FALSE)
+        }
+      }
+
+      status <- "excluded"
+      kept_cpgs <- character(0)
+      kept_samples <- character(0)
+      filtered_path <- ""
+      best <- data.frame()
+      if (is.data.frame(transcript_dataset) && nrow(transcript_dataset) > 0) {
+        target_missing <- build_missing_mask(
+          transcript_dataset[, target_column, drop = FALSE],
+          missing_definition = geo_transcript_missing_definition()
+        )[, 1]
+        analysis_dataset <- transcript_dataset[!target_missing, , drop = FALSE]
+        predictor_cols <- setdiff(names(analysis_dataset), c("sample_id", target_column))
+        predictors <- analysis_dataset[, predictor_cols, drop = FALSE]
+        min_samples_required <- ceiling((min_samples_pct / 100) * nrow(transcript_dataset))
+        adjusted_min_rows_retained <- if (nrow(analysis_dataset) > 0) {
+          min(1, min_samples_required / nrow(analysis_dataset))
+        } else {
+          1
+        }
+        scan <- compute_exhaustive_threshold_scan(
+          predictors = predictors,
+          missing_definition = geo_transcript_missing_definition(),
+          min_rows_retained = adjusted_min_rows_retained,
+          mode = "complete_case"
+        )
+        if (is.data.frame(scan) && nrow(scan) > 0) {
+          best <- scan[1, , drop = FALSE]
+          if (isTRUE(best$complete_case[[1]]) && isTRUE(best$meets_min_samples[[1]]) &&
+              best$n_rows_after[[1]] >= min_samples_required) {
+            filtered <- apply_missing_filters_with_order(
+              predictors = predictors,
+              missing_definition = geo_transcript_missing_definition(),
+              threshold_cols = best$thr_col[[1]],
+              threshold_rows = best$thr_row[[1]],
+              order = as.character(best$scan_order[[1]])
+            )
+            kept_cpgs <- colnames(filtered$filtered_predictors)
+            kept_samples <- analysis_dataset$sample_id[filtered$keep_rows]
+            filtered_dataset <- cbind(
+              analysis_dataset[filtered$keep_rows, c("sample_id", target_column), drop = FALSE],
+              filtered$filtered_predictors
+            )
+            filtered_path <- dataset_path
+            utils::write.csv(filtered_dataset, filtered_path, row.names = FALSE)
+            status <- "compatible"
+          } else {
+            status <- "no_complete_case_at_min_samples"
+          }
+        }
+      } else {
+        status <- "dataset_unavailable"
+      }
+
+      trigger_max <- suppressWarnings(max(transcript_rows$TriggerMaxAbsRho, na.rm = TRUE))
+      if (!is.finite(trigger_max)) {
+        trigger_max <- NA_real_
+      }
+      progress_row <- data.frame(
+        Transcript = transcript_id,
+        Gene = paste(unique(stats::na.omit(transcript_rows$Gene)), collapse = ";"),
+        Status = status,
+        Columns = length(kept_cpgs),
+        Samples = length(kept_samples),
+        KeptCpGs = paste(kept_cpgs, collapse = ";"),
+        CpGKey = geo_group_key(kept_cpgs),
+        SampleKey = geo_group_key(kept_samples),
+        TriggerMaxAbsRho = trigger_max,
+        ThresholdCols = if (nrow(best) > 0) best$thr_col[[1]] else NA_real_,
+        ThresholdRows = if (nrow(best) > 0) best$thr_row[[1]] else NA_real_,
+        FilterOrder = if (nrow(best) > 0) as.character(best$scan_order[[1]]) else "",
+        DatasetPath = filtered_path,
+        RawDatasetPath = raw_dataset_path,
+        stringsAsFactors = FALSE
+      )
+      progress_rows <- rbind(progress_rows, progress_row)
+      tables <- geo_build_group_tables(progress_rows, candidates)
+      geo_transcript_groups(tables$summary)
+      geo_transcript_group_details(tables$details)
+      write_geo_transcript_group_cache(paths, tables, progress_rows)
+      update_geo_transcript_build_progress(
+        phase = "processing transcripts",
+        message = paste0("Finished ", transcript_id, " with status: ", status, "."),
+        processed = nrow(progress_rows),
+        total = length(transcripts),
+        compatible = sum(progress_rows$Status == "compatible"),
+        excluded = sum(progress_rows$Status != "compatible"),
+        current = transcript_id,
+        cache = dataset_path
+      )
+      if (isTRUE(update_stage)) {
+        geo_stage(list(
+          step = "Step 6",
+          title = "Building transcript ML groups",
+          message = paste0("Processed ", nrow(progress_rows), " of ", length(transcripts), " transcript(s). Compatible groups: ", nrow(tables$summary), ".")
+        ))
+      }
+      if (!is.null(progress_callback)) {
+        progress_callback(
+          0.35 + 0.65 * min(1, nrow(progress_rows) / max(1, length(transcripts))),
+          paste0(
+            "Processed ", nrow(progress_rows), " / ", length(transcripts),
+            "; compatible ", sum(progress_rows$Status == "compatible"),
+            "; excluded ", sum(progress_rows$Status != "compatible"),
+            "; current ", transcript_id
+          )
+        )
+      }
+    }
+
+    tables <- geo_build_group_tables(progress_rows, candidates)
+    geo_transcript_groups(tables$summary)
+    geo_transcript_group_details(tables$details)
+    write_geo_transcript_group_cache(paths, tables, progress_rows)
+    update_geo_transcript_build_progress(
+      phase = "complete",
+      message = paste0("Transcript CSV/group build complete. Compatible groups: ", nrow(tables$summary), "."),
+      processed = nrow(progress_rows),
+      total = length(transcripts),
+      compatible = if (is.data.frame(progress_rows) && "Status" %in% names(progress_rows)) sum(progress_rows$Status == "compatible") else 0L,
+      excluded = if (is.data.frame(progress_rows) && "Status" %in% names(progress_rows)) sum(progress_rows$Status != "compatible") else 0L,
+      current = "",
+      cache = paths$summary
+    )
+    geo_status(ugplot_geo_append_log(geo_status(), paste0("Transcript ML group table ready: ", nrow(tables$summary), " group(s). Cache: ", paths$summary)))
+    if (!is.null(progress_callback)) {
+      progress_callback(1, paste0("Complete: ", nrow(tables$summary), " compatible group(s)"))
+    }
+    invisible(TRUE)
+  }
+
   output$geo_spearman_table <- DT::renderDT({
     results <- geo_spearman_results()
     req(is.data.frame(results), nrow(results) > 0)
@@ -2503,53 +3278,173 @@ server <- function(input, output, session) {
     display$SpearmanRho <- round(display$SpearmanRho, 5)
     display$PValue <- signif(display$PValue, 5)
     display$AbsRho <- round(display$AbsRho, 5)
-    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE, autoWidth = TRUE), rownames = FALSE)
   })
 
-  output$geo_transcript_candidates_table <- DT::renderDT({
-    candidates <- geo_transcript_candidates()
-    req(is.data.frame(candidates), nrow(candidates) > 0)
-    display_cols <- intersect(
-      c(
-        "Transcript", "Gene", "CpG", "GeneRegion", "Chr", "Position",
-        "SpearmanRho", "PValue", "N", "AbsRho", "CpGInSpearmanScan",
-        "TriggerBestCpG", "TriggerBestRho", "TriggerMaxAbsRho", "TriggerCpGs", "TriggerGenes", "ThresholdAbsRho"
-      ),
-      names(candidates)
+  output$geo_transcript_groups_table <- DT::renderDT({
+    groups <- geo_transcript_groups()
+    req(is.data.frame(groups), nrow(groups) > 0)
+    display_cols <- intersect(c("PrincipalTranscript", "Gene", "Columns", "Samples", "TranscriptCount", "TriggerMaxAbsRho"), names(groups))
+    display <- groups[, display_cols, drop = FALSE]
+    if ("TriggerMaxAbsRho" %in% names(display)) {
+      display$TriggerMaxAbsRho <- round(display$TriggerMaxAbsRho, 5)
+    }
+    display <- cbind(
+      Load = vapply(seq_len(nrow(groups)), function(i) {
+        as.character(tags$button(
+          type = "button",
+          class = "btn btn-default btn-xs",
+          `data-group` = groups$GroupID[[i]],
+          onclick = "Shiny.setInputValue('geo_load_transcript_group_from_row', this.getAttribute('data-group'), {priority: 'event'});",
+          "Load"
+        ))
+      }, character(1)),
+      display,
+      stringsAsFactors = FALSE
     )
-    display <- candidates[, display_cols, drop = FALSE]
-    for (metric_col in intersect(c("SpearmanRho", "AbsRho", "TriggerBestRho", "TriggerMaxAbsRho", "ThresholdAbsRho"), names(display))) {
+    DT::datatable(
+      display,
+      selection = "single",
+      options = list(
+        pageLength = 10,
+        scrollX = TRUE,
+        autoWidth = TRUE,
+        columnDefs = list(list(targets = 0, orderable = FALSE, searchable = FALSE))
+      ),
+      rownames = FALSE,
+      escape = which(names(display) != "Load")
+    )
+  })
+
+  output$geo_transcript_group_details_title <- renderUI({
+    groups <- geo_transcript_groups()
+    progress <- geo_transcript_build_progress()
+    if (identical(progress$phase %||% "", "complete") && (!is.data.frame(groups) || nrow(groups) == 0)) {
+      return(tags$p(
+        class = "geo-step-note",
+        paste0(
+          "No compatible transcript groups were produced with the current settings. ",
+          "Try lowering the minimum samples below ", input$geo_transcript_min_samples %||% 80,
+          "% or lowering the |rho| threshold."
+        )
+      ))
+    }
+    selected <- input$geo_transcript_groups_table_rows_selected
+    if (!is.data.frame(groups) || nrow(groups) == 0 || length(selected) == 0) {
+      return(tags$p(class = "geo-step-note", "Select a transcript group row to inspect its CpGs and compatible transcripts."))
+    }
+    group <- groups[selected[[1]], , drop = FALSE]
+    extras <- group$ExtraTranscripts[[1]]
+    tags$div(
+      tags$h4(paste0("Details: ", group$PrincipalTranscript[[1]])),
+      tags$p(paste0("Gene: ", group$Gene[[1]], " | CpGs: ", group$Columns[[1]], " | Samples: ", group$Samples[[1]])),
+      tags$p(paste0("Extra compatible transcripts: ", if (nzchar(extras)) extras else "None"))
+    )
+  })
+
+  output$geo_transcript_group_details_table <- DT::renderDT({
+    groups <- geo_transcript_groups()
+    details <- geo_transcript_group_details()
+    selected <- input$geo_transcript_groups_table_rows_selected
+    req(is.data.frame(groups), nrow(groups) > 0, is.data.frame(details), nrow(details) > 0, length(selected) > 0)
+    group_id <- groups$GroupID[[selected[[1]]]]
+    display <- details[details$GroupID == group_id, , drop = FALSE]
+    display_cols <- intersect(
+      c("Transcript", "Gene", "CpG", "CpGKeptForML", "GeneRegion", "Chr", "Position", "CpGIslandRelation", "RegulatoryFeature", "ProbeType", "SpearmanRho", "AbsRho", "PValue"),
+      names(display)
+    )
+    display <- display[, display_cols, drop = FALSE]
+    for (metric_col in intersect(c("SpearmanRho", "AbsRho"), names(display))) {
       display[[metric_col]] <- round(display[[metric_col]], 5)
     }
     if ("PValue" %in% names(display)) {
       display$PValue <- signif(display$PValue, 5)
     }
-    if ("Transcript" %in% names(display)) {
-      transcript_values <- as.character(display$Transcript)
-      display <- cbind(
-        Load = vapply(transcript_values, function(transcript) {
-          as.character(tags$button(
-            type = "button",
-            class = "btn btn-default btn-xs",
-            `data-transcript` = transcript,
-            onclick = "Shiny.setInputValue('geo_load_transcript_from_row', this.getAttribute('data-transcript'), {priority: 'event'});",
-            "Load"
-          ))
-        }, character(1)),
-        display,
+    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  })
+
+  output$geo_transcript_group_track <- renderPlotly({
+    groups <- geo_transcript_groups()
+    details <- geo_transcript_group_details()
+    selected <- input$geo_transcript_groups_table_rows_selected
+    req(is.data.frame(groups), nrow(groups) > 0, is.data.frame(details), nrow(details) > 0, length(selected) > 0)
+    group_id <- groups$GroupID[[selected[[1]]]]
+    track <- details[details$GroupID == group_id, , drop = FALSE]
+    req(nrow(track) > 0)
+
+    track$PositionNumeric <- suppressWarnings(as.numeric(track$Position))
+    has_position <- any(is.finite(track$PositionNumeric))
+    if (!has_position) {
+      track <- track[order(track$Transcript, track$CpG), , drop = FALSE]
+      track$PositionNumeric <- ave(seq_len(nrow(track)), track$Transcript, FUN = seq_along)
+      x_label <- "CpG order"
+    } else {
+      track <- track[is.finite(track$PositionNumeric), , drop = FALSE]
+      x_label <- "Genomic position"
+    }
+    req(nrow(track) > 0)
+
+    track$Transcript <- factor(track$Transcript, levels = rev(unique(as.character(track$Transcript))))
+    track$CpGKeptForML <- as.logical(track$CpGKeptForML)
+    track$RhoScaled <- pmax(-1, pmin(1, suppressWarnings(as.numeric(track$SpearmanRho))))
+    track$YOffset <- ifelse(is.finite(track$RhoScaled), 0.34 * track$RhoScaled, 0)
+    track$YBase <- as.numeric(track$Transcript)
+    track$YEnd <- track$YBase + track$YOffset
+    track$Label <- paste0(
+      "Transcript: ", track$Transcript,
+      "<br>CpG: ", track$CpG,
+      "<br>Gene region: ", track$GeneRegion,
+      "<br>Position: ", track$Chr, ":", track$Position,
+      "<br>Spearman rho: ", signif(track$SpearmanRho, 4),
+      "<br>|rho|: ", signif(track$AbsRho, 4),
+      "<br>Kept for ML: ", ifelse(track$CpGKeptForML, "yes", "no")
+    )
+    segment_df <- do.call(rbind, lapply(split(track, track$Transcript), function(df) {
+      data.frame(
+        Transcript = df$Transcript[[1]],
+        x_start = min(df$PositionNumeric, na.rm = TRUE),
+        x_end = max(df$PositionNumeric, na.rm = TRUE),
         stringsAsFactors = FALSE
       )
-    }
-    escape_cols <- which(names(display) != "Load")
-    DT::datatable(
-      display,
-      options = list(
-        pageLength = 10,
-        scrollX = TRUE,
-        columnDefs = list(list(targets = 0, orderable = FALSE, searchable = FALSE))
-      ),
-      rownames = FALSE,
-      escape = escape_cols
+    }))
+
+	    p <- ggplot(track, aes(x = PositionNumeric, y = Transcript)) +
+	      geom_segment(
+	        data = segment_df,
+	        aes(x = x_start, xend = x_end, y = Transcript, yend = Transcript),
+        inherit.aes = FALSE,
+        color = "#aeb8c4",
+	        linewidth = 2,
+	        lineend = "round"
+	      ) +
+	      geom_segment(
+	        aes(xend = PositionNumeric, y = YBase, yend = YEnd, color = SpearmanRho, alpha = CpGKeptForML, text = Label),
+	        linewidth = 1.2,
+	        lineend = "round"
+	      ) +
+	      geom_point(
+	        aes(y = YEnd, color = SpearmanRho, alpha = CpGKeptForML, text = Label),
+	        shape = 21,
+	        size = 3.2,
+	        stroke = 0.7,
+	        fill = "white"
+	      ) +
+	      scale_color_gradient2(low = "#2f6fdd", mid = "#f7f9fc", high = "#d84a3a", midpoint = 0, na.value = "#8792a2") +
+	      scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.3), guide = "none") +
+	      scale_y_discrete(expand = expansion(mult = c(0.35, 0.35))) +
+	      labs(x = x_label, y = NULL, color = "rho") +
+      theme_minimal(base_size = 12) +
+      theme(
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.y = element_text(face = "bold"),
+        legend.position = "right",
+        plot.margin = ggplot2::margin(8, 12, 8, 8)
+      )
+    plotly::layout(
+      plotly::ggplotly(p, tooltip = "text"),
+      margin = list(l = 80, r = 40, t = 10, b = 45),
+      xaxis = list(rangeslider = list(visible = TRUE))
     )
   })
 
@@ -3102,13 +3997,19 @@ server <- function(input, output, session) {
     invisible(annotation_map)
   }
 
-  build_geo_transcript_candidates <- function(update_stage = FALSE) {
+  build_geo_transcript_candidates <- function(update_stage = FALSE, progress_callback = NULL,
+                                             build_groups = FALSE) {
     accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
       return(invisible(data.frame()))
     }
     cache_dir <- ugplot_geo_cache_dir(accession)
     target_column <- isolate(input$geo_target_column %||% "")
+    metadata <- geo_sample_metadata()
+    if ((!nzchar(target_column) || !target_column %in% names(metadata)) && is.data.frame(metadata) && nrow(metadata) > 0) {
+      target_candidates <- ugplot_geo_target_candidates(metadata)
+      target_column <- if ("age" %in% target_candidates) "age" else if (length(target_candidates) > 0) target_candidates[[1]] else ""
+    }
     results <- geo_spearman_raw_results()
     if (!is.data.frame(results) || nrow(results) == 0) {
       spearman_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, ".csv"))
@@ -3125,7 +4026,6 @@ server <- function(input, output, session) {
     }
 
     annotation_map <- geo_cpg_annotation()
-    metadata <- geo_sample_metadata()
     if ((!is.data.frame(annotation_map) || nrow(annotation_map) == 0) && is.data.frame(metadata) && nrow(metadata) > 0) {
       annotation_map <- ugplot_geo_load_annotation_cache(ugplot_geo_detect_platform(metadata))
       if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
@@ -3170,6 +4070,66 @@ server <- function(input, output, session) {
         title = "No transcript candidates",
         message = paste0("No annotated CpG passed |rho| >= ", threshold, ". Lower the threshold or scan more CpGs.")
       ))
+    }
+
+    min_samples_pct <- suppressWarnings(as.numeric(isolate(input$geo_transcript_min_samples %||% 80)))
+    if (!is.finite(min_samples_pct)) {
+      min_samples_pct <- 80
+    }
+    if (!isTRUE(build_groups)) {
+      return(invisible(candidates))
+    }
+    group_paths <- geo_transcript_group_cache_paths(cache_dir, target_column, threshold, min_samples_pct)
+    if (file.exists(group_paths$summary) && file.exists(group_paths$details)) {
+      cached_summary <- tryCatch(utils::read.csv(group_paths$summary, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+      cached_details <- tryCatch(utils::read.csv(group_paths$details, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+      if (is.data.frame(cached_summary) && nrow(cached_summary) > 0 && is.data.frame(cached_details)) {
+        if (all(c("PrincipalTranscript", "DatasetPath") %in% names(cached_summary))) {
+          for (summary_i in seq_len(nrow(cached_summary))) {
+            final_path <- geo_transcript_dataset_cache_path(cache_dir, cached_summary$PrincipalTranscript[[summary_i]], target_column)
+            raw_path <- geo_transcript_raw_dataset_cache_path(cache_dir, cached_summary$PrincipalTranscript[[summary_i]], target_column)
+            old_path <- as.character(cached_summary$DatasetPath[[summary_i]])
+            if (file.exists(final_path) && !file.exists(raw_path)) {
+              legacy_dataset <- tryCatch(utils::read.csv(final_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+              if (geo_transcript_dataset_has_missing(legacy_dataset, target_column)) {
+                file.copy(final_path, raw_path, overwrite = TRUE)
+              }
+            }
+            if (nzchar(old_path) && file.exists(old_path) && !identical(old_path, final_path)) {
+              file.copy(old_path, final_path, overwrite = TRUE)
+              cached_summary$DatasetPath[[summary_i]] <- final_path
+            }
+          }
+          utils::write.csv(cached_summary, group_paths$summary, row.names = FALSE)
+        }
+        geo_transcript_groups(cached_summary)
+        geo_transcript_group_details(cached_details)
+        update_geo_transcript_build_progress(
+          phase = "loaded from cache",
+          message = paste0("Loaded cached transcript ML groups: ", nrow(cached_summary), " group(s)."),
+          processed = nrow(cached_summary),
+          total = nrow(cached_summary),
+          compatible = nrow(cached_summary),
+          excluded = 0L,
+          current = "",
+          cache = group_paths$summary
+        )
+        geo_status(ugplot_geo_append_log(geo_status(), paste0("Loaded cached transcript ML groups: ", nrow(cached_summary), " group(s).")))
+        if (!is.null(progress_callback)) {
+          progress_callback(1, paste0("Loaded cached transcript ML groups: ", nrow(cached_summary), " group(s)"))
+        }
+        return(invisible(candidates))
+      }
+    }
+    if (is.data.frame(candidates) && nrow(candidates) > 0) {
+      build_geo_transcript_groups(
+        candidates, cache_dir, target_column, threshold, min_samples_pct, group_paths,
+        update_stage = update_stage,
+        progress_callback = progress_callback
+      )
+    } else {
+      geo_transcript_groups(data.frame())
+      geo_transcript_group_details(data.frame())
     }
     invisible(candidates)
   }
@@ -3227,8 +4187,7 @@ server <- function(input, output, session) {
         geo_spearman_raw_results(spearman_results)
         annotation_map <- geo_cpg_annotation()
         if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
-          geo_spearman_results(ugplot_geo_join_spearman_annotation(spearman_results, annotation_map))
-          build_geo_transcript_candidates(update_stage = FALSE)
+          geo_spearman_results(spearman_results)
         } else {
           geo_spearman_results(spearman_results)
         }
@@ -3244,6 +4203,63 @@ server <- function(input, output, session) {
         geo_transcript_candidates(transcript_candidates)
       }
     }
+    group_summary_paths <- list.files(cache_dir, pattern = "^ugplot_geo_transcript_ml_groups_.*_summary\\.csv$", full.names = TRUE)
+    if (length(group_summary_paths) > 0 && (!is.data.frame(geo_transcript_groups()) || nrow(geo_transcript_groups()) == 0)) {
+      current_prefix <- if (nzchar(target_column)) {
+        paste0("^ugplot_geo_transcript_ml_groups_", target_column, "_", geo_transcript_cache_version(), "_")
+      } else {
+        paste0("^ugplot_geo_transcript_ml_groups_.*_", geo_transcript_cache_version(), "_")
+      }
+      target_matches <- grepl(current_prefix, basename(group_summary_paths))
+      preferred_paths <- group_summary_paths[target_matches]
+      legacy_target_matches <- if (nzchar(target_column)) {
+        grepl(paste0("^ugplot_geo_transcript_ml_groups_", target_column, "_"), basename(group_summary_paths))
+      } else {
+        rep(TRUE, length(group_summary_paths))
+      }
+      legacy_paths <- setdiff(group_summary_paths[legacy_target_matches], preferred_paths)
+      if (length(preferred_paths) == 0 && length(legacy_paths) > 0) {
+        geo_transcript_groups(data.frame())
+        geo_transcript_group_details(data.frame())
+        update_geo_transcript_build_progress(
+          phase = "needs rebuild",
+          message = paste0(
+            "Transcript groups exist in an older cache format, but the GEO matrix reader was updated. ",
+            "Click Build/continue transcript CSVs to rebuild clean reader_v2 transcript datasets."
+          ),
+          processed = 0L,
+          total = 0L,
+          compatible = 0L,
+          excluded = 0L,
+          current = "",
+          cache = legacy_paths[[which.max(file.info(legacy_paths)$mtime)]]
+        )
+      }
+      summary_path <- if (length(preferred_paths) > 0) preferred_paths[[which.max(file.info(preferred_paths)$mtime)]] else ""
+      if (nzchar(summary_path)) {
+      details_path <- sub("_summary\\.csv$", "_details.csv", summary_path)
+      cached_summary <- tryCatch(utils::read.csv(summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+      cached_details <- if (file.exists(details_path)) {
+        tryCatch(utils::read.csv(details_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+      } else {
+        data.frame()
+      }
+      if (is.data.frame(cached_summary) && nrow(cached_summary) > 0) {
+        geo_transcript_groups(cached_summary)
+        geo_transcript_group_details(cached_details)
+        update_geo_transcript_build_progress(
+          phase = "loaded from cache",
+          message = paste0("Loaded reader_v2 transcript ML groups: ", nrow(cached_summary), " group(s)."),
+          processed = nrow(cached_summary),
+          total = nrow(cached_summary),
+          compatible = nrow(cached_summary),
+          excluded = 0L,
+          current = "",
+          cache = summary_path
+        )
+      }
+      }
+    }
     geo_stage(list(
       step = "Local cache",
       title = "Loaded GEO cache",
@@ -3251,13 +4267,6 @@ server <- function(input, output, session) {
     ))
     invisible(TRUE)
   }
-
-  observeEvent(input$geo_accession, {
-    accession <- trimws(input$geo_accession %||% "")
-    if (nchar(accession) >= 6) {
-      load_geo_cached_state(accession)
-    }
-  }, ignoreInit = TRUE)
 
   session$onFlushed(function() {
     accession <- isolate(trimws(input$geo_accession %||% ""))
@@ -3492,6 +4501,44 @@ server <- function(input, output, session) {
     })
   })
 
+  observeEvent(input$geo_build_transcript_groups, {
+    accession <- trimws(input$geo_accession %||% "")
+    if (!nzchar(accession)) {
+      geo_stage(list(step = "Step 6", title = "Missing accession", message = "Enter and inspect a GEO accession first."))
+      return()
+    }
+    geo_stage(list(
+      step = "Step 6",
+      title = "Building transcript CSVs",
+      message = "Continuing from cached Spearman/annotation results. Existing transcript CSVs and partial progress will be reused."
+    ))
+    update_geo_transcript_build_progress(
+      phase = "queued",
+      message = "Starting transcript CSV/group build from cached Spearman and annotation results.",
+      processed = 0L,
+      total = 0L,
+      compatible = 0L,
+      excluded = 0L,
+      current = "",
+      cache = ugplot_geo_cache_dir(accession)
+    )
+    tryCatch(
+      withProgress(message = "Building transcript CSVs", value = 0, {
+        build_geo_transcript_candidates(
+          update_stage = TRUE,
+          build_groups = TRUE,
+          progress_callback = function(value, detail) {
+            shiny::setProgress(value = value, detail = detail)
+          }
+        )
+      }),
+      error = function(e) {
+        geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not build transcript CSVs/groups: ", conditionMessage(e))))
+        geo_stage(list(step = "Step 6", title = "Transcript CSV build failed", message = conditionMessage(e)))
+      }
+    )
+  })
+
   observeEvent(input$geo_transcript_absrho_threshold, {
     if (is.data.frame(geo_spearman_raw_results()) && nrow(geo_spearman_raw_results()) > 0) {
       build_geo_transcript_candidates(update_stage = TRUE)
@@ -3575,6 +4622,53 @@ server <- function(input, output, session) {
 
   observeEvent(input$geo_load_transcript_from_row, {
     load_geo_transcript_dataset(input$geo_load_transcript_from_row %||% "")
+  })
+
+  load_geo_transcript_group_dataset <- function(selected_group) {
+    groups <- geo_transcript_groups()
+    if (!is.data.frame(groups) || nrow(groups) == 0) {
+      geo_stage(list(step = "Step 6", title = "No transcript groups", message = "Build transcript ML groups before loading a dataset."))
+      return(invisible(FALSE))
+    }
+    group <- groups[as.character(groups$GroupID) == as.character(selected_group), , drop = FALSE]
+    if (nrow(group) == 0) {
+      geo_stage(list(step = "Step 6", title = "Select a transcript group", message = "Click Load beside a transcript group."))
+      return(invisible(FALSE))
+    }
+    dataset_path <- group$DatasetPath[[1]]
+    if (!nzchar(dataset_path) || !file.exists(dataset_path)) {
+      geo_stage(list(step = "Step 6", title = "Missing grouped dataset", message = "The cached complete-case CSV for this transcript group was not found. Re-run the transcript group build."))
+      return(invisible(FALSE))
+    }
+    group_dataset <- tryCatch(utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    if (!is.data.frame(group_dataset) || nrow(group_dataset) == 0) {
+      geo_stage(list(step = "Step 6", title = "Grouped dataset failed", message = "Could not read the cached complete-case transcript group CSV."))
+      return(invisible(FALSE))
+    }
+    accession <- trimws(input$geo_accession %||% "GEO")
+    target_column <- input$geo_target_column %||% ""
+    dff <<- as.data.frame(group_dataset, stringsAsFactors = FALSE, check.names = FALSE)
+    original_dataset_filename(paste0(accession, "_", group$PrincipalTranscript[[1]], "_", target_column, "_group_dataset"))
+    geo_preview_data(utils::head(dff, 100))
+    load_dataset_into_table(session)
+    refresh_counter(refresh_counter() + 1)
+    update_scramble_selector()
+    updateTabsetPanel(session, "tabs", selected = "TABLE")
+    geo_stage(list(
+      step = "TABLE",
+      title = "Transcript group dataset loaded",
+      message = paste0(
+        "Loaded ", group$PrincipalTranscript[[1]], " group into TABLE as ",
+        nrow(dff), " sample rows x ", ncol(dff), " columns. Compatible transcripts: ",
+        group$TranscriptCount[[1]], "."
+      )
+    ))
+    geo_status(ugplot_geo_append_log(geo_status(), paste0("Loaded transcript group dataset: ", group$PrincipalTranscript[[1]], "; ", nrow(dff), " rows x ", ncol(dff), " columns. CSV: ", dataset_path)))
+    invisible(TRUE)
+  }
+
+  observeEvent(input$geo_load_transcript_group_from_row, {
+    load_geo_transcript_group_dataset(input$geo_load_transcript_group_from_row %||% "")
   })
 
   observeEvent(input$geo_load_selected_file, {
@@ -3735,12 +4829,15 @@ server <- function(input, output, session) {
     },
     content = function(file) {
       preview <- missing_preview_data()
-      filtered <- apply_missing_filters(
+      filtered <- apply_missing_filters_resolved(
         predictors = preview$predictors,
         missing_definition = preview$missing_definition,
         zero_exceptions = preview$zero_exceptions,
         threshold_cols = input$ml_missing_threshold_cols,
-        threshold_rows = input$ml_missing_threshold_rows
+        threshold_rows = input$ml_missing_threshold_rows,
+        filter_order = "auto",
+        min_rows_retained = (input$ml_complete_case_min_samples %||% 80) / 100,
+        mode = if (identical(input$ml_missing_strategy, "none")) "complete_case" else "balanced"
       )
       target_filtered <- preview$subset_table[, preview$target_name, drop = FALSE]
       if (ncol(filtered$filtered_predictors) > 0) {
@@ -3758,7 +4855,9 @@ server <- function(input, output, session) {
           zero_exceptions = preview$zero_exceptions,
           threshold_cols = input$ml_missing_threshold_cols,
           threshold_rows = input$ml_missing_threshold_rows,
-          threshold_scope = "full_before_split"
+          threshold_scope = "full_before_split",
+          filter_order = "auto",
+          min_rows_retained = (input$ml_complete_case_min_samples %||% 80) / 100
         )
         dataset_to_download <- imputed_full$train_set
       } else {
@@ -4175,12 +5274,15 @@ server <- function(input, output, session) {
     col_threshold <- input$ml_missing_threshold_cols
     row_threshold <- input$ml_missing_threshold_rows
     strategy <- input$ml_missing_strategy
-    filtered <- apply_missing_filters(
+    filtered <- apply_missing_filters_resolved(
       predictors = predictors,
       missing_definition = preview$missing_definition,
       zero_exceptions = preview$zero_exceptions,
       threshold_cols = col_threshold,
-      threshold_rows = row_threshold
+      threshold_rows = row_threshold,
+      filter_order = "auto",
+      min_rows_retained = (input$ml_complete_case_min_samples %||% 80) / 100,
+      mode = if (identical(strategy, "none")) "complete_case" else "balanced"
     )
     filtered_mask <- filtered$filtered_mask
     columns_after <- ncol(filtered_mask)
@@ -4249,7 +5351,48 @@ server <- function(input, output, session) {
       ),
       tags$p(
         style = "margin-top: 8px; font-size: 12px; color: #596273;",
-        "Thresholds are always applied to the full dataset before split (Mode B)."
+        "Thresholds are always applied to the full dataset before split (Mode B). Automatic order: ",
+        if (identical(filtered$resolved_order %||% "cols_first", "rows_first")) {
+          "samples, then columns."
+        } else {
+          "columns, then samples."
+        }
+      )
+    )
+  })
+
+  output$ml_missing_definition_stats <- renderUI({
+    preview <- missing_preview_data()
+    counts <- missing_definition_counts(preview$predictors, preview$zero_exceptions)
+    total_cells <- nrow(preview$predictors) * ncol(preview$predictors)
+    counts$Percent <- if (total_cells > 0) {
+      paste0(round(100 * counts$Cells / total_cells, 2), "%")
+    } else {
+      "0%"
+    }
+    tags$div(
+      style = "margin: 4px 0 10px 0; max-width: 520px;",
+      tags$p(
+        style = "margin-bottom: 4px; font-size: 12px; color: #596273;",
+        "Current dataset missing-rule counts:"
+      ),
+      tags$table(
+        class = "ml-summary-table",
+        style = "width: 100%; border-collapse: collapse; border: 1px solid #e2e6ea; background: #fff; font-size: 12px;",
+        tags$thead(tags$tr(
+          tags$th(style = "padding: 6px 8px; background: #f5f7fa;", "Rule"),
+          tags$th(style = "padding: 6px 8px; background: #f5f7fa;", "Cells"),
+          tags$th(style = "padding: 6px 8px; background: #f5f7fa;", "Columns"),
+          tags$th(style = "padding: 6px 8px; background: #f5f7fa;", "%")
+        )),
+        tags$tbody(lapply(seq_len(nrow(counts)), function(i) {
+          tags$tr(
+            tags$td(style = "padding: 6px 8px; border-top: 1px solid #edf0f3;", counts$Rule[[i]]),
+            tags$td(style = "padding: 6px 8px; border-top: 1px solid #edf0f3;", counts$Cells[[i]]),
+            tags$td(style = "padding: 6px 8px; border-top: 1px solid #edf0f3;", counts$Columns[[i]]),
+            tags$td(style = "padding: 6px 8px; border-top: 1px solid #edf0f3;", counts$Percent[[i]])
+          )
+        }))
       )
     )
   })
@@ -4378,6 +5521,7 @@ server <- function(input, output, session) {
     updateSelectInput(session, "ml_imputation_scope", selected = "split_separate")
     updateNumericInput(session, "ml_missing_threshold_cols", value = 100)
     updateNumericInput(session, "ml_missing_threshold_rows", value = 100)
+    updateNumericInput(session, "ml_complete_case_min_samples", value = 80)
     threshold_scan_results(NULL)
     threshold_scan_status("Status: idle (click the button to run exhaustive scan).")
   }
@@ -4401,6 +5545,8 @@ server <- function(input, output, session) {
       predictors = preview$predictors,
       missing_definition = preview$missing_definition,
       zero_exceptions = preview$zero_exceptions,
+      min_rows_retained = (input$ml_complete_case_min_samples %||% 80) / 100,
+      mode = if (identical(input$ml_missing_strategy, "none")) "complete_case" else "balanced",
       progress_callback = function(progress_value) {
         progress_bar$set(
           value = progress_value,
@@ -4431,9 +5577,23 @@ server <- function(input, output, session) {
     best <- results[1, , drop = FALSE]
     pareto_count <- sum(results$pareto)
     cross_count <- sum(results$cross_point)
+    complete_count <- sum(results$complete_case)
+    mode_label <- if (identical(input$ml_missing_strategy, "none")) {
+      sprintf("Complete-case recommendation (>= %s%% samples retained)", input$ml_complete_case_min_samples %||% 80)
+    } else {
+      "Best hotspot found (maximize information, minimize missingness)"
+    }
+    if (identical(input$ml_missing_strategy, "none") && !isTRUE(best$complete_case)) {
+      mode_label <- "No complete-case result found; showing best balanced hotspot"
+    } else if (identical(input$ml_missing_strategy, "none") && !isTRUE(best$meets_min_samples)) {
+      mode_label <- sprintf(
+        "Complete-case fallback (no result kept >= %s%% samples)",
+        input$ml_complete_case_min_samples %||% 80
+      )
+    }
     tags$div(
       style = "margin: 8px 0 12px 0; padding: 10px; background: #f6fbf6; border: 1px solid #cfe9cf;",
-      tags$b("Best hotspot found (maximize information, minimize missingness): "),
+      tags$b(paste0(mode_label, ": ")),
       sprintf("columns = %s%%, rows = %s%%, order = %s", best$thr_col, best$thr_row, best$scan_order),
       tags$br(),
       sprintf(
@@ -4447,8 +5607,8 @@ server <- function(input, output, session) {
       ),
       tags$br(),
       sprintf(
-        "Pareto hotspots: %s | Crossing points (same result in both orders): %s | Tested pairs: %s.",
-        pareto_count, cross_count, nrow(results)
+        "Complete-case pairs: %s | Pareto hotspots: %s | Crossing points (same result in both orders): %s | Tested pairs: %s.",
+        complete_count, pareto_count, cross_count, nrow(results)
       )
     )
   })
@@ -4457,12 +5617,15 @@ server <- function(input, output, session) {
     preview <- missing_preview_data()
     target_values <- preview$subset_table[, preview$target_name, drop = TRUE]
     target_filtered <- preview$subset_table[, preview$target_name, drop = FALSE]
-    filtered <- apply_missing_filters(
+    filtered <- apply_missing_filters_resolved(
       predictors = preview$predictors,
       missing_definition = preview$missing_definition,
       zero_exceptions = preview$zero_exceptions,
       threshold_cols = input$ml_missing_threshold_cols,
-      threshold_rows = input$ml_missing_threshold_rows
+      threshold_rows = input$ml_missing_threshold_rows,
+      filter_order = "auto",
+      min_rows_retained = (input$ml_complete_case_min_samples %||% 80) / 100,
+      mode = if (identical(input$ml_missing_strategy, "none")) "complete_case" else "balanced"
     )
     if (ncol(filtered$filtered_predictors) > 0) {
       target_filtered <- target_filtered[filtered$keep_rows, , drop = FALSE]
@@ -5024,6 +6187,8 @@ server <- function(input, output, session) {
       imputation_scope = input$ml_imputation_scope %||% "split_separate",
       missing_threshold_cols = input$ml_missing_threshold_cols %||% 100,
       missing_threshold_rows = input$ml_missing_threshold_rows %||% 100,
+      missing_filter_order = "auto",
+      complete_case_min_samples = input$ml_complete_case_min_samples %||% 80,
       performance_mode = input$ml_performance_mode %||% "default",
       cv_method = input$ml_cv_method %||% "cv",
       cv_folds = input$ml_cv_folds %||% 10,
@@ -5399,6 +6564,7 @@ server <- function(input, output, session) {
     updateSelectInput(session, "ml_imputation_scope", selected = config$imputation_scope %||% "split_separate")
     updateNumericInput(session, "ml_missing_threshold_cols", value = config$missing_threshold_cols %||% 100)
     updateNumericInput(session, "ml_missing_threshold_rows", value = config$missing_threshold_rows %||% 100)
+    updateNumericInput(session, "ml_complete_case_min_samples", value = config$complete_case_min_samples %||% 80)
     category_columns <- intersect(config$category_columns %||% character(0), names(dataset))
     updateCheckboxGroupInput(session, "checkbox_group_categories", selected = category_columns)
     job_name <- as.character(config$job_name %||% bundle$status$name %||% "")
@@ -6223,15 +7389,19 @@ server <- function(input, output, session) {
           if (is.null(zero_exceptions)) {
             zero_exceptions <- character(0)
           }
-          print(paste("Threshold scope:", threshold_scope, "| Missing strategy:", input$ml_missing_strategy, "| Imputation scope:", imputation_scope))
+          missing_filter_order <- "auto"
+          print(paste("Threshold scope:", threshold_scope, "| Missing strategy:", input$ml_missing_strategy, "| Imputation scope:", imputation_scope, "| Filter order:", missing_filter_order))
           if (identical(threshold_scope, "full_before_split")) {
             predictors_all <- X[, setdiff(colnames(X), target_name), drop = FALSE]
-            filtered_all <- apply_missing_filters(
+            filtered_all <- apply_missing_filters_resolved(
               predictors = predictors_all,
               missing_definition = missing_definition,
               zero_exceptions = zero_exceptions,
               threshold_cols = input$ml_missing_threshold_cols,
-              threshold_rows = input$ml_missing_threshold_rows
+              threshold_rows = input$ml_missing_threshold_rows,
+              filter_order = missing_filter_order,
+              min_rows_retained = (input$ml_complete_case_min_samples %||% 80) / 100,
+              mode = if (identical(input$ml_missing_strategy, "none")) "complete_case" else "balanced"
             )
             X <- cbind(X[filtered_all$keep_rows, target_name, drop = FALSE], filtered_all$filtered_predictors)
             names(X)[1] <- target_name
@@ -6248,7 +7418,9 @@ server <- function(input, output, session) {
               zero_exceptions = zero_exceptions,
               threshold_cols = input$ml_missing_threshold_cols,
               threshold_rows = input$ml_missing_threshold_rows,
-              threshold_scope = "full_before_split"
+              threshold_scope = "full_before_split",
+              filter_order = missing_filter_order,
+              min_rows_retained = (input$ml_complete_case_min_samples %||% 80) / 100
             )
             X <- preprocessed_full$train_set
             Y <- X[[target_name]]
@@ -6274,7 +7446,9 @@ server <- function(input, output, session) {
               zero_exceptions = zero_exceptions,
               threshold_cols = input$ml_missing_threshold_cols,
               threshold_rows = input$ml_missing_threshold_rows,
-              threshold_scope = threshold_scope
+              threshold_scope = threshold_scope,
+              filter_order = missing_filter_order,
+              min_rows_retained = (input$ml_complete_case_min_samples %||% 80) / 100
             )
             trainSet <- processed_data$train_set
             testSet <- processed_data$test_set

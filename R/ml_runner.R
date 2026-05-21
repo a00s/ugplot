@@ -490,6 +490,12 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
   zero_exceptions <- config$zero_exceptions %||% character(0)
   missing_strategy <- config$missing_strategy %||% "none"
   imputation_scope <- config$imputation_scope %||% "split_separate"
+  missing_filter_order <- config$missing_filter_order %||% "cols_first"
+  missing_filter_order <- normalize_missing_filter_order(missing_filter_order, allow_auto = TRUE)
+  complete_case_min_samples <- suppressWarnings(as.numeric(config$complete_case_min_samples %||% 80)) / 100
+  if (!is.finite(complete_case_min_samples)) {
+    complete_case_min_samples <- 0.8
+  }
   threshold_scope <- "full_before_split"
 
   for (dataset_position in seq_along(dataset_seed_values)) {
@@ -500,12 +506,15 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
     preprocess_meta <- NULL
 
     predictors_all <- X[, setdiff(colnames(X), target_name), drop = FALSE]
-    filtered_all <- apply_missing_filters(
+    filtered_all <- apply_missing_filters_resolved(
       predictors = predictors_all,
       missing_definition = missing_definition,
       zero_exceptions = zero_exceptions,
       threshold_cols = config$missing_threshold_cols %||% 100,
-      threshold_rows = config$missing_threshold_rows %||% 100
+      threshold_rows = config$missing_threshold_rows %||% 100,
+      filter_order = missing_filter_order,
+      min_rows_retained = complete_case_min_samples,
+      mode = if (identical(missing_strategy, "none")) "complete_case" else "balanced"
     )
     X <- cbind(X[filtered_all$keep_rows, target_name, drop = FALSE], filtered_all$filtered_predictors)
     names(X)[1] <- target_name
@@ -521,7 +530,9 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
         zero_exceptions = zero_exceptions,
         threshold_cols = config$missing_threshold_cols %||% 100,
         threshold_rows = config$missing_threshold_rows %||% 100,
-        threshold_scope = "full_before_split"
+        threshold_scope = "full_before_split",
+        filter_order = missing_filter_order,
+        min_rows_retained = complete_case_min_samples
       )
       X <- preprocessed_full$train_set
       Y <- X[[target_name]]
@@ -557,7 +568,9 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
         zero_exceptions = zero_exceptions,
         threshold_cols = config$missing_threshold_cols %||% 100,
         threshold_rows = config$missing_threshold_rows %||% 100,
-        threshold_scope = threshold_scope
+        threshold_scope = threshold_scope,
+        filter_order = missing_filter_order,
+        min_rows_retained = complete_case_min_samples
       )
       train_set <- processed_data$train_set
       test_set <- processed_data$test_set

@@ -761,8 +761,8 @@ ugplot_geo_transcript_candidates <- function(results, annotation_map, absrho_thr
 }
 
 ugplot_geo_matrix_files <- function(cache_dir) {
-  files <- list.files(cache_dir, pattern = "\\.(txt|tsv|csv)$", full.names = TRUE)
-  files <- files[!grepl("series_matrix|sample_metadata|spearman|manifest|metadata", basename(files), ignore.case = TRUE)]
+  files <- list.files(cache_dir, pattern = "\\.(txt|tsv|csv)$", full.names = TRUE, recursive = FALSE)
+  files <- files[!grepl("series_matrix|sample_metadata|spearman|manifest|metadata|transcript|groups|candidate", basename(files), ignore.case = TRUE)]
   files <- files[file.info(files)$size > 0]
   files[vapply(files, function(path) {
     header <- tryCatch(readLines(path, n = 1, warn = FALSE), error = function(e) character(0))
@@ -906,6 +906,7 @@ ugplot_geo_transcript_dataset <- function(matrix_files, metadata, target_column,
   scanned <- 0L
   for (path in names(file_maps)) {
     map <- file_maps[[path]]
+    file_found <- rep(FALSE, length(cpgs))
     con <- file(path, "r")
     on.exit(try(close(con), silent = TRUE), add = TRUE)
     readLines(con, n = 1, warn = FALSE)
@@ -920,19 +921,17 @@ ugplot_geo_transcript_dataset <- function(matrix_files, metadata, target_column,
         numeric_values <- suppressWarnings(as.numeric(parts[map$ColumnIndex]))
         values[map$MetadataRow, cpg_index[[cpg]]] <- numeric_values
         found[[cpg_index[[cpg]]]] <- TRUE
+        file_found[[cpg_index[[cpg]]]] <- TRUE
       }
       scanned <- scanned + 1L
       if (!is.null(progress_callback) && scanned %% 10000L == 0L) {
         progress_callback(scanned, sum(found), length(cpgs))
       }
-      if (all(found)) {
+      if (all(file_found)) {
         break
       }
     }
     try(close(con), silent = TRUE)
-    if (all(found)) {
-      break
-    }
   }
 
   kept_cpgs <- colnames(values)[found]

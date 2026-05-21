@@ -745,7 +745,8 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
   border-radius: 8px;
   background: #ffffff;
   padding: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: visible;
 }
 
 .geo-step-table {
@@ -772,6 +773,19 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
 
 .geo-table-section .dataTables_wrapper {
   overflow-x: auto;
+  width: 100%;
+}
+
+.geo-table-section .dataTables_scroll {
+  overflow-x: auto;
+}
+
+.geo-table-section .dataTables_scrollBody {
+  overflow-x: scroll !important;
+}
+
+.geo-table-section .plotly {
+  min-width: 760px;
 }
 
 .geo-table-actions {
