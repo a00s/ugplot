@@ -2700,6 +2700,7 @@ server <- function(input, output, session) {
             tags$p(class = "geo-step-note", "Screen all installed caret models per transcript group for the active matrix source."),
             numericInput("geo_ml_min_absrho", "Run transcript groups with trigger |rho| >=:", value = 0.7, min = 0, max = 1, step = 0.01),
             numericInput("geo_ml_rank_limit", "Limit to top Spearman-ranked groups (blank = all):", value = NA, min = 1, step = 1),
+            checkboxInput("geo_ml_quick_models", "Use one representative model from four ML families", value = FALSE),
             numericInput("geo_ml_screen_seeds", "Screening seeds per model:", value = 3, min = 1, step = 1),
             numericInput("geo_ml_timeout", "Timeout per model/seed (s):", value = 1200, min = 1, step = 1),
             uiOutput("geo_ml_model_summary"),
@@ -2758,7 +2759,17 @@ server <- function(input, output, session) {
         } else NULL,
         if (preview_done) render_geo_table_details("Open loaded ugPlot preview", uiOutput("geo_preview_table_title"), DT::DTOutput("geo_preview_table"), open = FALSE) else NULL
         ,
-        render_geo_table_details("Open transcript ML results", uiOutput("geo_transcript_ml_table_title"), DT::DTOutput("geo_transcript_ml_table"), open = FALSE)
+        render_geo_table_details(
+          "Open transcript ML results",
+          uiOutput("geo_transcript_ml_table_title"),
+          tagList(
+            DT::DTOutput("geo_transcript_ml_table"),
+            uiOutput("geo_transcript_ml_selected_title"),
+            plotlyOutput("geo_transcript_ml_importance_track", height = "420px"),
+            plotlyOutput("geo_transcript_ml_rho_importance_plot", height = "420px")
+          ),
+          open = FALSE
+        )
       )
     )
   })
@@ -3454,6 +3465,110 @@ server <- function(input, output, session) {
     summary
   }
 
+  bind_summary_rows <- function(rows) {
+    rows <- rows[vapply(rows, function(x) is.data.frame(x) && nrow(x) > 0, logical(1))]
+    if (length(rows) == 0) {
+      return(data.frame())
+    }
+    all_cols <- unique(unlist(lapply(rows, names), use.names = FALSE))
+    rows <- lapply(rows, function(row) {
+      missing_cols <- setdiff(all_cols, names(row))
+      for (col in missing_cols) {
+        row[[col]] <- NA
+      }
+      row[, all_cols, drop = FALSE]
+    })
+    do.call(rbind, rows)
+  }
+
+  geo_ml_load_screening_summary <- function(pipeline_dir, write_back = TRUE) {
+    summary_path <- file.path(pipeline_dir, "screening_summary.csv")
+    csv_summary <- if (file.exists(summary_path)) {
+      tryCatch(utils::read.csv(summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    } else {
+      data.frame()
+    }
+    group_summary_paths <- if (dir.exists(pipeline_dir)) {
+      list.files(pipeline_dir, pattern = "^screen_summary[.]rds$", recursive = TRUE, full.names = TRUE)
+    } else {
+      character(0)
+    }
+    group_summaries <- lapply(group_summary_paths, function(path) {
+      tryCatch(readRDS(path), error = function(e) data.frame())
+    })
+    if (length(group_summaries) > 0) {
+      cached_summary <- bind_summary_rows(group_summaries)
+      combined <- if (is.data.frame(csv_summary) && nrow(csv_summary) > 0) {
+        bind_summary_rows(list(csv_summary, cached_summary))
+      } else {
+        cached_summary
+      }
+      if ("GroupID" %in% names(combined)) {
+        combined <- combined[rev(seq_len(nrow(combined))), , drop = FALSE]
+        combined <- combined[!duplicated(as.character(combined$GroupID)), , drop = FALSE]
+        combined <- combined[rev(seq_len(nrow(combined))), , drop = FALSE]
+      }
+      if (!"ModelsRun" %in% names(combined)) combined$ModelsRun <- NA_integer_
+      if (!"ModelsOK" %in% names(combined)) combined$ModelsOK <- NA_integer_
+      if ("ScreenResultPath" %in% names(combined)) {
+        for (row_i in seq_len(nrow(combined))) {
+          if (is.na(combined$ModelsRun[[row_i]]) || is.na(combined$ModelsOK[[row_i]])) {
+            result_path <- as.character(combined$ScreenResultPath[[row_i]])
+            if (nzchar(result_path) && file.exists(result_path)) {
+              result <- tryCatch(readRDS(result_path), error = function(e) NULL)
+              counts <- geo_ml_model_run_counts(result)
+              combined$ModelsRun[[row_i]] <- counts[["ModelsRun"]]
+              combined$ModelsOK[[row_i]] <- counts[["ModelsOK"]]
+            }
+          }
+        }
+      }
+      csv_summary <- geo_ml_rank_summary(combined)
+      if (isTRUE(write_back) && is.data.frame(csv_summary) && nrow(csv_summary) > 0) {
+        dir.create(pipeline_dir, recursive = TRUE, showWarnings = FALSE)
+        utils::write.csv(csv_summary, summary_path, row.names = FALSE)
+      }
+    } else {
+      csv_summary <- geo_ml_rank_summary(csv_summary)
+    }
+    csv_summary
+  }
+
+  geo_ml_model_run_counts <- function(result) {
+    results_table <- result$results_table
+    if (!is.data.frame(results_table) || nrow(results_table) == 0 || !"Model" %in% names(results_table)) {
+      return(c(ModelsRun = NA_integer_, ModelsOK = NA_integer_))
+    }
+    models_run <- length(unique(as.character(results_table$Model[nzchar(as.character(results_table$Model))])))
+    models_ok <- if ("Status" %in% names(results_table)) {
+      status_ok <- !is.na(results_table$Status) & as.character(results_table$Status) == "OK"
+      length(unique(as.character(results_table$Model[status_ok])))
+    } else {
+      NA_integer_
+    }
+    c(ModelsRun = models_run, ModelsOK = models_ok)
+  }
+
+  geo_ml_quick_models <- function(available) {
+    available <- unique(as.character(available))
+    available <- available[nzchar(available)]
+    families <- list(
+      linear = c("glmnet", "lm", "ridge", "lasso", "bayesglm", "leapSeq"),
+      tree = c("rpart", "rf", "ranger", "treebag", "ctree"),
+      boosting = c("xgbTree", "gbm", "blackboost", "ada", "bstTree"),
+      neural = c("nnet", "avNNet", "mlp", "brnn")
+    )
+    selected <- vapply(families, function(candidates) {
+      hit <- intersect(candidates, available)
+      if (length(hit) > 0) hit[[1]] else NA_character_
+    }, character(1), USE.NAMES = FALSE)
+    selected <- stats::na.omit(selected)
+    if (length(selected) < 4) {
+      selected <- unique(c(selected, utils::head(setdiff(available, selected), 4 - length(selected))))
+    }
+    unique(as.character(selected))
+  }
+
   geo_ml_pipeline_config <- function(models, screen_seeds, seed_end, timeout, best_only_model = NULL) {
     list(
       target = "target",
@@ -3504,6 +3619,7 @@ server <- function(input, output, session) {
     group_dir <- geo_transcript_ml_group_dir(cache_dir, source, group$GroupID[[1]])
     screen_path <- file.path(group_dir, "screen_result.rds")
     summary_path <- file.path(group_dir, "screen_summary.rds")
+    importance_path <- file.path(group_dir, "screen_importance.csv")
 
     screen_config <- geo_ml_pipeline_config(models, settings$screen_seeds, settings$screen_seeds, settings$timeout)
     screen_config$resume_result_path <- screen_path
@@ -3525,7 +3641,12 @@ server <- function(input, output, session) {
     if (!nzchar(best_model) || identical(best_model, "-")) {
       stop("No best model was found during screening.")
     }
+    importance <- geo_ml_importance_table(screen_result$best_model, group, source, "screening")
+    if (is.data.frame(importance) && nrow(importance) > 0) {
+      utils::write.csv(importance, importance_path, row.names = FALSE)
+    }
     metric_values <- geo_ml_result_metric_values(screen_result)
+    model_counts <- geo_ml_model_run_counts(screen_result)
     metric_name <- screen_result$final_summary$metric_name %||% "R2"
     summary <- data.frame(
       Source = source,
@@ -3540,8 +3661,11 @@ server <- function(input, output, session) {
       MedianMetric = if (length(metric_values) > 0) stats::median(metric_values) else NA_real_,
       MeanMetric = if (length(metric_values) > 0) mean(metric_values) else NA_real_,
       SeedsRun = length(metric_values),
+      ModelsRun = model_counts[["ModelsRun"]],
+      ModelsOK = model_counts[["ModelsOK"]],
       DatasetPath = dataset_path,
       ScreenResultPath = screen_path,
+      ImportancePath = if (file.exists(importance_path)) importance_path else "",
       stringsAsFactors = FALSE
     )
     saveRDS(summary, summary_path)
@@ -3651,9 +3775,18 @@ server <- function(input, output, session) {
     if (length(available) == 0) {
       return(tags$p(class = "geo-step-note", "No installed caret models are currently available."))
     }
+    selected <- if (isTRUE(input$geo_ml_quick_models)) geo_ml_quick_models(available) else available
+    selected <- selected[nzchar(selected)]
     tags$div(
-      tags$p(tags$strong("Models for transcript ML: "), paste0(length(available), " installed model(s) will be screened.")),
-      tags$p(class = "geo-step-note", paste(utils::head(available, 12), collapse = ", "), if (length(available) > 12) "..." else "")
+      tags$p(
+        tags$strong("Models for transcript ML: "),
+        if (isTRUE(input$geo_ml_quick_models)) {
+          paste0(length(selected), " representative model(s) will be screened.")
+        } else {
+          paste0(length(available), " installed model(s) will be screened.")
+        }
+      ),
+      tags$p(class = "geo-step-note", paste(utils::head(selected, 12), collapse = ", "), if (length(selected) > 12) "..." else "")
     )
   })
 
@@ -3684,7 +3817,7 @@ server <- function(input, output, session) {
     results <- geo_transcript_ml_results()
     req(is.data.frame(results), nrow(results) > 0)
     display_cols <- intersect(
-      c("Source", "GroupID", "PrincipalTranscript", "Gene", "CombinedRank", "ModelRank", "RhoRank", "TriggerMaxAbsRho", "BestModel", "MetricName", "BestMetric", "MedianMetric", "MeanMetric", "MetricSE", "SeedsRun", "Stable", "StabilityDetail"),
+      c("Source", "Phase", "GroupID", "PrincipalTranscript", "Gene", "CombinedRank", "ModelRank", "RhoRank", "TriggerMaxAbsRho", "BestModel", "ModelsRun", "ModelsOK", "MetricName", "BestMetric", "MedianMetric", "MeanMetric", "MetricSE", "SeedsRun", "Stable", "StabilityDetail"),
       names(results)
     )
     display <- results[, display_cols, drop = FALSE]
@@ -3692,6 +3825,213 @@ server <- function(input, output, session) {
       display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
     }
     DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single")
+  })
+
+  geo_transcript_ml_selected_data <- reactive({
+    results <- geo_transcript_ml_results()
+    details <- geo_transcript_group_details()
+    selected <- input$geo_transcript_ml_table_rows_selected
+    if (!is.data.frame(results) || nrow(results) == 0 ||
+        !is.data.frame(details) || nrow(details) == 0 ||
+        length(selected) == 0 || selected[[1]] > nrow(results)) {
+      return(list(row = data.frame(), track = data.frame()))
+    }
+    ml_row <- results[selected[[1]], , drop = FALSE]
+    group_id <- as.character(ml_row$GroupID[[1]] %||% "")
+    track <- details[as.character(details$GroupID) == group_id, , drop = FALSE]
+    if (!is.data.frame(track) || nrow(track) == 0) {
+      return(list(row = ml_row, track = data.frame()))
+    }
+    importance <- data.frame()
+    importance_path <- if ("ImportancePath" %in% names(ml_row)) as.character(ml_row$ImportancePath[[1]] %||% "") else ""
+    if (nzchar(importance_path) && file.exists(importance_path)) {
+      importance <- tryCatch(utils::read.csv(importance_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    }
+    if ((!is.data.frame(importance) || nrow(importance) == 0) && "ScreenResultPath" %in% names(ml_row)) {
+      result_path <- as.character(ml_row$ScreenResultPath[[1]] %||% "")
+      if (nzchar(result_path) && file.exists(result_path)) {
+        result <- tryCatch(readRDS(result_path), error = function(e) NULL)
+        source_value <- if ("Source" %in% names(ml_row)) as.character(ml_row$Source[[1]] %||% "") else ""
+        importance <- geo_ml_importance_table(result$best_model, ml_row, source_value, "screening")
+      }
+    }
+    if (is.data.frame(importance) && nrow(importance) > 0 && all(c("CpG", "Importance") %in% names(importance))) {
+      importance <- importance[, intersect(c("CpG", "Importance", "ImportanceRank"), names(importance)), drop = FALSE]
+      track <- merge(track, importance, by = "CpG", all.x = TRUE, sort = FALSE)
+    } else {
+      track$Importance <- NA_real_
+      track$ImportanceRank <- NA_real_
+    }
+    track$Importance <- suppressWarnings(as.numeric(track$Importance))
+    track$AbsRho <- suppressWarnings(as.numeric(track$AbsRho))
+    max_importance <- suppressWarnings(max(track$Importance, na.rm = TRUE))
+    max_absrho <- suppressWarnings(max(track$AbsRho, na.rm = TRUE))
+    track$ImportanceNorm <- if (is.finite(max_importance) && max_importance > 0) pmax(0, pmin(1, track$Importance / max_importance)) else NA_real_
+    track$AbsRhoNorm <- if (is.finite(max_absrho) && max_absrho > 0) pmax(0, pmin(1, track$AbsRho / max_absrho)) else NA_real_
+    list(row = ml_row, track = track)
+  })
+
+  output$geo_transcript_ml_selected_title <- renderUI({
+    selected <- geo_transcript_ml_selected_data()
+    row <- selected$row
+    track <- selected$track
+    if (!is.data.frame(row) || nrow(row) == 0) {
+      return(tags$p(class = "geo-step-note", "Select a transcript ML result row to inspect CpG importance."))
+    }
+    tags$div(
+      tags$h4(paste0("ML importance: ", row$PrincipalTranscript[[1]], " / ", row$Gene[[1]])),
+      tags$p(paste0("Best model: ", row$BestModel[[1]], " | CpGs: ", nrow(track), " | Importance values: ", sum(is.finite(track$Importance)))),
+      tags$p(
+        class = "geo-step-note",
+        "Top plot shows CpG position with transcript regions; bottom plot compares normalized Spearman |rho| with normalized ML importance. Above the dashed line means ML importance is stronger than Spearman; below means Spearman is stronger."
+      )
+    )
+  })
+
+  output$geo_transcript_ml_importance_track <- renderPlotly({
+    selected <- geo_transcript_ml_selected_data()
+    row <- selected$row
+    track <- selected$track
+    req(is.data.frame(row), nrow(row) > 0, is.data.frame(track), nrow(track) > 0)
+    track$PositionNumeric <- suppressWarnings(as.numeric(track$Position))
+    track <- track[is.finite(track$PositionNumeric), , drop = FALSE]
+    req(nrow(track) > 0)
+    track <- track[order(track$PositionNumeric, track$CpG), , drop = FALSE]
+    region_order <- c("Promoter", "TSS1500", "TSS200", "5'UTR", "Exon", "1stExon", "Intron", "Body", "3'UTR")
+    region_labels <- c(
+      Promoter = "Promoter",
+      TSS1500 = "Promoter TSS1500",
+      TSS200 = "Promoter TSS200",
+      `5'UTR` = "5' UTR",
+      Exon = "Exon",
+      `1stExon` = "First exon",
+      Intron = "Intron",
+      Body = "Gene body",
+      `3'UTR` = "3' UTR"
+    )
+    region_colors <- c(
+      Promoter = "#f6c85f",
+      TSS1500 = "#f6c85f",
+      TSS200 = "#f08a4b",
+      `5'UTR` = "#8ecae6",
+      Exon = "#4dab6d",
+      `1stExon` = "#4dab6d",
+      Intron = "#d9e2ec",
+      Body = "#b8c0ff",
+      `3'UTR` = "#c77dff"
+    )
+    region_bands <- data.frame()
+    if ("GeneRegion" %in% names(track)) {
+      raw_regions <- trimws(as.character(track$GeneRegion))
+      primary_region <- vapply(strsplit(raw_regions, ";", fixed = TRUE), function(parts) {
+        parts <- trimws(parts)
+        parts <- parts[nzchar(parts)]
+        matched <- parts[parts %in% region_order]
+        if (length(matched) > 0) matched[[1]] else NA_character_
+      }, character(1))
+      band_track <- track[!is.na(primary_region) & nzchar(primary_region), , drop = FALSE]
+      primary_region <- primary_region[!is.na(primary_region) & nzchar(primary_region)]
+      if (nrow(band_track) > 0) {
+        x_values <- band_track$PositionNumeric
+        padding <- diff(range(track$PositionNumeric, na.rm = TRUE)) * 0.01
+        if (!is.finite(padding) || padding <= 0) {
+          padding <- 1
+        }
+        boundaries <- if (length(x_values) == 1) {
+          c(x_values - padding, x_values + padding)
+        } else {
+          mids <- (utils::head(x_values, -1) + utils::tail(x_values, -1)) / 2
+          c(min(x_values) - padding, mids, max(x_values) + padding)
+        }
+        runs <- rle(primary_region)
+        ends <- cumsum(runs$lengths)
+        starts <- c(1, utils::head(ends, -1) + 1)
+        region_bands <- do.call(rbind, lapply(seq_along(runs$values), function(i) {
+          xmin <- boundaries[starts[[i]]]
+          xmax <- boundaries[ends[[i]] + 1]
+          data.frame(
+            Sector = runs$values[[i]],
+            x = (xmin + xmax) / 2,
+            width = max(padding, xmax - xmin),
+            Label = paste0(
+              "Region: ", unname(region_labels[runs$values[[i]]]),
+              "<br>Approx. span: ", round(xmin), "-", round(xmax),
+              "<br>Source: Illumina CpG GeneRegion annotation"
+            ),
+            stringsAsFactors = FALSE
+          )
+        }))
+        if (is.data.frame(region_bands) && nrow(region_bands) > 0) {
+          region_bands$Sector <- factor(region_bands$Sector, levels = region_order)
+        }
+      }
+    }
+    track$Label <- paste0(
+      "CpG: ", track$CpG,
+      "<br>Position: ", track$Chr, ":", track$Position,
+      "<br>Gene region: ", track$GeneRegion,
+      "<br><b>|rho|: ", signif(track$AbsRho, 4), "</b>",
+      "<br><b>Importance: ", ifelse(is.finite(track$Importance), signif(track$Importance, 4), "NA"), "</b>",
+      "<br>Importance rank: ", ifelse(is.finite(track$ImportanceRank), track$ImportanceRank, "NA")
+    )
+    p <- ggplot(track, aes(x = PositionNumeric, y = 1)) +
+      labs(x = "Genomic position", y = NULL, color = "Normalized")
+    if (is.data.frame(region_bands) && nrow(region_bands) > 0) {
+      p <- p +
+        geom_tile(
+          data = region_bands,
+          aes(x = x, y = 1.02, width = width, height = 0.92, fill = Sector, text = Label),
+          inherit.aes = FALSE,
+          alpha = 0.26,
+          color = NA
+        ) +
+        scale_fill_manual(values = region_colors, labels = region_labels, na.translate = FALSE, name = "Region")
+    }
+    p <- p +
+      geom_segment(aes(xend = PositionNumeric, y = 1, yend = 1 + 0.42 * ImportanceNorm, text = Label),
+                   color = "#334155", linewidth = 0.8, na.rm = TRUE) +
+      geom_point(aes(y = 1 + 0.42 * ImportanceNorm, color = ImportanceNorm, size = ImportanceNorm, text = Label),
+                 shape = 21, fill = "white", stroke = 0.8, na.rm = TRUE) +
+      geom_point(aes(y = 0.72, color = AbsRhoNorm, text = Label),
+                 shape = 16, size = 2.6, alpha = 0.55, na.rm = TRUE) +
+      viridis::scale_color_viridis(option = "plasma", limits = c(0, 1), na.value = "#94a3b8") +
+      scale_size_continuous(range = c(2.5, 8), guide = "none") +
+      scale_y_continuous(breaks = c(0.72, 1), labels = c("|rho|", "importance"), limits = c(0.55, 1.48)) +
+      theme_minimal(base_size = 12) +
+      theme(panel.grid.minor = element_blank(), panel.grid.major.y = element_blank())
+    plotly::ggplotly(p, tooltip = "text") %>% plotly::config(displaylogo = FALSE)
+  })
+
+  output$geo_transcript_ml_rho_importance_plot <- renderPlotly({
+    selected <- geo_transcript_ml_selected_data()
+    row <- selected$row
+    track <- selected$track
+    req(is.data.frame(row), nrow(row) > 0, is.data.frame(track), nrow(track) > 0)
+    plot_df <- track[is.finite(track$AbsRhoNorm) & is.finite(track$ImportanceNorm), , drop = FALSE]
+    req(nrow(plot_df) > 0)
+    plot_df$Delta <- plot_df$ImportanceNorm - plot_df$AbsRhoNorm
+    plot_df$Label <- paste0(
+      "CpG: ", plot_df$CpG,
+      "<br>Position: ", plot_df$Chr, ":", plot_df$Position,
+      "<br><b>|rho| norm: ", signif(plot_df$AbsRhoNorm, 4), "</b>",
+      "<br><b>Importance norm: ", signif(plot_df$ImportanceNorm, 4), "</b>",
+      "<br>Delta importance-rho: ", signif(plot_df$Delta, 4)
+    )
+    p <- ggplot(plot_df, aes(x = AbsRhoNorm, y = ImportanceNorm, text = Label)) +
+      geom_abline(slope = 1, intercept = 0, color = "#94a3b8", linetype = "dashed") +
+      geom_point(aes(color = Delta, size = ImportanceNorm), alpha = 0.85) +
+      scale_color_gradient2(low = "#2563eb", mid = "#64748b", high = "#dc2626", midpoint = 0, name = "Importance - |rho|") +
+      scale_size_continuous(range = c(2.5, 8), guide = "none") +
+      coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
+      labs(
+        x = "Normalized |rho|",
+        y = "Normalized ML importance",
+        title = "CpG agreement: Spearman vs ML importance",
+        subtitle = "Above dashed line: ML adds signal. Below dashed line: Spearman is stronger."
+      ) +
+      theme_minimal(base_size = 12) +
+      theme(panel.grid.minor = element_blank())
+    plotly::ggplotly(p, tooltip = "text") %>% plotly::config(displaylogo = FALSE)
   })
 
   geo_transcript_dataset_cache_path <- function(cache_dir, transcript, target_column, source = NULL) {
@@ -5612,8 +5952,12 @@ server <- function(input, output, session) {
     )
     ml_summary_existing <- ml_summary_candidates[file.exists(ml_summary_candidates)]
     ml_summary_path <- if (length(ml_summary_existing) > 0) ml_summary_existing[[1]] else ""
-    if (file.exists(ml_summary_path)) {
-      ml_summary <- tryCatch(utils::read.csv(ml_summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    if (file.exists(ml_summary_path) || dir.exists(ml_pipeline_dir)) {
+      ml_summary <- if (!nzchar(ml_summary_path) || identical(basename(ml_summary_path), "screening_summary.csv")) {
+        geo_ml_load_screening_summary(ml_pipeline_dir)
+      } else {
+        tryCatch(utils::read.csv(ml_summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+      }
       if (is.data.frame(ml_summary) && nrow(ml_summary) > 0) {
         ml_summary <- geo_ml_rank_summary(ml_summary)
         geo_transcript_ml_results(ml_summary)
@@ -5949,12 +6293,9 @@ server <- function(input, output, session) {
     eligible_tiebreak <- if ("PrincipalTranscript" %in% names(eligible)) eligible$PrincipalTranscript else eligible$GroupID
     eligible <- eligible[order(-suppressWarnings(as.numeric(eligible$TriggerMaxAbsRho)), eligible_tiebreak), , drop = FALSE]
     pipeline_dir <- geo_transcript_ml_dir(cache_dir, source)
+    quick_models <- isTRUE(input$geo_ml_quick_models)
     summary_path <- file.path(pipeline_dir, "screening_summary.csv")
-    existing_summary <- if (file.exists(summary_path)) {
-      tryCatch(utils::read.csv(summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
-    } else {
-      data.frame()
-    }
+    existing_summary <- geo_ml_load_screening_summary(pipeline_dir)
     processed_groups <- if (is.data.frame(existing_summary) && "GroupID" %in% names(existing_summary)) {
       unique(as.character(existing_summary$GroupID))
     } else {
@@ -5989,6 +6330,9 @@ server <- function(input, output, session) {
     }
     models <- unique(as.character(ml_available))
     models <- models[nzchar(models)]
+    if (quick_models) {
+      models <- geo_ml_quick_models(models)
+    }
     if (length(models) == 0) {
       geo_stage(list(step = "Step 8", title = "No ML models selected", message = "Select at least one installed caret model for transcript ML."))
       return()
@@ -5999,13 +6343,20 @@ server <- function(input, output, session) {
     )
     update_geo_transcript_ml_progress(
       phase = "running",
-      message = paste0("Screening models for ", nrow(eligible), " eligible group(s) on ", geo_matrix_source_label(source), "."),
+      message = paste0(
+        "Screening ", length(models), " model(s) for ", nrow(eligible),
+        " eligible group(s) on ", geo_matrix_source_label(source), "."
+      ),
       processed = length(intersect(processed_groups, eligible$GroupID)),
       total = nrow(eligible),
       current = "",
       cache = pipeline_dir
     )
-    geo_stage(list(step = "Step 8", title = "Screening transcript ML models", message = paste0("Screening results are saved under ", pipeline_dir, " and can resume after interruption.")))
+    geo_stage(list(
+      step = "Step 8",
+      title = "Screening transcript ML models",
+      message = paste0("Screening results are saved under ", pipeline_dir, " and can resume after interruption.")
+    ))
     tryCatch({
       withProgress(message = "Screening transcript ML models", value = 0, {
         summaries <- existing_summary
@@ -6043,7 +6394,7 @@ server <- function(input, output, session) {
           )
           summaries <- if (is.data.frame(summaries) && nrow(summaries) > 0) {
             summaries <- summaries[as.character(summaries$GroupID) != group_id, , drop = FALSE]
-            rbind(summaries, summary_row)
+            bind_summary_rows(list(summaries, summary_row))
           } else {
             summary_row
           }
@@ -6170,7 +6521,7 @@ server <- function(input, output, session) {
           )
           summaries <- if (is.data.frame(summaries) && nrow(summaries) > 0) {
             summaries <- summaries[as.character(summaries$GroupID) != group_id, , drop = FALSE]
-            rbind(summaries, summary_row)
+            bind_summary_rows(list(summaries, summary_row))
           } else {
             summary_row
           }
