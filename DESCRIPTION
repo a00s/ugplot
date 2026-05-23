@@ -48,6 +48,8 @@ Suggests:
     BiocManager,
     curl,
     GEOquery,
+    GenomicFeatures,
+    GenomicRanges,
     httr,
     IlluminaHumanMethylation450kanno.ilmn12.hg19,
     IlluminaHumanMethylationEPICanno.ilm10b4.hg19,
@@ -55,7 +57,11 @@ Suggests:
     methyLImp2,
     minfi,
     plumber,
+    sesame,
+    sesameData,
+    S4Vectors,
     testthat (>= 3.0.0),
+    TxDb.Hsapiens.UCSC.hg19.refGene,
     torch,
     withr
 Config/testthat/edition: 3

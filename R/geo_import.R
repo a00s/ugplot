@@ -762,8 +762,18 @@ ugplot_geo_transcript_candidates <- function(results, annotation_map, absrho_thr
   candidates
 }
 
-ugplot_geo_matrix_files <- function(cache_dir) {
-  files <- list.files(cache_dir, pattern = "\\.(txt|tsv|csv)$", full.names = TRUE, recursive = FALSE)
+ugplot_geo_matrix_files <- function(cache_dir, source = c("processed", "raw_sesame", "auto")) {
+  source <- match.arg(source)
+  if (identical(source, "raw_sesame")) {
+    files <- ugplot_geo_sesame_beta_path(cache_dir)
+    files <- files[file.exists(files)]
+  } else {
+    files <- list.files(cache_dir, pattern = "\\.(txt|tsv|csv)$", full.names = TRUE, recursive = FALSE)
+  }
+  sesame_beta <- ugplot_geo_sesame_beta_path(cache_dir)
+  if (identical(source, "auto") && file.exists(sesame_beta)) {
+    files <- unique(c(sesame_beta, files))
+  }
   files <- files[!grepl("series_matrix|sample_metadata|spearman|manifest|metadata|transcript|groups|candidate", basename(files), ignore.case = TRUE)]
   files <- files[file.info(files)$size > 0]
   files[vapply(files, function(path) {
@@ -772,9 +782,329 @@ ugplot_geo_matrix_files <- function(cache_dir) {
   }, logical(1))]
 }
 
+ugplot_geo_raw_idat_dir <- function(cache_dir) {
+  file.path(cache_dir, "idat_raw")
+}
+
+ugplot_geo_sesame_dir <- function(cache_dir) {
+  file.path(cache_dir, "sesame_reprocessed")
+}
+
+ugplot_geo_sesame_beta_path <- function(cache_dir) {
+  file.path(ugplot_geo_sesame_dir(cache_dir), "sesame_beta_matrix.tsv")
+}
+
+ugplot_geo_sesame_qc_path <- function(cache_dir) {
+  file.path(ugplot_geo_sesame_dir(cache_dir), "sesame_qc_report.csv")
+}
+
+ugplot_geo_is_raw_archive <- function(path) {
+  grepl("\\.(tar|tar\\.gz|tgz|zip)$", basename(path), ignore.case = TRUE)
+}
+
+ugplot_geo_idat_prefix_from_path <- function(path) {
+  sub("_(Red|Grn)\\.idat(\\.gz)?$", "", path, ignore.case = TRUE)
+}
+
+ugplot_geo_idat_channel_from_path <- function(path) {
+  lower <- tolower(basename(path))
+  if (grepl("_red\\.idat(\\.gz)?$", lower)) {
+    return("Red")
+  }
+  if (grepl("_grn\\.idat(\\.gz)?$", lower)) {
+    return("Grn")
+  }
+  NA_character_
+}
+
+ugplot_geo_idat_sample_from_prefix <- function(prefix) {
+  prefix_base <- basename(prefix)
+  gsm_match <- regmatches(prefix_base, regexpr("GSM[0-9]+", prefix_base, ignore.case = TRUE))
+  if (length(gsm_match) > 0 && nzchar(gsm_match[[1]])) {
+    return(toupper(gsm_match[[1]]))
+  }
+  prefix_base
+}
+
+ugplot_geo_extract_raw_archives <- function(cache_dir, progress_callback = NULL) {
+  files <- list.files(cache_dir, full.names = TRUE, recursive = FALSE)
+  archives <- files[vapply(files, ugplot_geo_is_raw_archive, logical(1))]
+  if (length(archives) == 0) {
+    return(character(0))
+  }
+  extracted_dirs <- character(0)
+  raw_dir <- ugplot_geo_raw_idat_dir(cache_dir)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+  for (archive_i in seq_along(archives)) {
+    archive_path <- archives[[archive_i]]
+    archive_base <- gsub("[^A-Za-z0-9_.-]+", "_", tools::file_path_sans_ext(basename(archive_path)))
+    if (grepl("\\.tar\\.gz$|\\.tgz$", basename(archive_path), ignore.case = TRUE)) {
+      archive_base <- gsub("\\.tar$", "", tools::file_path_sans_ext(basename(archive_path)), ignore.case = TRUE)
+      archive_base <- gsub("[^A-Za-z0-9_.-]+", "_", archive_base)
+    }
+    destination <- file.path(raw_dir, archive_base)
+    marker <- file.path(destination, ".ugplot_extract_complete")
+    if (file.exists(marker)) {
+      extracted_dirs <- c(extracted_dirs, destination)
+      next
+    }
+    dir.create(destination, recursive = TRUE, showWarnings = FALSE)
+    if (!is.null(progress_callback)) {
+      progress_callback(archive_i - 1L, length(archives), basename(archive_path))
+    }
+    if (grepl("\\.zip$", archive_path, ignore.case = TRUE)) {
+      utils::unzip(archive_path, exdir = destination)
+    } else {
+      utils::untar(archive_path, exdir = destination)
+    }
+    writeLines(as.character(Sys.time()), marker)
+    extracted_dirs <- c(extracted_dirs, destination)
+    if (!is.null(progress_callback)) {
+      progress_callback(archive_i, length(archives), basename(archive_path))
+    }
+  }
+  extracted_dirs
+}
+
+ugplot_geo_idat_pairs <- function(cache_dir) {
+  files <- list.files(cache_dir, pattern = "\\.idat(\\.gz)?$", full.names = TRUE, recursive = TRUE)
+  files <- files[!grepl("\\.part$|\\.resume$", files, ignore.case = TRUE)]
+  if (length(files) == 0) {
+    return(data.frame(
+      Sample = character(),
+      Prefix = character(),
+      RedPath = character(),
+      GrnPath = character(),
+      Complete = logical(),
+      stringsAsFactors = FALSE
+    ))
+  }
+  channels <- vapply(files, ugplot_geo_idat_channel_from_path, character(1))
+  prefixes <- vapply(files, ugplot_geo_idat_prefix_from_path, character(1))
+  pair_rows <- lapply(sort(unique(prefixes[!is.na(channels)])), function(prefix) {
+    red <- files[prefixes == prefix & channels == "Red"]
+    grn <- files[prefixes == prefix & channels == "Grn"]
+    data.frame(
+      Sample = ugplot_geo_idat_sample_from_prefix(prefix),
+      Prefix = prefix,
+      RedPath = if (length(red) > 0) red[[1]] else "",
+      GrnPath = if (length(grn) > 0) grn[[1]] else "",
+      Complete = length(red) > 0 && length(grn) > 0,
+      stringsAsFactors = FALSE
+    )
+  })
+  pairs <- do.call(rbind, pair_rows)
+  rownames(pairs) <- NULL
+  pairs
+}
+
+ugplot_geo_write_beta_matrix_tsv <- function(beta_matrix, path) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  output <- data.frame(ID_REF = rownames(beta_matrix), beta_matrix, check.names = FALSE, stringsAsFactors = FALSE)
+  utils::write.table(output, path, sep = "\t", quote = FALSE, row.names = FALSE, na = "NA")
+  path
+}
+
+ugplot_geo_sesame_missing_cache_title <- function(message) {
+  message <- paste(as.character(message), collapse = "\n")
+  match <- regexec("sesameDataCache\\(\"([^\"]+)\"\\)", message)
+  parts <- regmatches(message, match)[[1]]
+  if (length(parts) >= 2) {
+    return(parts[[2]])
+  }
+  NA_character_
+}
+
+ugplot_geo_prepare_sesame_data_cache <- function(data_titles = "idatSignature", progress_callback = NULL) {
+  if (!requireNamespace("sesameData", quietly = TRUE)) {
+    stop("Package 'sesameData' is required to cache sesame reference data.")
+  }
+  cache_fun <- getExportedValue("sesameData", "sesameDataCache")
+  data_titles <- unique(stats::na.omit(as.character(data_titles)))
+  for (title_i in seq_along(data_titles)) {
+    title <- data_titles[[title_i]]
+    if (!is.null(progress_callback)) {
+      progress_callback(title_i - 1L, length(data_titles), paste0("Preparing sesame data cache: ", title))
+    }
+    tryCatch(
+      cache_fun(title),
+      error = function(e) {
+        stop(paste0(
+          "Sesame data cache is missing '", title, "' and could not be prepared automatically. ",
+          "Run sesameData::sesameDataCache(\"", title, "\") and then retry IDAT QC. ",
+          "Original error: ", conditionMessage(e)
+        ))
+      }
+    )
+    if (!is.null(progress_callback)) {
+      progress_callback(title_i, length(data_titles), paste0("Sesame data cache ready: ", title))
+    }
+  }
+  invisible(TRUE)
+}
+
+ugplot_geo_reprocess_idats_sesame <- function(cache_dir, detection_p = 0.01,
+                                             max_failed_probe_fraction = 0.05,
+                                             prep = "QCDPB",
+                                             progress_callback = NULL) {
+  if (!requireNamespace("sesame", quietly = TRUE)) {
+    stop("Package 'sesame' is required for raw Red/Grn IDAT reprocessing.")
+  }
+  prepared_sesame_titles <- c("idatSignature", "HM450.address", "KYCG.HM450.Mask.20240513")
+  ugplot_geo_prepare_sesame_data_cache(prepared_sesame_titles, progress_callback = progress_callback)
+  ugplot_geo_extract_raw_archives(cache_dir, progress_callback = function(done, total, file) {
+    if (!is.null(progress_callback)) {
+      progress_callback(done, total, paste0("Extracting raw archive: ", file))
+    }
+  })
+  pairs <- ugplot_geo_idat_pairs(cache_dir)
+  pairs <- pairs[pairs$Complete, , drop = FALSE]
+  if (!is.data.frame(pairs) || nrow(pairs) == 0) {
+    stop("No complete Red/Grn IDAT pairs were found locally. Download raw IDAT archives/files first.")
+  }
+
+  read_pair <- getExportedValue("sesame", "readIDATpair")
+  prep_sesame <- getExportedValue("sesame", "prepSesame")
+  get_betas <- getExportedValue("sesame", "getBetas")
+  p_oobah <- tryCatch(getExportedValue("sesame", "pOOBAH"), error = function(e) NULL)
+
+  beta_list <- list()
+  qc_rows <- vector("list", nrow(pairs))
+  detection_p <- suppressWarnings(as.numeric(detection_p))
+  if (!is.finite(detection_p) || detection_p <= 0 || detection_p >= 1) {
+    detection_p <- 0.01
+  }
+  max_failed_probe_fraction <- suppressWarnings(as.numeric(max_failed_probe_fraction))
+  if (!is.finite(max_failed_probe_fraction) || max_failed_probe_fraction < 0 || max_failed_probe_fraction > 1) {
+    max_failed_probe_fraction <- 0.05
+  }
+
+  for (pair_i in seq_len(nrow(pairs))) {
+    sample_id <- pairs$Sample[[pair_i]]
+    prefix <- pairs$Prefix[[pair_i]]
+    if (!is.null(progress_callback)) {
+      progress_callback(pair_i - 1L, nrow(pairs), paste0("Reading IDAT pair for ", sample_id))
+    }
+    qc_row <- data.frame(
+      Sample = sample_id,
+      Prefix = prefix,
+      Status = "failed",
+      PassedQC = FALSE,
+      DetectionPAvailable = !is.null(p_oobah),
+      DetectionPThreshold = detection_p,
+      FailedProbeFraction = NA_real_,
+      MissingBetaFraction = NA_real_,
+      Probes = NA_integer_,
+      Message = "",
+      stringsAsFactors = FALSE
+    )
+    sample_error <- ""
+    beta_values <- numeric(0)
+    for (attempt_i in seq_len(8L)) {
+      sample_error <- ""
+      beta_values <- tryCatch({
+        sset <- read_pair(prefix)
+        if (!is.null(progress_callback)) {
+          progress_callback(pair_i - 0.75, nrow(pairs), paste0("Preprocessing ", sample_id, " with ", prep))
+        }
+        sset <- prep_sesame(sset, prep = prep)
+        beta_raw <- get_betas(sset)
+        betas <- suppressWarnings(as.numeric(beta_raw))
+        names(betas) <- names(beta_raw)
+        if (!is.null(p_oobah)) {
+          pval_raw <- p_oobah(sset, return.pval = TRUE, pval.threshold = detection_p)
+          pvals <- suppressWarnings(as.numeric(pval_raw))
+          names(pvals) <- names(pval_raw)
+          common <- intersect(names(betas), names(pvals))
+          failed <- rep(FALSE, length(betas))
+          names(failed) <- names(betas)
+          failed[common] <- is.finite(pvals[common]) & pvals[common] > detection_p
+          qc_row$FailedProbeFraction <- mean(failed, na.rm = TRUE)
+          betas[failed] <- NA_real_
+        }
+        qc_row$MissingBetaFraction <- mean(is.na(betas))
+        qc_row$Probes <- length(betas)
+        if (is.finite(qc_row$FailedProbeFraction)) {
+          qc_row$PassedQC <- qc_row$FailedProbeFraction <= max_failed_probe_fraction
+        } else {
+          qc_row$PassedQC <- is.finite(qc_row$MissingBetaFraction) &&
+            qc_row$MissingBetaFraction <= max_failed_probe_fraction
+        }
+        qc_row$Status <- if (isTRUE(qc_row$PassedQC)) "passed" else "excluded"
+        if (!isTRUE(qc_row$PassedQC)) {
+          qc_row$Message <- paste0(
+            "QC failed: failed probe fraction ", signif(qc_row$FailedProbeFraction, 4),
+            "; missing beta fraction ", signif(qc_row$MissingBetaFraction, 4), "."
+          )
+        }
+        betas
+      }, error = function(e) {
+        sample_error <<- conditionMessage(e)
+        numeric(0)
+      })
+      missing_title <- ugplot_geo_sesame_missing_cache_title(sample_error)
+      if (length(beta_values) == 0 &&
+          nzchar(sample_error) &&
+          !is.na(missing_title) &&
+          !missing_title %in% prepared_sesame_titles) {
+        ugplot_geo_prepare_sesame_data_cache(missing_title, progress_callback = progress_callback)
+        prepared_sesame_titles <- c(prepared_sesame_titles, missing_title)
+        next
+      }
+      break
+    }
+    if (length(beta_values) == 0 && nzchar(sample_error)) {
+      qc_row$Message <- sample_error
+    }
+    qc_rows[[pair_i]] <- qc_row
+    if (length(beta_values) > 0 && isTRUE(qc_row$PassedQC)) {
+      beta_list[[sample_id]] <- beta_values
+    }
+    if (!is.null(progress_callback)) {
+      progress_callback(pair_i, nrow(pairs), paste0("Finished ", sample_id, ": ", qc_row$Status))
+    }
+  }
+
+  qc_report <- do.call(rbind, qc_rows)
+  dir.create(ugplot_geo_sesame_dir(cache_dir), recursive = TRUE, showWarnings = FALSE)
+  utils::write.csv(qc_report, ugplot_geo_sesame_qc_path(cache_dir), row.names = FALSE)
+  if (length(beta_list) == 0) {
+    dependency_messages <- qc_report$Message[grepl("idatSignature|sesameDataCache|ExperimentHub", qc_report$Message, ignore.case = TRUE)]
+    if (length(dependency_messages) > 0) {
+      stop(paste0(
+        "Sesame IDAT preprocessing could not start because required sesame data are missing. ",
+        "Run sesameData::sesameDataCache(\"idatSignature\") and retry. ",
+        "Report saved to ", ugplot_geo_sesame_qc_path(cache_dir), "."
+      ))
+    }
+    stop(paste0("All IDAT samples failed QC. Report saved to ", ugplot_geo_sesame_qc_path(cache_dir), "."))
+  }
+  all_probes <- Reduce(union, lapply(beta_list, names))
+  beta_matrix <- matrix(NA_real_, nrow = length(all_probes), ncol = length(beta_list), dimnames = list(all_probes, names(beta_list)))
+  for (sample_id in names(beta_list)) {
+    values <- beta_list[[sample_id]]
+    beta_matrix[names(values), sample_id] <- values
+  }
+  beta_path <- ugplot_geo_write_beta_matrix_tsv(beta_matrix, ugplot_geo_sesame_beta_path(cache_dir))
+  list(beta_path = beta_path, qc_path = ugplot_geo_sesame_qc_path(cache_dir), qc = qc_report, pairs = pairs)
+}
+
 ugplot_geo_matrix_sample_map <- function(matrix_files, metadata) {
   sample_ids <- ugplot_geo_sample_matrix_id(metadata)
-  metadata_lookup <- stats::setNames(seq_len(nrow(metadata)), sample_ids)
+  lookup_rows <- list(sample_ids)
+  if ("sample_id" %in% names(metadata)) {
+    lookup_rows <- c(lookup_rows, list(as.character(metadata$sample_id)))
+  }
+  if ("geo_accession" %in% names(metadata)) {
+    lookup_rows <- c(lookup_rows, list(as.character(metadata$geo_accession)))
+  }
+  lookup_keys <- unlist(lookup_rows, use.names = FALSE)
+  lookup_values <- rep(seq_len(nrow(metadata)), length(lookup_rows))
+  keep_lookup <- !is.na(lookup_keys) & nzchar(trimws(lookup_keys))
+  lookup_keys <- trimws(lookup_keys[keep_lookup])
+  lookup_values <- lookup_values[keep_lookup]
+  keep_first <- !duplicated(lookup_keys)
+  metadata_lookup <- stats::setNames(lookup_values[keep_first], lookup_keys[keep_first])
   do.call(rbind, lapply(matrix_files, function(path) {
     header <- strsplit(readLines(path, n = 1, warn = FALSE), "\t", fixed = TRUE)[[1]]
     value_cols <- which(header != "ID_REF" & !grepl("\\.1$", header))
@@ -806,6 +1136,7 @@ ugplot_geo_matrix_sample_map <- function(matrix_files, metadata) {
 
 ugplot_geo_spearman_scan <- function(matrix_files, metadata, target_column,
                                      max_cpgs = 0,
+                                     min_matched_samples = 3,
                                      progress_callback = NULL, result_callback = NULL) {
   if (!target_column %in% names(metadata)) {
     stop("Selected target column is not present in sample metadata.")
@@ -821,6 +1152,14 @@ ugplot_geo_spearman_scan <- function(matrix_files, metadata, target_column,
   target_by_matrix <- target[sample_map$MetadataRow]
   if (sum(!is.na(target_by_matrix)) < 3) {
     stop("At least three matched samples with numeric target values are required.")
+  }
+  min_matched_samples <- suppressWarnings(as.integer(min_matched_samples))
+  if (!is.finite(min_matched_samples) || min_matched_samples < 3) {
+    min_matched_samples <- 3L
+  }
+  available_target_samples <- sum(!is.na(target_by_matrix))
+  if (min_matched_samples > available_target_samples) {
+    min_matched_samples <- available_target_samples
   }
 
   file_maps <- split(sample_map, sample_map$Path)
@@ -852,7 +1191,7 @@ ugplot_geo_spearman_scan <- function(matrix_files, metadata, target_column,
       values[state$metadata_rows] <- numeric_values
     }
     keep <- !is.na(values) & !is.na(target)
-    if (sum(keep) >= 3) {
+    if (sum(keep) >= min_matched_samples) {
       test <- suppressWarnings(stats::cor.test(values[keep], target[keep], method = "spearman", exact = FALSE))
       results <- rbind(results, data.frame(
         CpG = cpg,
@@ -877,10 +1216,11 @@ ugplot_geo_spearman_scan <- function(matrix_files, metadata, target_column,
   if (nrow(results) == 0) {
     stop("No CpG had enough matched numeric values for Spearman correlation.")
   }
-  results <- results[order(-results$AbsRho, results$PValue), , drop = FALSE]
+  results <- results[order(-results$AbsRho, -results$N, results$PValue), , drop = FALSE]
   rownames(results) <- NULL
   attr(results, "scanned_cpgs") <- scanned
   attr(results, "matched_samples") <- sum(!is.na(target_by_matrix))
+  attr(results, "min_matched_samples") <- min_matched_samples
   results
 }
 

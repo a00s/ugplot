@@ -697,10 +697,23 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
   margin-bottom: 4px;
 }
 
+.geo-progress-card {
+  background: #ffffff;
+  color: #111827 !important;
+  opacity: 1 !important;
+  filter: none !important;
+}
+
+.geo-progress-card * {
+  opacity: 1 !important;
+  filter: none !important;
+}
+
 .geo-progress-shell {
   height: 18px;
   border-radius: 999px;
-  background: #e5e7eb;
+  background: #d1d5db;
+  border: 1px solid #cbd5e1;
   overflow: hidden;
   margin: 8px 0;
 }
@@ -708,20 +721,21 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
 .geo-progress-bar {
   height: 18px;
   width: 0%;
-  background: #2f7fc1;
+  background: #0b74de;
   transition: width 0.2s ease;
 }
 
 .geo-progress-meta {
-  color: #1f2937;
+  color: #111827 !important;
   font-size: 14px;
   line-height: 1.45;
+  font-weight: 500;
 }
 
 .geo-progress-meta strong,
 .geo-progress-meta span,
 .geo-progress-meta div {
-  color: #1f2937;
+  color: #111827 !important;
 }
 
 .geo-debug-log summary {
@@ -747,6 +761,20 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
   padding: 0;
   overflow-x: auto;
   overflow-y: visible;
+}
+
+.geo-no-scroll-table {
+  overflow-x: hidden;
+}
+
+.geo-no-scroll-table .dataTables_wrapper,
+.geo-no-scroll-table table.dataTable {
+  width: 100% !important;
+}
+
+.geo-no-scroll-table .dataTables_scroll,
+.geo-no-scroll-table .dataTables_scrollBody {
+  overflow-x: hidden !important;
 }
 
 .geo-step-table {

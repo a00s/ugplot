@@ -217,6 +217,7 @@ source_local_helper("server_deps.R", "ugPlotInstallModelDeps", always_reload = T
 source_local_helper("remote_client.R", "ugplot_remote_create_job", always_reload = TRUE)
 source_local_helper("remote_servers.R", "ugplot_read_remote_servers", always_reload = TRUE)
 source_local_helper("geo_import.R", "ugplot_geo_cache_dir", always_reload = TRUE)
+source_local_helper("ml_runner.R", "ugplot_run_ml_job", always_reload = TRUE)
 
 ugplot_cleanup_global_session_objects <- function() {
   objects_to_remove <- c(
@@ -1113,7 +1114,18 @@ ui <- fluidPage(
         tags$p(
           "Use these controls to limit how much CPU ugPlot can use during Machine Learning. ",
           "The default value does not use the whole computer, so the operating system stays responsive."
-        )
+        ),
+        tags$hr(),
+        tags$h4("GEO storage"),
+        tags$p(
+          "Local GEO downloads, sesame reprocessing outputs, and per-source analysis caches are kept separately."
+        ),
+        tags$div(
+          class = "remote-server-toolbar",
+          actionButton("config_geo_storage_refresh", "Refresh GEO storage", icon = icon("refresh"))
+        ),
+        uiOutput("config_geo_storage_summary"),
+        DT::DTOutput("config_geo_storage_table")
       )
     )
   )
@@ -1798,6 +1810,8 @@ server <- function(input, output, session) {
   config_remote_editing_name <- reactiveVal(NULL)
   config_remote_test_status <- reactiveVal("")
   config_remote_detected_cpus <- reactiveVal(NA_integer_)
+  config_geo_storage_refresh <- reactiveVal(0L)
+  config_geo_delete_request <- reactiveVal(NULL)
   ml_model_source_status_text <- reactiveVal("")
 
   hideTab(inputId = "tabs", target = "TABLE")
@@ -2145,6 +2159,213 @@ server <- function(input, output, session) {
     )
   })
 
+  geo_storage_dir_size <- function(path) {
+    if (!nzchar(path %||% "") || !dir.exists(path)) {
+      return(0)
+    }
+    files <- list.files(path, recursive = TRUE, full.names = TRUE, all.files = TRUE, no.. = TRUE)
+    files <- files[file.exists(files) & !dir.exists(files)]
+    if (length(files) == 0) {
+      return(0)
+    }
+    sum(file.info(files)$size, na.rm = TRUE)
+  }
+
+  geo_storage_file_size <- function(paths) {
+    paths <- paths[nzchar(paths %||% "") & file.exists(paths) & !dir.exists(paths)]
+    if (length(paths) == 0) {
+      return(0)
+    }
+    sum(file.info(paths)$size, na.rm = TRUE)
+  }
+
+  geo_storage_accessions <- function() {
+    root <- ugplot_geo_cache_root("downloads")
+    if (!dir.exists(root)) {
+      return(character(0))
+    }
+    dirs <- list.dirs(root, full.names = TRUE, recursive = FALSE)
+    dirs[file.exists(file.path(dirs, "ugplot_geo_manifest.rds")) |
+      grepl("^GSE[0-9]+$", basename(dirs), ignore.case = TRUE)]
+  }
+
+  geo_storage_report <- reactive({
+    config_geo_storage_refresh()
+    accession_dirs <- geo_storage_accessions()
+    if (length(accession_dirs) == 0) {
+      return(data.frame())
+    }
+    rows <- lapply(accession_dirs, function(cache_dir) {
+      accession <- basename(cache_dir)
+      processed_files <- ugplot_geo_matrix_files(cache_dir, source = "processed")
+      raw_top_files <- list.files(cache_dir, full.names = TRUE, recursive = FALSE)
+      raw_top_files <- raw_top_files[vapply(raw_top_files, function(path) {
+        grepl("\\.idat(\\.gz)?$|\\.(tar|tar\\.gz|tgz|zip)$", basename(path), ignore.case = TRUE)
+      }, logical(1))]
+      legacy_analysis_files <- list.files(cache_dir, full.names = TRUE, recursive = FALSE)
+      legacy_analysis_files <- legacy_analysis_files[grepl("^ugplot_geo_spearman_|^ugplot_geo_transcript_", basename(legacy_analysis_files))]
+      processed_analysis_dir <- file.path(cache_dir, "analysis", "processed")
+      raw_analysis_dir <- file.path(cache_dir, "analysis", "raw_sesame")
+      data.frame(
+        accession = accession,
+        total_bytes = geo_storage_dir_size(cache_dir),
+        processed_matrix_bytes = geo_storage_file_size(processed_files),
+        raw_idat_bytes = geo_storage_dir_size(ugplot_geo_raw_idat_dir(cache_dir)) + geo_storage_file_size(raw_top_files),
+        sesame_bytes = geo_storage_dir_size(ugplot_geo_sesame_dir(cache_dir)),
+        processed_analysis_bytes = geo_storage_dir_size(processed_analysis_dir) +
+          geo_storage_file_size(legacy_analysis_files) +
+          geo_storage_dir_size(file.path(cache_dir, "transcript_datasets")),
+        raw_analysis_bytes = geo_storage_dir_size(raw_analysis_dir),
+        path = cache_dir,
+        stringsAsFactors = FALSE
+      )
+    })
+    do.call(rbind, rows)
+  })
+
+  geo_storage_action_button <- function(action, accession, label, icon_name, class_name = "btn-default") {
+    if (!requireNamespace("jsonlite", quietly = TRUE)) {
+      return("")
+    }
+    payload <- jsonlite::toJSON(list(action = action, accession = accession), auto_unbox = TRUE)
+    payload <- htmltools::htmlEscape(payload, attribute = TRUE)
+    sprintf(
+      paste0(
+        "<button type=\"button\" class=\"btn %s btn-xs\" style=\"margin-right: 4px; margin-bottom: 4px;\" ",
+        "onclick=\"Shiny.setInputValue('config_geo_storage_action', Object.assign(%s, {nonce: Math.random()}), {priority: 'event'})\">",
+        "<i class=\"fa fa-%s\"></i> %s</button>"
+      ),
+      class_name, payload, icon_name, label
+    )
+  }
+
+  output$config_geo_storage_summary <- renderUI({
+    report <- geo_storage_report()
+    root <- ugplot_geo_cache_root("downloads")
+    if (!is.data.frame(report) || nrow(report) == 0) {
+      return(tags$p(paste0("No local GEO cache found in ", root, ".")))
+    }
+    total_bytes <- sum(report$total_bytes, na.rm = TRUE)
+    tags$div(class = "geo-status-card",
+      tags$p(tags$strong("GEO cache root: "), root),
+      tags$p(tags$strong("Accessions: "), nrow(report), tags$span(" | "),
+        tags$strong("Total size: "), ugplot_format_bytes(total_bytes)
+      )
+    )
+  })
+
+  output$config_geo_storage_table <- DT::renderDT({
+    report <- geo_storage_report()
+    if (!is.data.frame(report) || nrow(report) == 0) {
+      return(DT::datatable(data.frame(), options = list(dom = "t"), rownames = FALSE))
+    }
+    display <- data.frame(
+      Accession = report$accession,
+      Total = vapply(report$total_bytes, ugplot_format_bytes, character(1)),
+      `Processed matrices` = vapply(report$processed_matrix_bytes, ugplot_format_bytes, character(1)),
+      `Raw IDAT` = vapply(report$raw_idat_bytes, ugplot_format_bytes, character(1)),
+      Sesame = vapply(report$sesame_bytes, ugplot_format_bytes, character(1)),
+      `Processed analysis` = vapply(report$processed_analysis_bytes, ugplot_format_bytes, character(1)),
+      `IDAT analysis` = vapply(report$raw_analysis_bytes, ugplot_format_bytes, character(1)),
+      Path = report$path,
+      Actions = vapply(report$accession, function(accession) {
+        paste(
+          geo_storage_action_button("delete_processed_analysis", accession, "Delete processed analysis", "trash"),
+          geo_storage_action_button("delete_raw_analysis", accession, "Delete IDAT analysis", "trash"),
+          geo_storage_action_button("delete_idat_sesame", accession, "Delete IDAT/sesame files", "trash"),
+          geo_storage_action_button("delete_all", accession, "Delete all", "trash", "btn-danger")
+        )
+      }, character(1)),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+    DT::datatable(
+      display,
+      options = list(pageLength = 10, scrollX = TRUE, columnDefs = list(list(targets = 8, orderable = FALSE, searchable = FALSE))),
+      rownames = FALSE,
+      escape = which(names(display) != "Actions")
+    )
+  })
+
+  observeEvent(input$config_geo_storage_refresh, {
+    config_geo_storage_refresh(config_geo_storage_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  geo_storage_delete_targets <- function(accession, action) {
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    if (identical(action, "delete_all")) {
+      return(list(paths = cache_dir, label = "all GEO cache content"))
+    }
+    if (identical(action, "delete_processed_analysis")) {
+      legacy_files <- list.files(cache_dir, full.names = TRUE, recursive = FALSE)
+      legacy_files <- legacy_files[grepl("^ugplot_geo_spearman_|^ugplot_geo_transcript_", basename(legacy_files))]
+      return(list(
+        paths = c(file.path(cache_dir, "analysis", "processed"), file.path(cache_dir, "transcript_datasets"), legacy_files),
+        label = "processed matrix analysis outputs"
+      ))
+    }
+    if (identical(action, "delete_raw_analysis")) {
+      return(list(paths = file.path(cache_dir, "analysis", "raw_sesame"), label = "IDAT/sesame analysis outputs"))
+    }
+    if (identical(action, "delete_idat_sesame")) {
+      raw_top_files <- list.files(cache_dir, full.names = TRUE, recursive = FALSE)
+      raw_top_files <- raw_top_files[grepl("\\.idat(\\.gz)?$|\\.(tar|tar\\.gz|tgz|zip)$", basename(raw_top_files), ignore.case = TRUE)]
+      return(list(
+        paths = c(ugplot_geo_raw_idat_dir(cache_dir), ugplot_geo_sesame_dir(cache_dir), raw_top_files),
+        label = "raw IDAT downloads and sesame beta/QC outputs"
+      ))
+    }
+    list(paths = character(0), label = "")
+  }
+
+  observeEvent(input$config_geo_storage_action, {
+    action <- input$config_geo_storage_action$action %||% ""
+    accession <- input$config_geo_storage_action$accession %||% ""
+    if (!nzchar(accession) || !nzchar(action)) {
+      return()
+    }
+    targets <- geo_storage_delete_targets(accession, action)
+    existing_paths <- targets$paths[file.exists(targets$paths)]
+    if (length(existing_paths) == 0) {
+      showModal(modalDialog(title = "GEO storage", "Nothing to delete for this selection.", easyClose = TRUE))
+      return()
+    }
+    config_geo_delete_request(list(action = action, accession = accession, paths = existing_paths, label = targets$label))
+    showModal(modalDialog(
+      title = paste("Delete GEO storage for", accession),
+      tags$p(paste0("This will delete ", targets$label, ".")),
+      tags$p(tags$strong("Paths:")),
+      tags$pre(paste(existing_paths, collapse = "\n")),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("config_geo_storage_confirm_delete", "Delete", icon = icon("trash"), class = "btn-danger")
+      ),
+      easyClose = TRUE
+    ))
+  })
+
+  observeEvent(input$config_geo_storage_confirm_delete, {
+    request <- config_geo_delete_request()
+    req(is.list(request), length(request$paths) > 0)
+    root <- normalizePath(ugplot_geo_cache_root("downloads"), mustWork = FALSE)
+    paths <- normalizePath(request$paths, mustWork = FALSE)
+    inside_root <- startsWith(paths, paste0(root, .Platform$file.sep)) | paths == root
+    if (!all(inside_root)) {
+      removeModal()
+      showModal(modalDialog(title = "GEO storage delete blocked", "Delete target is outside the GEO cache root.", easyClose = TRUE))
+      return()
+    }
+    unlink(paths, recursive = TRUE, force = TRUE)
+    config_geo_delete_request(NULL)
+    config_geo_storage_refresh(config_geo_storage_refresh() + 1L)
+    removeModal()
+    showModal(modalDialog(
+      title = "GEO storage deleted",
+      paste0("Deleted ", request$label, " for ", request$accession, "."),
+      easyClose = TRUE
+    ))
+  })
+
   ml_data_table <- reactiveVal(data.frame())
   ml_table_results <- reactiveVal(data.frame())
   ml_final_summary <- reactiveVal(NULL)
@@ -2208,6 +2429,25 @@ server <- function(input, output, session) {
     current = "",
     cache = ""
   ))
+  geo_transcript_ml_progress <- reactiveVal(list(
+    phase = "idle",
+    message = "Transcript ML pipeline has not started.",
+    processed = 0L,
+    total = 0L,
+    current = "",
+    cache = ""
+  ))
+  geo_transcript_ml_results <- reactiveVal(data.frame())
+  geo_idat_qc_report <- reactiveVal(data.frame())
+  geo_idat_qc_progress <- reactiveVal(list(
+    phase = "idle",
+    message = "Raw IDAT reprocessing has not started.",
+    processed = 0L,
+    total = 0L,
+    current = "",
+    beta_path = "",
+    qc_path = ""
+  ))
   geo_status <- reactiveVal("Waiting for GEO accession.")
   geo_stage <- reactiveVal(list(
     step = "Step 1",
@@ -2246,7 +2486,7 @@ server <- function(input, output, session) {
   })
 
   render_geo_progress <- function(progress) {
-    tags$div(
+    tags$div(class = "geo-progress-card",
       tags$div(class = "geo-progress-shell",
         tags$div(
           id = "geoProgressBar",
@@ -2298,8 +2538,9 @@ server <- function(input, output, session) {
     )
   }
 
-  render_geo_table_details <- function(summary, title_output, table_output, open = FALSE, extra = NULL) {
-    tags$details(class = "geo-table-section geo-step-table", open = if (isTRUE(open)) TRUE else NULL,
+  render_geo_table_details <- function(summary, title_output, table_output, open = FALSE, extra = NULL,
+                                       class_name = "geo-table-section geo-step-table") {
+    tags$details(class = class_name, open = if (isTRUE(open)) TRUE else NULL,
       tags$summary(summary),
       title_output,
       table_output,
@@ -2307,11 +2548,23 @@ server <- function(input, output, session) {
     )
   }
 
+  geo_download_selection <- function(remote_files, source = "processed") {
+    if (!is.data.frame(remote_files) || nrow(remote_files) == 0) {
+      return(remote_files[0, , drop = FALSE])
+    }
+    source <- source %||% "processed"
+    if (identical(source, "raw_sesame")) {
+      return(remote_files[remote_files$Type %in% c("IDAT", "archive"), , drop = FALSE])
+    }
+    remote_files[remote_files$Loadable, , drop = FALSE]
+  }
+
   output$geo_workflow_ui <- renderUI({
     accession_value <- isolate(input$geo_accession %||% "")
-    loadable_only <- isolate(isTRUE(input$geo_download_loadable_only))
+    source_value <- isolate(input$geo_matrix_source %||% "processed")
     threshold_value <- isolate(input$geo_transcript_absrho_threshold %||% 0.8)
     max_cpgs_value <- isolate(input$geo_spearman_max_cpgs %||% 0)
+    min_spearman_samples_value <- isolate(input$geo_spearman_min_samples %||% 80)
     metadata <- geo_sample_metadata()
     remote_files <- geo_remote_files()
     local_files <- geo_files()
@@ -2320,22 +2573,36 @@ server <- function(input, output, session) {
     transcript_table <- geo_transcript_candidates()
     transcript_groups <- geo_transcript_groups()
     transcript_progress <- geo_transcript_build_progress()
+    idat_progress <- geo_idat_qc_progress()
+    idat_qc <- geo_idat_qc_report()
     preview <- geo_preview_data()
 
     metadata_done <- is.data.frame(metadata) && nrow(metadata) > 0
     files_seen <- (is.data.frame(remote_files) && nrow(remote_files) > 0) || (is.data.frame(local_files) && nrow(local_files) > 0)
     files_done <- FALSE
+    selected_download_done <- FALSE
     needs_extract <- FALSE
+    source_is_raw <- identical(source_value, "raw_sesame")
     if (is.data.frame(remote_files) && nrow(remote_files) > 0) {
       processed_files <- remote_files[remote_files$Loadable, , drop = FALSE]
       files_done <- nrow(processed_files) > 0 && !any(processed_files$NeedsDownload %||% TRUE)
+      selected_files <- geo_download_selection(remote_files, source_value)
+      selected_download_done <- nrow(selected_files) > 0 && !any(selected_files$NeedsDownload %||% TRUE)
       needs_extract <- any(processed_files$LocalStatus == "downloaded" & grepl("\\.gz$", processed_files$File, ignore.case = TRUE))
     }
-    matrix_files <- if (nzchar(trimws(accession_value))) ugplot_geo_matrix_files(ugplot_geo_cache_dir(trimws(accession_value))) else character(0)
+    matrix_files <- if (nzchar(trimws(accession_value))) ugplot_geo_matrix_files(ugplot_geo_cache_dir(trimws(accession_value)), source = source_value) else character(0)
     extract_done <- length(matrix_files) > 0
     annotation_done <- is.data.frame(annotation_map) && nrow(annotation_map) > 0
-    spearman_done <- is.data.frame(spearman_results) && nrow(spearman_results) > 0
-    transcript_done <- (transcript_progress$phase %||% "") %in% c("complete", "loaded from cache")
+    spearman_done <- is.data.frame(spearman_results) && nrow(spearman_results) > 0 && length(matrix_files) > 0
+    transcript_needs_rebuild <- identical(transcript_progress$phase %||% "", "needs rebuild")
+    transcript_groups_loaded <- is.data.frame(transcript_groups) && nrow(transcript_groups) > 0
+    transcript_done <- !transcript_needs_rebuild && (
+      (transcript_progress$phase %||% "") %in% c("complete", "loaded from cache") ||
+        transcript_groups_loaded
+    ) && spearman_done
+    transcript_ml_ready <- transcript_done && transcript_groups_loaded
+    idat_done <- (idat_progress$phase %||% "") %in% c("complete", "loaded from cache") ||
+      (is.data.frame(idat_qc) && nrow(idat_qc) > 0 && nzchar(idat_progress$beta_path %||% "") && file.exists(idat_progress$beta_path %||% ""))
     preview_done <- is.data.frame(preview) && nrow(preview) > 0
 
     tagList(
@@ -2353,23 +2620,39 @@ server <- function(input, output, session) {
             if (!metadata_done) actionButton("geo_fetch_metadata", "Fetch sample metadata") else NULL
           )
         ),
-        render_geo_step_card(3, "Matrix files", files_done,
+        render_geo_step_card(3, "Matrix files", selected_download_done,
           tags$div(
-            tags$p(class = "geo-step-note", "Processed matrix tables are the required files for this workflow; raw archives remain optional."),
-            checkboxInput("geo_download_loadable_only", "Download only loadable processed tables", value = loadable_only),
+            tags$p(class = "geo-step-note", "Choose whether this GEO run uses processed matrices or raw IDAT files reprocessed with sesame."),
+            selectInput(
+              "geo_matrix_source",
+              "Matrix source:",
+              choices = c("Use GEO processed matrix" = "processed", "Recalculate from raw IDAT with sesame" = "raw_sesame"),
+              selected = source_value
+            ),
+            uiOutput("geo_source_status_summary"),
             uiOutput("geo_download_summary"),
-            if (!files_done) actionButton("geo_fetch_files", "Download matrix files") else NULL
+            if (!selected_download_done) actionButton("geo_fetch_files", if (source_is_raw) "Download raw IDAT files" else "Download processed matrices") else NULL
           )
         ),
-        render_geo_step_card(4, "Download progress", files_done,
+        render_geo_step_card(4, "Download progress", selected_download_done,
           tags$div(
-            if (files_done) tags$p(class = "geo-step-note", "Required processed matrices are already local.") else NULL,
+            if (selected_download_done) tags$p(class = "geo-step-note", if (source_is_raw) "Selected raw files are already local." else "Selected processed matrices are already local.") else NULL,
             uiOutput("geo_download_progress_ui")
           )
         ),
-        render_geo_step_card(5, "Extract matrix files", extract_done,
+        render_geo_step_card(5, if (source_is_raw) "Recalculate beta matrix" else "Extract matrix files", if (source_is_raw) idat_done else extract_done,
           tags$div(
-            if (needs_extract) {
+            if (source_is_raw) {
+              tags$div(
+                tags$p(class = "geo-step-note", if (idat_done) "Sesame beta matrix is available for Spearman." else "Download raw IDAT files, then run sesame QC/reprocessing here before Spearman."),
+                numericInput("geo_idat_detection_p", "Probe detection p-value cutoff:", value = 0.01, min = 0.0001, max = 0.2, step = 0.001),
+                numericInput("geo_idat_max_failed_fraction", "Maximum failed pOOBAH probe fraction per sample:", value = 0.05, min = 0, max = 1, step = 0.01),
+                textInput("geo_idat_sesame_prep", "Sesame prep code:", value = "QCDPB"),
+                uiOutput("geo_idat_qc_summary"),
+                uiOutput("geo_idat_action_ui"),
+                uiOutput("geo_idat_qc_progress_ui")
+              )
+            } else if (needs_extract) {
               tags$div(
                 tags$p(class = "geo-step-note", "Large .gz matrices must be extracted before preprocessing. They are still too large to load directly into ugPlot."),
                 actionButton("geo_extract_files", "Extract downloaded .gz files"),
@@ -2388,10 +2671,15 @@ server <- function(input, output, session) {
             uiOutput("geo_target_selector"),
             tags$p(class = "geo-step-note", "Spearman scan uses numeric targets such as age. Transcript candidate tables are built automatically when annotation is available."),
             numericInput("geo_spearman_max_cpgs", "Max CpGs to scan (0 = all):", value = max_cpgs_value, min = 0, step = 10000),
+            numericInput("geo_spearman_min_samples", "Minimum samples per CpG for Spearman (%):", value = min_spearman_samples_value, min = 0, max = 100, step = 1),
             numericInput("geo_transcript_absrho_threshold", "Transcript CpG threshold |rho|:", value = threshold_value, min = 0, max = 1, step = 0.01),
             uiOutput("geo_annotation_summary"),
             if (!annotation_done) actionButton("geo_build_annotation", "Build/load CpG annotation cache") else NULL,
-            actionButton("geo_run_spearman", if (spearman_done) "Re-run CpG Spearman scan" else "Run CpG Spearman scan")
+            if (length(matrix_files) > 0) {
+              actionButton("geo_run_spearman", if (spearman_done) "Re-run CpG Spearman scan" else "Run CpG Spearman scan")
+            } else {
+              tags$p(class = "geo-step-note", if (source_is_raw) "Run sesame IDAT QC first to create the beta matrix." else "Download/extract processed matrices before running Spearman.")
+            }
           )
         ),
         render_geo_step_card(7, "Build transcript ML datasets", transcript_done,
@@ -2406,12 +2694,55 @@ server <- function(input, output, session) {
             },
             uiOutput("geo_transcript_build_progress_ui")
           )
+        ),
+        render_geo_step_card(8, "Screen transcript ML models", FALSE,
+          tags$div(
+            tags$p(class = "geo-step-note", "Screen all installed caret models per transcript group for the active matrix source."),
+            numericInput("geo_ml_min_absrho", "Run transcript groups with trigger |rho| >=:", value = 0.7, min = 0, max = 1, step = 0.01),
+            numericInput("geo_ml_rank_limit", "Limit to top Spearman-ranked groups (blank = all):", value = NA, min = 1, step = 1),
+            numericInput("geo_ml_screen_seeds", "Screening seeds per model:", value = 3, min = 1, step = 1),
+            numericInput("geo_ml_timeout", "Timeout per model/seed (s):", value = 1200, min = 1, step = 1),
+            uiOutput("geo_ml_model_summary"),
+            if (transcript_ml_ready) {
+              actionButton("geo_run_transcript_ml", "Start/resume model screening")
+            } else if (transcript_needs_rebuild) {
+              tags$p(class = "geo-step-note", "Rebuild transcript ML datasets before screening models.")
+            } else {
+              tags$p(class = "geo-step-note", "Build transcript ML datasets before screening models.")
+            }
+          )
+        ),
+        render_geo_step_card(9, "Stabilize best transcript ML", FALSE,
+          tags$div(
+            tags$p(class = "geo-step-note", "Use each transcript group's best screened model and run seed batches until the metric stabilizes."),
+            numericInput("geo_ml_min_stability_seeds", "Minimum stability seeds:", value = 30, min = 2, step = 1),
+            numericInput("geo_ml_max_stability_seeds", "Maximum stability seeds:", value = 4000, min = 2, step = 10),
+            numericInput("geo_ml_stability_window", "Seeds compared for stability:", value = 30, min = 2, step = 1),
+            numericInput("geo_ml_stability_tolerance", "Max metric change to stop:", value = 0.01, min = 0, max = 1, step = 0.001),
+            if (transcript_ml_ready) {
+              actionButton("geo_run_transcript_ml_stability", "Start/resume stability seeds")
+            } else if (transcript_needs_rebuild) {
+              tags$p(class = "geo-step-note", "Rebuild transcript ML datasets before running transcript ML.")
+            } else {
+              tags$p(class = "geo-step-note", "Build transcript ML datasets before running transcript ML.")
+            },
+            uiOutput("geo_transcript_ml_progress_ui")
+          )
         )
       ),
       tags$div(class = "geo-table-stack geo-workflow-tables",
         if (metadata_done) render_geo_table_details("Open sample metadata table", uiOutput("geo_metadata_table_title"), DT::DTOutput("geo_metadata_table"), open = FALSE) else NULL,
         if (files_seen) render_geo_table_details("Open GEO files table", uiOutput("geo_files_table_title"), DT::DTOutput("geo_files_table"), open = FALSE) else NULL,
-        if (spearman_done) render_geo_table_details("Open CpG Spearman table", uiOutput("geo_spearman_table_title"), DT::DTOutput("geo_spearman_table"), open = FALSE) else NULL,
+        if (spearman_done) render_geo_table_details(
+          "Open CpG Spearman table",
+          uiOutput("geo_spearman_table_title"),
+          DT::DTOutput("geo_spearman_table"),
+          open = FALSE,
+          class_name = "geo-table-section geo-step-table geo-no-scroll-table"
+        ) else NULL,
+        if (source_is_raw && is.data.frame(idat_qc) && nrow(idat_qc) > 0) {
+          render_geo_table_details("Open sesame IDAT QC report", uiOutput("geo_idat_qc_table_title"), DT::DTOutput("geo_idat_qc_table"), open = FALSE)
+        } else NULL,
         if (transcript_done) {
           render_geo_table_details(
             "Open transcript ML candidate groups",
@@ -2419,13 +2750,15 @@ server <- function(input, output, session) {
             tagList(
               DT::DTOutput("geo_transcript_groups_table"),
               uiOutput("geo_transcript_group_details_title"),
-              plotlyOutput("geo_transcript_group_track", height = "280px"),
+              plotlyOutput("geo_transcript_group_track", height = "520px"),
               DT::DTOutput("geo_transcript_group_details_table")
             ),
             open = FALSE
           )
         } else NULL,
         if (preview_done) render_geo_table_details("Open loaded ugPlot preview", uiOutput("geo_preview_table_title"), DT::DTOutput("geo_preview_table"), open = FALSE) else NULL
+        ,
+        render_geo_table_details("Open transcript ML results", uiOutput("geo_transcript_ml_table_title"), DT::DTOutput("geo_transcript_ml_table"), open = FALSE)
       )
     )
   })
@@ -2473,18 +2806,66 @@ server <- function(input, output, session) {
     }
     known_size <- sum(ugplot_geo_size_bytes(remote_files), na.rm = TRUE)
     unknown_size_n <- sum(is.na(ugplot_geo_size_bytes(remote_files)))
+    source <- input$geo_matrix_source %||% "processed"
     processed_files <- remote_files[remote_files$Loadable, , drop = FALSE]
     processed_pending <- processed_files[processed_files$NeedsDownload, , drop = FALSE]
-    optional_files <- remote_files[!remote_files$Loadable, , drop = FALSE]
-    optional_pending <- optional_files[optional_files$NeedsDownload, , drop = FALSE]
+    raw_files <- remote_files[remote_files$Type %in% c("IDAT", "archive"), , drop = FALSE]
+    raw_pending <- raw_files[raw_files$NeedsDownload, , drop = FALSE]
+    selected_files <- geo_download_selection(remote_files, source)
+    selected_pending <- selected_files[selected_files$NeedsDownload, , drop = FALSE]
     tags$div(
       tags$p(paste0("Found: ", nrow(remote_files), " file(s), ", ugplot_format_bytes(known_size), if (unknown_size_n > 0) paste0(" + ", unknown_size_n, " unknown-size file(s)") else "")),
-      tags$p(paste0("Required processed matrices: ", nrow(processed_files), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(processed_files), na.rm = TRUE)), ".")),
-      tags$p(paste0("Still needed for required workflow: ", nrow(processed_pending), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(processed_pending), na.rm = TRUE)), ".")),
-      if (!isTRUE(input$geo_download_loadable_only) && nrow(optional_files) > 0) {
-        tags$p(paste0("Optional raw/metadata files selected: ", nrow(optional_files), " file(s); still missing ", nrow(optional_pending), "."))
+      if (identical(source, "raw_sesame")) {
+        tags$p(paste0("Raw IDAT/reprocessing files selected: ", nrow(raw_files), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(raw_files), na.rm = TRUE)), "."))
+      } else {
+        tags$p(paste0("Processed matrices selected: ", nrow(processed_files), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(processed_files), na.rm = TRUE)), "."))
+      },
+      tags$p(paste0("Still needed for selected workflow: ", nrow(selected_pending), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(selected_pending), na.rm = TRUE)), ".")),
+      if (identical(source, "raw_sesame") && nrow(raw_files) == 0) {
+        tags$p("No raw IDAT/archive supplementary file was detected for this GEO accession.")
       } else NULL,
       tags$p(paste0("Folder: ", ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO"))))
+    )
+  })
+
+  output$geo_source_status_summary <- renderUI({
+    accession <- trimws(input$geo_accession %||% "")
+    if (!nzchar(accession)) {
+      return(NULL)
+    }
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    target_column <- input$geo_target_column %||% ""
+    source <- input$geo_matrix_source %||% "processed"
+    source_rows <- lapply(c("processed", "raw_sesame"), function(source_i) {
+      matrix_files <- ugplot_geo_matrix_files(cache_dir, source = source_i)
+      spearman_done <- FALSE
+      transcript_done <- FALSE
+      cache_path <- ""
+      if (nzchar(target_column)) {
+        paths <- geo_spearman_cache_paths(cache_dir, target_column, source = source_i, create = FALSE)
+        spearman_done <- file.exists(paths$raw)
+        threshold <- suppressWarnings(as.numeric(input$geo_transcript_absrho_threshold %||% 0.8))
+        min_samples <- suppressWarnings(as.numeric(input$geo_transcript_min_samples %||% 80))
+        group_paths <- geo_transcript_group_cache_paths(cache_dir, target_column, threshold, min_samples, source = source_i, create = FALSE)
+        transcript_done <- file.exists(group_paths$summary)
+        cache_path <- geo_analysis_cache_dir(cache_dir, source_i, create = FALSE)
+      }
+      status <- paste0(
+        geo_matrix_source_label(source_i), ": ",
+        length(matrix_files), " matrix file(s); ",
+        if (spearman_done) "Spearman ready" else "Spearman pending",
+        "; ",
+        if (transcript_done) "transcripts ready" else "transcripts pending"
+      )
+      tags$p(
+        style = if (identical(source_i, source)) "font-weight: 700; margin: 0 0 3px 0;" else "margin: 0 0 3px 0;",
+        status,
+        if (nzchar(cache_path) && dir.exists(cache_path)) tags$span(class = "geo-step-note", paste0(" (", cache_path, ")")) else NULL
+      )
+    })
+    tags$div(class = "geo-status-card",
+      tags$p(style = "margin: 0 0 5px 0;", tags$strong("Active path: "), geo_matrix_source_label(source)),
+      source_rows
     )
   })
 
@@ -2593,6 +2974,76 @@ server <- function(input, output, session) {
     )
   })
 
+  output$geo_idat_qc_summary <- renderUI({
+    accession <- trimws(input$geo_accession %||% "")
+    if (!nzchar(accession)) {
+      return(tags$p(class = "geo-step-note", "Inspect a GEO accession before scanning raw IDAT availability."))
+    }
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    pairs <- ugplot_geo_idat_pairs(cache_dir)
+    raw_archives <- character(0)
+    if (dir.exists(cache_dir)) {
+      raw_archives <- list.files(cache_dir, full.names = TRUE, recursive = FALSE)
+      raw_archives <- raw_archives[vapply(raw_archives, ugplot_geo_is_raw_archive, logical(1))]
+    }
+    complete_pairs <- if (is.data.frame(pairs)) sum(pairs$Complete) else 0L
+    qc_path <- ugplot_geo_sesame_qc_path(cache_dir)
+    beta_path <- ugplot_geo_sesame_beta_path(cache_dir)
+    tags$div(
+      tags$p(paste0("Complete Red/Grn IDAT pairs: ", complete_pairs, ".")),
+      if (length(raw_archives) > 0) tags$p(paste0("Raw archives available for extraction: ", length(raw_archives), ".")) else NULL,
+      tags$p(paste0("Sesame installed: ", if (requireNamespace("sesame", quietly = TRUE)) "yes" else "no", ".")),
+      if (file.exists(beta_path)) tags$p(paste0("Cached beta matrix: ", beta_path)) else NULL,
+      if (file.exists(qc_path)) tags$p(paste0("Cached QC report: ", qc_path)) else NULL
+    )
+  })
+
+  output$geo_idat_action_ui <- renderUI({
+    progress <- geo_idat_qc_progress()
+    idat_done <- (progress$phase %||% "") %in% c("complete", "loaded from cache")
+    if (!requireNamespace("sesame", quietly = TRUE)) {
+      return(tags$div(
+        actionButton("geo_install_sesame", "Install sesame"),
+        tags$p(class = "geo-step-note", "Sesame is required before raw Red/Grn IDAT QC can run.")
+      ))
+    }
+    actionButton("geo_run_sesame_idat", if (idat_done) "Re-run sesame IDAT QC" else "Run sesame IDAT QC")
+  })
+
+  output$geo_idat_qc_progress_ui <- renderUI({
+    progress <- geo_idat_qc_progress()
+    tags$div(class = "geo-status-card",
+      tags$p(tags$strong("Sesame IDAT status: "), progress$phase %||% "idle"),
+      tags$p(progress$message %||% ""),
+      tags$p(paste0(
+        "Processed ", progress$processed %||% 0L, " / ", progress$total %||% 0L,
+        if (nzchar(progress$current %||% "")) paste0("; current: ", progress$current) else ""
+      )),
+      if (nzchar(progress$beta_path %||% "")) tags$p(paste0("Beta matrix: ", progress$beta_path)) else NULL,
+      if (nzchar(progress$qc_path %||% "")) tags$p(paste0("QC report: ", progress$qc_path)) else NULL
+    )
+  })
+
+  output$geo_idat_qc_table_title <- renderUI({
+    qc <- geo_idat_qc_report()
+    req(is.data.frame(qc), nrow(qc) > 0)
+    passed <- if ("PassedQC" %in% names(qc)) sum(as.logical(qc$PassedQC), na.rm = TRUE) else NA_integer_
+    render_geo_table_title(
+      "Sesame IDAT QC report",
+      paste0("Sample-level raw Red/Grn reprocessing QC. Passed samples: ", passed, " / ", nrow(qc), ".")
+    )
+  })
+
+  output$geo_idat_qc_table <- DT::renderDT({
+    qc <- geo_idat_qc_report()
+    req(is.data.frame(qc), nrow(qc) > 0)
+    display <- qc
+    for (metric_col in intersect(c("FailedProbeFraction", "MissingBetaFraction", "DetectionPThreshold"), names(display))) {
+      display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 4)
+    }
+    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single")
+  })
+
   output$geo_preview_table_title <- renderUI({
     preview <- geo_preview_data()
     req(is.data.frame(preview), nrow(preview) > 0)
@@ -2690,16 +3141,83 @@ server <- function(input, output, session) {
     gsub("[^A-Za-z0-9_.-]+", "_", as.character(value))
   }
 
-  geo_transcript_cache_version <- function() {
-    "reader_v2"
+  geo_matrix_source_value <- function(source = NULL) {
+    source <- source %||% isolate(input$geo_matrix_source %||% "processed")
+    if (!source %in% c("processed", "raw_sesame")) {
+      source <- "processed"
+    }
+    source
   }
 
-  geo_transcript_group_cache_paths <- function(cache_dir, target_column, threshold, min_samples_pct) {
+  geo_matrix_source_label <- function(source = NULL) {
+    source <- geo_matrix_source_value(source)
+    if (identical(source, "raw_sesame")) {
+      "raw IDAT / sesame"
+    } else {
+      "GEO processed matrix"
+    }
+  }
+
+  geo_analysis_cache_dir <- function(cache_dir, source = NULL, create = TRUE) {
+    source <- geo_matrix_source_value(source)
+    path <- file.path(cache_dir, "analysis", geo_safe_cache_token(source))
+    if (isTRUE(create) && !dir.exists(path)) {
+      dir.create(path, recursive = TRUE, showWarnings = FALSE)
+    }
+    path
+  }
+
+  geo_spearman_cache_paths <- function(cache_dir, target_column, source = NULL, create = TRUE) {
+    analysis_dir <- geo_analysis_cache_dir(cache_dir, source, create = create)
+    safe_target <- geo_safe_cache_token(target_column)
+    prefix <- file.path(analysis_dir, paste0("ugplot_geo_spearman_", safe_target))
+    list(
+      raw = paste0(prefix, ".csv"),
+      annotated = paste0(prefix, "_annotated.csv"),
+      by_transcript = paste0(prefix, "_by_transcript.csv"),
+      by_gene = paste0(prefix, "_by_gene.csv")
+    )
+  }
+
+  geo_spearman_min_samples_pct <- function(default = 80) {
+    value <- suppressWarnings(as.numeric(isolate(input$geo_spearman_min_samples %||% default)))
+    if (!is.finite(value)) {
+      value <- default
+    }
+    max(0, min(100, value))
+  }
+
+  geo_filter_spearman_min_samples <- function(results, min_samples = NULL) {
+    if (!is.data.frame(results) || nrow(results) == 0 || !"N" %in% names(results)) {
+      return(results)
+    }
+    n_values <- suppressWarnings(as.numeric(results$N))
+    max_n <- suppressWarnings(max(n_values, na.rm = TRUE))
+    if (!is.finite(max_n) || max_n <= 0) {
+      return(results)
+    }
+    if (is.null(min_samples)) {
+      min_samples <- ceiling(max(3, max_n * geo_spearman_min_samples_pct() / 100))
+    }
+    min_samples <- suppressWarnings(as.integer(min_samples))
+    if (!is.finite(min_samples) || min_samples < 3) {
+      min_samples <- 3L
+    }
+    filtered <- results[n_values >= min_samples, , drop = FALSE]
+    rownames(filtered) <- NULL
+    filtered
+  }
+
+  geo_transcript_cache_version <- function() {
+    "reader_v3"
+  }
+
+  geo_transcript_group_cache_paths <- function(cache_dir, target_column, threshold, min_samples_pct, source = NULL, create = TRUE) {
     safe_target <- geo_safe_cache_token(target_column)
     safe_threshold <- geo_safe_cache_token(format(threshold, trim = TRUE, scientific = FALSE))
     safe_min_samples <- geo_safe_cache_token(format(min_samples_pct, trim = TRUE, scientific = FALSE))
     safe_missing <- geo_safe_cache_token(paste(geo_transcript_missing_definition(), collapse = "_"))
-    prefix <- file.path(cache_dir, paste0(
+    prefix <- file.path(geo_analysis_cache_dir(cache_dir, source, create = create), paste0(
       "ugplot_geo_transcript_ml_groups_", safe_target,
       "_", geo_transcript_cache_version(),
       "_absrho_", safe_threshold,
@@ -2817,24 +3335,383 @@ server <- function(input, output, session) {
     )
   })
 
-  geo_transcript_dataset_cache_path <- function(cache_dir, transcript, target_column) {
-    transcript_dir <- file.path(cache_dir, "transcript_datasets", geo_safe_cache_token(target_column))
+  geo_transcript_ml_dir <- function(cache_dir, source = NULL) {
+    path <- file.path(geo_analysis_cache_dir(cache_dir, source), "transcript_ml_pipeline")
+    if (!dir.exists(path)) {
+      dir.create(path, recursive = TRUE, showWarnings = FALSE)
+    }
+    path
+  }
+
+  geo_transcript_ml_group_dir <- function(cache_dir, source, group_id) {
+    path <- file.path(geo_transcript_ml_dir(cache_dir, source), geo_safe_cache_token(group_id))
+    if (!dir.exists(path)) {
+      dir.create(path, recursive = TRUE, showWarnings = FALSE)
+    }
+    path
+  }
+
+  geo_ml_safe_num <- function(value, fallback, min_value = NULL, max_value = NULL) {
+    parsed <- suppressWarnings(as.numeric(value))
+    if (length(parsed) == 0 || !is.finite(parsed[[1]])) {
+      parsed <- fallback
+    } else {
+      parsed <- parsed[[1]]
+    }
+    if (!is.null(min_value)) parsed <- max(min_value, parsed)
+    if (!is.null(max_value)) parsed <- min(max_value, parsed)
+    parsed
+  }
+
+  geo_ml_stability_state <- function(values, min_seeds, window, tolerance) {
+    values <- suppressWarnings(as.numeric(values))
+    values <- values[is.finite(values)]
+    n <- length(values)
+    if (n < min_seeds) {
+      return(list(stable = FALSE, reason = paste0("collecting minimum seeds: ", n, "/", min_seeds)))
+    }
+    if (n < (2 * window)) {
+      return(list(stable = FALSE, reason = paste0("collecting two stability windows: ", n, "/", 2 * window)))
+    }
+    recent <- utils::tail(values, window)
+    previous <- utils::tail(utils::head(values, n - window), window)
+    mean_shift <- abs(mean(recent) - mean(previous))
+    median_shift <- abs(stats::median(recent) - stats::median(previous))
+    se <- stats::sd(values) / sqrt(n)
+    stable <- is.finite(mean_shift) && is.finite(median_shift) &&
+      mean_shift <= tolerance && median_shift <= tolerance &&
+      (!is.finite(se) || se <= tolerance)
+    list(
+      stable = isTRUE(stable),
+      reason = paste0(
+        "n=", n,
+        "; delta mean=", signif(mean_shift, 4),
+        "; delta median=", signif(median_shift, 4),
+        "; SE=", signif(se, 4)
+      )
+    )
+  }
+
+  geo_ml_importance_table <- function(model, group, source, phase) {
+    if (is.null(model)) {
+      return(data.frame())
+    }
+    importance <- tryCatch(caret::varImp(model), error = function(e) NULL)
+    if (is.null(importance) || !is.data.frame(importance$importance) || nrow(importance$importance) == 0) {
+      return(data.frame())
+    }
+    imp <- importance$importance
+    imp$CpG <- rownames(imp)
+    score_cols <- setdiff(names(imp), "CpG")
+    imp$Importance <- if (length(score_cols) == 1) {
+      suppressWarnings(as.numeric(imp[[score_cols[[1]]]]))
+    } else {
+      apply(imp[, score_cols, drop = FALSE], 1, function(x) max(suppressWarnings(as.numeric(x)), na.rm = TRUE))
+    }
+    imp <- imp[, c("CpG", "Importance"), drop = FALSE]
+    imp <- imp[is.finite(imp$Importance), , drop = FALSE]
+    if (nrow(imp) == 0) {
+      return(data.frame())
+    }
+    imp$ImportanceRank <- rank(-imp$Importance, ties.method = "first")
+    imp$GroupID <- group$GroupID[[1]]
+    imp$PrincipalTranscript <- group$PrincipalTranscript[[1]]
+    imp$Source <- source
+    imp$Phase <- phase
+    imp[order(imp$ImportanceRank), c("Source", "GroupID", "PrincipalTranscript", "Phase", "CpG", "Importance", "ImportanceRank"), drop = FALSE]
+  }
+
+  geo_ml_result_metric_values <- function(result) {
+    if (!is.list(result) || !is.data.frame(result$results_table) || nrow(result$results_table) == 0) {
+      return(numeric(0))
+    }
+    rows <- result$results_table
+    if ("Status" %in% names(rows)) {
+      rows <- rows[as.character(rows$Status) == "OK", , drop = FALSE]
+    }
+    metric_col <- if ("R2" %in% names(rows)) "R2" else if ("Accuracy" %in% names(rows)) "Accuracy" else ""
+    if (!nzchar(metric_col)) {
+      return(numeric(0))
+    }
+    values <- suppressWarnings(as.numeric(rows[[metric_col]]))
+    values[is.finite(values)]
+  }
+
+  geo_ml_rank_summary <- function(summary) {
+    if (!is.data.frame(summary) || nrow(summary) == 0) {
+      return(summary)
+    }
+    metric <- suppressWarnings(as.numeric(summary$MedianMetric %||% summary$BestMetric))
+    rho <- suppressWarnings(as.numeric(summary$TriggerMaxAbsRho))
+    metric_rank <- rank(-metric, ties.method = "min", na.last = "keep")
+    rho_rank <- rank(-rho, ties.method = "min", na.last = "keep")
+    combined <- metric_rank + rho_rank
+    summary$ModelRank <- metric_rank
+    summary$RhoRank <- rho_rank
+    summary$CombinedRank <- rank(combined, ties.method = "min", na.last = "keep")
+    summary <- summary[order(summary$CombinedRank, summary$ModelRank, summary$RhoRank, summary$PrincipalTranscript), , drop = FALSE]
+    rownames(summary) <- NULL
+    summary
+  }
+
+  geo_ml_pipeline_config <- function(models, screen_seeds, seed_end, timeout, best_only_model = NULL) {
+    list(
+      target = "target",
+      models = if (is.null(best_only_model)) models else best_only_model,
+      dataset_seed_start = 1,
+      dataset_seed_end = 1,
+      training_seed_start = 1,
+      training_seed_end = seed_end,
+      timeout = timeout,
+      performance_mode = "default",
+      missing_definition = geo_transcript_missing_definition(),
+      missing_strategy = "none",
+      missing_threshold_cols = 100,
+      missing_threshold_rows = 100,
+      complete_case_min_samples = 0,
+      imputation_scope = "split_separate",
+      parallel_enabled = FALSE,
+      use_callr_timeout = TRUE,
+      restart_parallel_each_model = TRUE,
+      retry_parallel_connection_errors = TRUE,
+      screen_seeds = screen_seeds
+    )
+  }
+
+  geo_ml_group_dataset <- function(group) {
+    dataset_path <- as.character(group$DatasetPath[[1]])
+    if (!nzchar(dataset_path) || !file.exists(dataset_path)) {
+      stop("Transcript group dataset file is missing: ", dataset_path)
+    }
+    dataset <- utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE)
+    if (!"target" %in% names(dataset)) {
+      target_candidates <- setdiff(names(dataset), c("sample_id", grep("^cg", names(dataset), value = TRUE)))
+      target_name <- target_candidates[[1]] %||% ""
+      if (!nzchar(target_name)) {
+        stop("Could not identify target column in transcript dataset.")
+      }
+      names(dataset)[names(dataset) == target_name] <- "target"
+    }
+    dataset <- dataset[, setdiff(names(dataset), "sample_id"), drop = FALSE]
+    list(dataset = dataset, dataset_path = dataset_path)
+  }
+
+  geo_ml_run_group_screen <- function(group, source, models, settings, progress_callback = NULL) {
+    dataset_info <- geo_ml_group_dataset(group)
+    dataset <- dataset_info$dataset
+    dataset_path <- dataset_info$dataset_path
+    cache_dir <- ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO"))
+    group_dir <- geo_transcript_ml_group_dir(cache_dir, source, group$GroupID[[1]])
+    screen_path <- file.path(group_dir, "screen_result.rds")
+    summary_path <- file.path(group_dir, "screen_summary.rds")
+
+    screen_config <- geo_ml_pipeline_config(models, settings$screen_seeds, settings$screen_seeds, settings$timeout)
+    screen_config$resume_result_path <- screen_path
+    screen_config$model_log_dir <- file.path(group_dir, "logs", "screen")
+    screen_result <- ugplot_run_ml_job(
+      dataset,
+      screen_config,
+      progress_callback = function(...) {
+        args <- list(...)
+        if (!is.null(progress_callback)) {
+          progress_callback(paste0("Screening ", group$GroupID[[1]], ": ", args$message %||% ""))
+        }
+      },
+      partial_callback = function(partial) saveRDS(partial, screen_path)
+    )
+    saveRDS(screen_result, screen_path)
+
+    best_model <- screen_result$best_model_name %||% ""
+    if (!nzchar(best_model) || identical(best_model, "-")) {
+      stop("No best model was found during screening.")
+    }
+    metric_values <- geo_ml_result_metric_values(screen_result)
+    metric_name <- screen_result$final_summary$metric_name %||% "R2"
+    summary <- data.frame(
+      Source = source,
+      Phase = "screening",
+      GroupID = group$GroupID[[1]],
+      PrincipalTranscript = group$PrincipalTranscript[[1]],
+      Gene = group$Gene[[1]],
+      TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
+      BestModel = best_model,
+      MetricName = metric_name,
+      BestMetric = suppressWarnings(as.numeric(screen_result$final_summary$metric_value %||% NA_real_)),
+      MedianMetric = if (length(metric_values) > 0) stats::median(metric_values) else NA_real_,
+      MeanMetric = if (length(metric_values) > 0) mean(metric_values) else NA_real_,
+      SeedsRun = length(metric_values),
+      DatasetPath = dataset_path,
+      ScreenResultPath = screen_path,
+      stringsAsFactors = FALSE
+    )
+    saveRDS(summary, summary_path)
+    summary
+  }
+
+  geo_ml_run_group_stability <- function(group, source, settings, progress_callback = NULL) {
+    dataset_info <- geo_ml_group_dataset(group)
+    dataset <- dataset_info$dataset
+    dataset_path <- dataset_info$dataset_path
+    cache_dir <- ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO"))
+    group_dir <- geo_transcript_ml_group_dir(cache_dir, source, group$GroupID[[1]])
+    screen_path <- file.path(group_dir, "screen_result.rds")
+    stability_path <- file.path(group_dir, "stability_result.rds")
+    summary_path <- file.path(group_dir, "summary.rds")
+    importance_path <- file.path(group_dir, "importance.csv")
+    if (!file.exists(screen_path)) {
+      stop("Screening result is missing for ", group$GroupID[[1]], ". Run Step 8 first.")
+    }
+    screen_result <- tryCatch(readRDS(screen_path), error = function(e) NULL)
+    best_model <- screen_result$best_model_name %||% ""
+    if (!nzchar(best_model) || identical(best_model, "-")) {
+      stop("No best model was found in the screening cache for ", group$GroupID[[1]], ".")
+    }
+
+    current_end <- settings$min_stability_seeds
+    stability_result <- if (file.exists(stability_path)) tryCatch(readRDS(stability_path), error = function(e) NULL) else NULL
+    stable_state <- list(stable = FALSE, reason = "not started")
+    repeat {
+      existing_n <- length(geo_ml_result_metric_values(stability_result))
+      current_end <- max(current_end, min(settings$max_stability_seeds, existing_n + settings$window))
+      stability_config <- geo_ml_pipeline_config(best_model, settings$screen_seeds, current_end, settings$timeout, best_only_model = best_model)
+      stability_config$resume_result_path <- stability_path
+      stability_config$model_log_dir <- file.path(group_dir, "logs", "stability")
+      stability_result <- ugplot_run_ml_job(
+        dataset,
+        stability_config,
+        progress_callback = function(...) {
+          args <- list(...)
+          if (!is.null(progress_callback)) {
+            progress_callback(paste0("Stabilizing ", group$GroupID[[1]], " / ", best_model, ": ", args$message %||% ""))
+          }
+        },
+        partial_callback = function(partial) saveRDS(partial, stability_path)
+      )
+      saveRDS(stability_result, stability_path)
+      metric_values <- geo_ml_result_metric_values(stability_result)
+      stable_state <- geo_ml_stability_state(metric_values, settings$min_stability_seeds, settings$window, settings$tolerance)
+      if (isTRUE(stable_state$stable) || length(metric_values) >= settings$max_stability_seeds) {
+        break
+      }
+      current_end <- min(settings$max_stability_seeds, length(metric_values) + settings$window)
+      if (current_end <= length(metric_values)) {
+        break
+      }
+    }
+
+    importance <- geo_ml_importance_table(stability_result$best_model, group, source, "stability")
+    if (is.data.frame(importance) && nrow(importance) > 0) {
+      utils::write.csv(importance, importance_path, row.names = FALSE)
+    }
+
+    metric_values <- geo_ml_result_metric_values(stability_result)
+    metric_name <- stability_result$final_summary$metric_name %||% "R2"
+    summary <- data.frame(
+      Source = source,
+      GroupID = group$GroupID[[1]],
+      PrincipalTranscript = group$PrincipalTranscript[[1]],
+      Gene = group$Gene[[1]],
+      TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
+      BestModel = best_model,
+      MetricName = metric_name,
+      BestMetric = suppressWarnings(as.numeric(stability_result$final_summary$metric_value %||% NA_real_)),
+      MedianMetric = if (length(metric_values) > 0) stats::median(metric_values) else NA_real_,
+      MeanMetric = if (length(metric_values) > 0) mean(metric_values) else NA_real_,
+      MetricSE = if (length(metric_values) > 1) stats::sd(metric_values) / sqrt(length(metric_values)) else NA_real_,
+      SeedsRun = length(metric_values),
+      Stable = isTRUE(stable_state$stable),
+      StabilityDetail = stable_state$reason,
+      DatasetPath = dataset_path,
+      ScreenResultPath = screen_path,
+      StabilityResultPath = stability_path,
+      ImportancePath = if (file.exists(importance_path)) importance_path else "",
+      stringsAsFactors = FALSE
+    )
+    saveRDS(summary, summary_path)
+    summary
+  }
+
+  update_geo_transcript_ml_progress <- function(phase = NULL, message = NULL,
+                                                processed = NULL, total = NULL,
+                                                current = NULL, cache = NULL) {
+    progress <- geo_transcript_ml_progress()
+    if (!is.null(phase)) progress$phase <- phase
+    if (!is.null(message)) progress$message <- message
+    if (!is.null(processed)) progress$processed <- processed
+    if (!is.null(total)) progress$total <- total
+    if (!is.null(current)) progress$current <- current
+    if (!is.null(cache)) progress$cache <- cache
+    geo_transcript_ml_progress(progress)
+    invisible(progress)
+  }
+
+  output$geo_ml_model_summary <- renderUI({
+    available <- unique(as.character(ml_available))
+    available <- available[nzchar(available)]
+    if (length(available) == 0) {
+      return(tags$p(class = "geo-step-note", "No installed caret models are currently available."))
+    }
+    tags$div(
+      tags$p(tags$strong("Models for transcript ML: "), paste0(length(available), " installed model(s) will be screened.")),
+      tags$p(class = "geo-step-note", paste(utils::head(available, 12), collapse = ", "), if (length(available) > 12) "..." else "")
+    )
+  })
+
+  output$geo_transcript_ml_progress_ui <- renderUI({
+    progress <- geo_transcript_ml_progress()
+    total <- suppressWarnings(as.integer(progress$total %||% 0L))
+    processed <- suppressWarnings(as.integer(progress$processed %||% 0L))
+    percent <- if (is.finite(total) && total > 0) round(100 * processed / total, 1) else 0
+    tags$div(
+      style = "margin-top: 10px; padding: 10px; border: 1px solid #dbe7f3; background: #f8fbff; border-radius: 4px;",
+      tags$p(style = "margin: 0 0 4px 0;", tags$strong("Transcript ML status: "), progress$phase %||% "idle"),
+      tags$p(style = "margin: 0 0 4px 0;", progress$message %||% ""),
+      tags$p(style = "margin: 0 0 4px 0;", paste0("Processed ", processed, " / ", total, " (", percent, "%).")),
+      if (nzchar(progress$current %||% "")) tags$p(style = "margin: 0 0 4px 0;", paste0("Current: ", progress$current)) else NULL,
+      if (nzchar(progress$cache %||% "")) tags$p(style = "margin: 0; font-size: 12px; color: #596273;", paste0("Cache: ", progress$cache)) else NULL
+    )
+  })
+
+  output$geo_transcript_ml_table_title <- renderUI({
+    results <- geo_transcript_ml_results()
+    if (!is.data.frame(results) || nrow(results) == 0) {
+      return(tags$p(class = "geo-step-note", "No transcript ML results loaded yet."))
+    }
+    render_geo_table_title("Transcript ML results", "Per-source transcript/group ranking from the local resumable ML pipeline.")
+  })
+
+  output$geo_transcript_ml_table <- DT::renderDT({
+    results <- geo_transcript_ml_results()
+    req(is.data.frame(results), nrow(results) > 0)
+    display_cols <- intersect(
+      c("Source", "GroupID", "PrincipalTranscript", "Gene", "CombinedRank", "ModelRank", "RhoRank", "TriggerMaxAbsRho", "BestModel", "MetricName", "BestMetric", "MedianMetric", "MeanMetric", "MetricSE", "SeedsRun", "Stable", "StabilityDetail"),
+      names(results)
+    )
+    display <- results[, display_cols, drop = FALSE]
+    for (metric_col in intersect(c("TriggerMaxAbsRho", "BestMetric", "MedianMetric", "MeanMetric", "MetricSE"), names(display))) {
+      display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
+    }
+    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single")
+  })
+
+  geo_transcript_dataset_cache_path <- function(cache_dir, transcript, target_column, source = NULL) {
+    transcript_dir <- file.path(geo_analysis_cache_dir(cache_dir, source), "transcript_datasets", geo_safe_cache_token(target_column))
     if (!dir.exists(transcript_dir)) {
       dir.create(transcript_dir, recursive = TRUE, showWarnings = FALSE)
     }
     file.path(transcript_dir, paste0(geo_safe_cache_token(transcript), ".csv"))
   }
 
-  geo_transcript_raw_dataset_cache_path <- function(cache_dir, transcript, target_column) {
-    transcript_dir <- file.path(cache_dir, "transcript_datasets", geo_safe_cache_token(target_column), "_raw")
+  geo_transcript_raw_dataset_cache_path <- function(cache_dir, transcript, target_column, source = NULL) {
+    transcript_dir <- file.path(geo_analysis_cache_dir(cache_dir, source), "transcript_datasets", geo_safe_cache_token(target_column), "_raw")
     if (!dir.exists(transcript_dir)) {
       dir.create(transcript_dir, recursive = TRUE, showWarnings = FALSE)
     }
     file.path(transcript_dir, paste0(geo_safe_cache_token(transcript), "_raw.csv"))
   }
 
-  geo_quarantine_legacy_raw_transcript_files <- function(cache_dir, target_column) {
-    transcript_dir <- file.path(cache_dir, "transcript_datasets", geo_safe_cache_token(target_column))
+  geo_quarantine_legacy_raw_transcript_files <- function(cache_dir, target_column, source = NULL) {
+    transcript_dir <- file.path(geo_analysis_cache_dir(cache_dir, source), "transcript_datasets", geo_safe_cache_token(target_column))
     if (!dir.exists(transcript_dir)) {
       return(invisible(character(0)))
     }
@@ -2886,8 +3763,8 @@ server <- function(input, output, session) {
     mean(rowSums(mask) == length(predictor_cols))
   }
 
-  geo_candidate_cpg_matrix_cache_path <- function(cache_dir, target_column, threshold) {
-    transcript_dir <- file.path(cache_dir, "transcript_datasets", geo_safe_cache_token(target_column))
+  geo_candidate_cpg_matrix_cache_path <- function(cache_dir, target_column, threshold, source = NULL) {
+    transcript_dir <- file.path(geo_analysis_cache_dir(cache_dir, source), "transcript_datasets", geo_safe_cache_token(target_column))
     if (!dir.exists(transcript_dir)) {
       dir.create(transcript_dir, recursive = TRUE, showWarnings = FALSE)
     }
@@ -2902,17 +3779,18 @@ server <- function(input, output, session) {
   build_geo_transcript_groups <- function(candidates, cache_dir, target_column, threshold,
                                           min_samples_pct, paths, update_stage = FALSE,
                                           progress_callback = NULL) {
+    source <- geo_matrix_source_value()
     metadata <- geo_sample_metadata()
     if ((!nzchar(target_column) || !target_column %in% names(metadata)) && is.data.frame(metadata) && nrow(metadata) > 0) {
       target_candidates <- ugplot_geo_target_candidates(metadata)
       target_column <- if ("age" %in% target_candidates) "age" else if (length(target_candidates) > 0) target_candidates[[1]] else ""
     }
-    matrix_files <- ugplot_geo_matrix_files(cache_dir)
+    matrix_files <- ugplot_geo_matrix_files(cache_dir, source = source)
     if (!is.data.frame(metadata) || nrow(metadata) == 0 || !target_column %in% names(metadata) || length(matrix_files) == 0) {
       missing_reasons <- c(
         if (!is.data.frame(metadata) || nrow(metadata) == 0) "metadata" else character(0),
         if (!nzchar(target_column) || !target_column %in% names(metadata)) paste0("target column '", target_column, "'") else character(0),
-        if (length(matrix_files) == 0) "extracted GEO matrix files" else character(0)
+        if (length(matrix_files) == 0) paste0(geo_matrix_source_label(source), " matrix files") else character(0)
       )
       geo_transcript_groups(data.frame())
       geo_transcript_group_details(data.frame())
@@ -2923,7 +3801,7 @@ server <- function(input, output, session) {
       )
       return(invisible(FALSE))
     }
-    moved_legacy_raw <- geo_quarantine_legacy_raw_transcript_files(cache_dir, target_column)
+    moved_legacy_raw <- geo_quarantine_legacy_raw_transcript_files(cache_dir, target_column, source = source)
     if (length(moved_legacy_raw) > 0) {
       geo_status(ugplot_geo_append_log(
         geo_status(),
@@ -2940,8 +3818,8 @@ server <- function(input, output, session) {
     }
     if (is.data.frame(progress_rows) && nrow(progress_rows) > 0 && all(c("Transcript", "Status", "DatasetPath", "RawDatasetPath") %in% names(progress_rows))) {
       for (progress_i in seq_len(nrow(progress_rows))) {
-        final_path <- geo_transcript_dataset_cache_path(cache_dir, progress_rows$Transcript[[progress_i]], target_column)
-        raw_path <- geo_transcript_raw_dataset_cache_path(cache_dir, progress_rows$Transcript[[progress_i]], target_column)
+        final_path <- geo_transcript_dataset_cache_path(cache_dir, progress_rows$Transcript[[progress_i]], target_column, source = source)
+        raw_path <- geo_transcript_raw_dataset_cache_path(cache_dir, progress_rows$Transcript[[progress_i]], target_column, source = source)
         old_final_path <- as.character(progress_rows$DatasetPath[[progress_i]])
         old_raw_path <- as.character(progress_rows$RawDatasetPath[[progress_i]])
         if (file.exists(final_path) && !file.exists(raw_path)) {
@@ -2987,7 +3865,7 @@ server <- function(input, output, session) {
       progress_callback(0.02, paste0("Preparing ", length(transcripts), " transcript(s)"))
     }
 
-    candidate_matrix_path <- geo_candidate_cpg_matrix_cache_path(cache_dir, target_column, threshold)
+    candidate_matrix_path <- geo_candidate_cpg_matrix_cache_path(cache_dir, target_column, threshold, source = source)
     candidate_matrix <- if (file.exists(candidate_matrix_path)) {
       tryCatch(utils::read.csv(candidate_matrix_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
     } else {
@@ -3092,13 +3970,13 @@ server <- function(input, output, session) {
         compatible = if (is.data.frame(progress_rows) && "Status" %in% names(progress_rows)) sum(progress_rows$Status == "compatible") else 0L,
         excluded = if (is.data.frame(progress_rows) && "Status" %in% names(progress_rows)) sum(progress_rows$Status != "compatible") else 0L,
         current = transcript_id,
-        cache = geo_transcript_dataset_cache_path(cache_dir, transcript_id, target_column)
+        cache = geo_transcript_dataset_cache_path(cache_dir, transcript_id, target_column, source = source)
       )
       transcript_rows <- candidates[as.character(candidates$Transcript) == transcript_id, , drop = FALSE]
       transcript_cpgs <- unique(as.character(stats::na.omit(transcript_rows$CpG)))
       transcript_cpgs <- transcript_cpgs[nzchar(transcript_cpgs)]
-      dataset_path <- geo_transcript_dataset_cache_path(cache_dir, transcript_id, target_column)
-      raw_dataset_path <- geo_transcript_raw_dataset_cache_path(cache_dir, transcript_id, target_column)
+      dataset_path <- geo_transcript_dataset_cache_path(cache_dir, transcript_id, target_column, source = source)
+      raw_dataset_path <- geo_transcript_raw_dataset_cache_path(cache_dir, transcript_id, target_column, source = source)
       transcript_dataset <- data.frame()
       if (file.exists(raw_dataset_path)) {
         transcript_dataset <- tryCatch(utils::read.csv(raw_dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
@@ -3154,7 +4032,18 @@ server <- function(input, output, session) {
         analysis_dataset <- transcript_dataset[!target_missing, , drop = FALSE]
         predictor_cols <- setdiff(names(analysis_dataset), c("sample_id", target_column))
         predictors <- analysis_dataset[, predictor_cols, drop = FALSE]
-        min_samples_required <- ceiling((min_samples_pct / 100) * nrow(transcript_dataset))
+        if (length(predictor_cols) > 0) {
+          predictor_missing <- build_missing_mask(
+            predictors,
+            missing_definition = geo_transcript_missing_definition()
+          )
+          source_available_rows <- rowSums(predictor_missing) < length(predictor_cols)
+        } else {
+          source_available_rows <- rep(FALSE, nrow(analysis_dataset))
+        }
+        analysis_dataset <- analysis_dataset[source_available_rows, , drop = FALSE]
+        predictors <- analysis_dataset[, predictor_cols, drop = FALSE]
+        min_samples_required <- ceiling((min_samples_pct / 100) * nrow(analysis_dataset))
         adjusted_min_rows_retained <- if (nrow(analysis_dataset) > 0) {
           min(1, min_samples_required / nrow(analysis_dataset))
         } else {
@@ -3274,11 +4163,27 @@ server <- function(input, output, session) {
   output$geo_spearman_table <- DT::renderDT({
     results <- geo_spearman_results()
     req(is.data.frame(results), nrow(results) > 0)
-    display <- results
+    display <- geo_filter_spearman_min_samples(results)
+    req(is.data.frame(display), nrow(display) > 0)
     display$SpearmanRho <- round(display$SpearmanRho, 5)
-    display$PValue <- signif(display$PValue, 5)
+    display$PValue <- formatC(display$PValue, format = "e", digits = 3)
     display$AbsRho <- round(display$AbsRho, 5)
-    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE, autoWidth = TRUE), rownames = FALSE)
+    DT::datatable(
+      display,
+      options = list(
+        pageLength = 10,
+        autoWidth = FALSE,
+        columnDefs = list(
+          list(width = "28%", targets = 0),
+          list(width = "18%", targets = 1),
+          list(width = "22%", targets = 2),
+          list(width = "12%", targets = 3),
+          list(width = "20%", targets = 4)
+        )
+      ),
+      rownames = FALSE,
+      class = "compact stripe"
+    )
   })
 
   output$geo_transcript_groups_table <- DT::renderDT({
@@ -3360,7 +4265,7 @@ server <- function(input, output, session) {
     if ("PValue" %in% names(display)) {
       display$PValue <- signif(display$PValue, 5)
     }
-    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single")
   })
 
   output$geo_transcript_group_track <- renderPlotly({
@@ -3371,6 +4276,53 @@ server <- function(input, output, session) {
     group_id <- groups$GroupID[[selected[[1]]]]
     track <- details[details$GroupID == group_id, , drop = FALSE]
     req(nrow(track) > 0)
+    detail_selected <- input$geo_transcript_group_details_table_rows_selected
+    selected_cpg <- character(0)
+    if (length(detail_selected) > 0) {
+      detail_rows <- details[details$GroupID == group_id, , drop = FALSE]
+      if (detail_selected[[1]] <= nrow(detail_rows) && "CpG" %in% names(detail_rows)) {
+        selected_cpg <- as.character(detail_rows$CpG[[detail_selected[[1]]]])
+      }
+    }
+    ml_summary <- geo_transcript_ml_results()
+    if ((!is.data.frame(ml_summary) || nrow(ml_summary) == 0) && nzchar(input$geo_accession %||% "")) {
+      ml_summary_path <- file.path(
+        geo_transcript_ml_dir(ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO")), geo_matrix_source_value()),
+        "summary.csv"
+      )
+      if (file.exists(ml_summary_path)) {
+        ml_summary <- tryCatch(utils::read.csv(ml_summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+        if (is.data.frame(ml_summary) && nrow(ml_summary) > 0) {
+          geo_transcript_ml_results(ml_summary)
+        }
+      }
+    }
+    ml_row <- if (is.data.frame(ml_summary) && nrow(ml_summary) > 0 && "GroupID" %in% names(ml_summary)) {
+      ml_summary[as.character(ml_summary$GroupID) == as.character(group_id), , drop = FALSE]
+    } else {
+      data.frame()
+    }
+    importance <- data.frame()
+    if (is.data.frame(ml_row) && nrow(ml_row) > 0 && "ImportancePath" %in% names(ml_row)) {
+      importance_path <- as.character(ml_row$ImportancePath[[1]])
+      if (nzchar(importance_path) && file.exists(importance_path)) {
+        importance <- tryCatch(utils::read.csv(importance_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+      }
+    }
+    if (is.data.frame(importance) && nrow(importance) > 0 && all(c("CpG", "Importance") %in% names(importance))) {
+      importance <- importance[, intersect(c("CpG", "Importance", "ImportanceRank"), names(importance)), drop = FALSE]
+      track <- merge(track, importance, by = "CpG", all.x = TRUE, sort = FALSE)
+    } else {
+      track$Importance <- NA_real_
+      track$ImportanceRank <- NA_real_
+    }
+    track$Importance <- suppressWarnings(as.numeric(track$Importance))
+    max_importance <- suppressWarnings(max(track$Importance, na.rm = TRUE))
+    if (!is.finite(max_importance) || max_importance <= 0) {
+      track$ImportanceScaled <- 0
+    } else {
+      track$ImportanceScaled <- pmax(0, pmin(1, track$Importance / max_importance))
+    }
 
     track$PositionNumeric <- suppressWarnings(as.numeric(track$Position))
     has_position <- any(is.finite(track$PositionNumeric))
@@ -3384,24 +4336,220 @@ server <- function(input, output, session) {
     }
     req(nrow(track) > 0)
 
+    region_order <- c("Promoter", "TSS1500", "TSS200", "5'UTR", "Exon", "1stExon", "Intron", "Body", "3'UTR")
+    region_labels <- c(
+      Promoter = "Promoter",
+      TSS1500 = "Promoter TSS1500",
+      TSS200 = "Promoter TSS200",
+      `5'UTR` = "5' UTR",
+      Exon = "Exon",
+      `1stExon` = "First exon",
+      Intron = "Intron",
+      Body = "Gene body",
+      `3'UTR` = "3' UTR"
+    )
+    build_txdb_region_bands <- function(df) {
+      required <- c("TxDb.Hsapiens.UCSC.hg19.refGene", "GenomicFeatures", "GenomicRanges", "IRanges", "S4Vectors")
+      if (!has_position || !all(vapply(required, requireNamespace, logical(1), quietly = TRUE))) {
+        return(data.frame())
+      }
+      txdb <- tryCatch(
+        get("TxDb.Hsapiens.UCSC.hg19.refGene", envir = asNamespace("TxDb.Hsapiens.UCSC.hg19.refGene")),
+        error = function(e) NULL
+      )
+      if (is.null(txdb)) {
+        return(data.frame())
+      }
+      tx_gr <- tryCatch(GenomicFeatures::transcripts(txdb, columns = c("tx_id", "tx_name")), error = function(e) NULL)
+      if (is.null(tx_gr) || length(tx_gr) == 0 || !"tx_name" %in% names(S4Vectors::mcols(tx_gr))) {
+        return(data.frame())
+      }
+      selected_tx <- unique(as.character(df$Transcript))
+      tx_names <- as.character(S4Vectors::mcols(tx_gr)$tx_name)
+      tx_keep <- which(tx_names %in% selected_tx)
+      if (length(tx_keep) == 0) {
+        return(data.frame())
+      }
+      tx_gr <- tx_gr[tx_keep]
+      tx_names <- tx_names[tx_keep]
+      tx_ids <- as.character(S4Vectors::mcols(tx_gr)$tx_id)
+      names(tx_gr) <- tx_ids
+      exon_by_tx <- tryCatch(GenomicFeatures::exonsBy(txdb, by = "tx", use.names = FALSE), error = function(e) NULL)
+      utr5_by_tx <- tryCatch(GenomicFeatures::fiveUTRsByTranscript(txdb, use.names = FALSE), error = function(e) NULL)
+      utr3_by_tx <- tryCatch(GenomicFeatures::threeUTRsByTranscript(txdb, use.names = FALSE), error = function(e) NULL)
+      range_rows <- list()
+      add_ranges <- function(tx_name, feature, gr, source_label) {
+        if (is.null(gr) || length(gr) == 0) {
+          return(NULL)
+        }
+        data.frame(
+          Transcript = tx_name,
+          Sector = feature,
+          xmin = as.numeric(GenomicRanges::start(gr)),
+          xmax = as.numeric(GenomicRanges::end(gr)),
+          Source = source_label,
+          stringsAsFactors = FALSE
+        )
+      }
+      for (tx_i in seq_along(tx_ids)) {
+        tx_id <- tx_ids[[tx_i]]
+        tx_name <- tx_names[[tx_i]]
+        tx_range <- tx_gr[tx_i]
+        tx_start <- as.numeric(GenomicRanges::start(tx_range))
+        tx_end <- as.numeric(GenomicRanges::end(tx_range))
+        tx_strand <- as.character(GenomicRanges::strand(tx_range))
+        promoter <- if (identical(tx_strand, "-")) {
+          IRanges::IRanges(start = tx_end + 1, end = tx_end + 1500)
+        } else {
+          IRanges::IRanges(start = max(1, tx_start - 1500), end = max(1, tx_start - 1))
+        }
+        range_rows[[length(range_rows) + 1L]] <- add_ranges(
+          tx_name, "Promoter",
+          GenomicRanges::GRanges(seqnames = as.character(GenomicRanges::seqnames(tx_range)), ranges = promoter, strand = GenomicRanges::strand(tx_range)),
+          "TxDb hg19 refGene"
+        )
+        exon_gr <- if (!is.null(exon_by_tx) && tx_id %in% names(exon_by_tx)) exon_by_tx[[tx_id]] else NULL
+        if (!is.null(exon_gr) && length(exon_gr) > 0) {
+          range_rows[[length(range_rows) + 1L]] <- add_ranges(tx_name, "Exon", exon_gr, "TxDb hg19 refGene")
+          exon_ranges <- IRanges::reduce(GenomicRanges::ranges(exon_gr))
+          if (length(exon_ranges) > 1) {
+            intron_ranges <- IRanges::IRanges(
+              start = utils::head(IRanges::end(exon_ranges), -1) + 1,
+              end = utils::tail(IRanges::start(exon_ranges), -1) - 1
+            )
+            intron_ranges <- intron_ranges[IRanges::width(intron_ranges) > 0]
+            if (length(intron_ranges) > 0) {
+              range_rows[[length(range_rows) + 1L]] <- add_ranges(
+                tx_name, "Intron",
+                GenomicRanges::GRanges(seqnames = as.character(GenomicRanges::seqnames(tx_range)), ranges = intron_ranges, strand = GenomicRanges::strand(tx_range)),
+                "TxDb hg19 refGene"
+              )
+            }
+          }
+        }
+        if (!is.null(utr5_by_tx) && tx_id %in% names(utr5_by_tx)) {
+          range_rows[[length(range_rows) + 1L]] <- add_ranges(tx_name, "5'UTR", utr5_by_tx[[tx_id]], "TxDb hg19 refGene")
+        }
+        if (!is.null(utr3_by_tx) && tx_id %in% names(utr3_by_tx)) {
+          range_rows[[length(range_rows) + 1L]] <- add_ranges(tx_name, "3'UTR", utr3_by_tx[[tx_id]], "TxDb hg19 refGene")
+        }
+      }
+      bands <- do.call(rbind, range_rows)
+      if (!is.data.frame(bands) || nrow(bands) == 0) {
+        return(data.frame())
+      }
+      plot_range <- range(df$PositionNumeric, na.rm = TRUE)
+      bands$xmin <- pmax(bands$xmin, plot_range[[1]])
+      bands$xmax <- pmin(bands$xmax, plot_range[[2]])
+      bands <- bands[is.finite(bands$xmin) & is.finite(bands$xmax) & bands$xmax >= bands$xmin, , drop = FALSE]
+      if (nrow(bands) == 0) {
+        return(data.frame())
+      }
+      bands$x <- (bands$xmin + bands$xmax) / 2
+      bands$width <- pmax(1, bands$xmax - bands$xmin)
+      bands$SectorLabel <- unname(region_labels[bands$Sector])
+      bands$Label <- paste0(
+        "Transcript: ", bands$Transcript,
+        "<br>Region: ", bands$SectorLabel,
+        "<br>Span: ", round(bands$xmin), "-", round(bands$xmax),
+        "<br>Source: ", bands$Source
+      )
+      bands$Sector <- factor(bands$Sector, levels = region_order)
+      bands
+    }
+    build_illumina_region_bands <- function(df) {
+      if (!has_position || !"GeneRegion" %in% names(df) || !any(is.finite(df$PositionNumeric))) {
+        return(data.frame())
+      }
+      band_rows <- lapply(split(df, as.character(df$Transcript)), function(tx_df) {
+        tx_df <- tx_df[is.finite(tx_df$PositionNumeric), , drop = FALSE]
+        if (nrow(tx_df) == 0) {
+          return(data.frame())
+        }
+        tx_df <- tx_df[order(tx_df$PositionNumeric), , drop = FALSE]
+        raw_regions <- trimws(as.character(tx_df$GeneRegion))
+        primary_region <- vapply(strsplit(raw_regions, ";", fixed = TRUE), function(parts) {
+          parts <- trimws(parts)
+          parts <- parts[nzchar(parts)]
+          matched <- parts[parts %in% region_order]
+          if (length(matched) > 0) matched[[1]] else NA_character_
+        }, character(1))
+        keep <- !is.na(primary_region) & nzchar(primary_region)
+        tx_df <- tx_df[keep, , drop = FALSE]
+        primary_region <- primary_region[keep]
+        if (nrow(tx_df) == 0) {
+          return(data.frame())
+        }
+        x_values <- tx_df$PositionNumeric
+        padding <- diff(range(df$PositionNumeric, na.rm = TRUE)) * 0.01
+        if (!is.finite(padding) || padding <= 0) {
+          padding <- 1
+        }
+        boundaries <- if (length(x_values) == 1) {
+          c(x_values - padding, x_values + padding)
+        } else {
+          mids <- (utils::head(x_values, -1) + utils::tail(x_values, -1)) / 2
+          c(min(x_values) - padding, mids, max(x_values) + padding)
+        }
+        runs <- rle(primary_region)
+        ends <- cumsum(runs$lengths)
+        starts <- c(1, utils::head(ends, -1) + 1)
+        do.call(rbind, lapply(seq_along(runs$values), function(i) {
+          xmin <- boundaries[starts[[i]]]
+          xmax <- boundaries[ends[[i]] + 1]
+          data.frame(
+            Transcript = tx_df$Transcript[[1]],
+            Sector = runs$values[[i]],
+            SectorLabel = unname(region_labels[runs$values[[i]]]),
+            x = (xmin + xmax) / 2,
+            width = max(padding, xmax - xmin),
+            Label = paste0(
+              "Transcript: ", tx_df$Transcript[[1]],
+              "<br>Region: ", unname(region_labels[runs$values[[i]]]),
+              "<br>Approx. span: ", round(xmin), "-", round(xmax),
+              "<br>Source: Illumina CpG GeneRegion annotation"
+            ),
+            stringsAsFactors = FALSE
+          )
+        }))
+      })
+      bands <- do.call(rbind, band_rows)
+      if (!is.data.frame(bands) || nrow(bands) == 0) {
+        return(data.frame())
+      }
+      bands$Sector <- factor(bands$Sector, levels = region_order)
+      bands
+    }
+    region_bands <- build_illumina_region_bands(track)
+    if (!is.data.frame(region_bands) || nrow(region_bands) == 0) {
+      region_bands <- build_txdb_region_bands(track)
+    }
+
     track$Transcript <- factor(track$Transcript, levels = rev(unique(as.character(track$Transcript))))
+    if (is.data.frame(region_bands) && nrow(region_bands) > 0) {
+      region_bands$Transcript <- factor(region_bands$Transcript, levels = levels(track$Transcript))
+    }
     if (!"Strand" %in% names(track)) {
       track$Strand <- NA_character_
     }
     track$CpGKeptForML <- as.logical(track$CpGKeptForML)
     track$RhoScaled <- pmax(-1, pmin(1, suppressWarnings(as.numeric(track$SpearmanRho))))
+    track$AbsRhoScaled <- pmax(0, pmin(1, suppressWarnings(as.numeric(track$AbsRho))))
     track$YOffset <- ifelse(is.finite(track$RhoScaled), 0.34 * track$RhoScaled, 0)
     track$YBase <- as.numeric(track$Transcript)
     track$YEnd <- track$YBase + track$YOffset
+    track$SelectedCpG <- as.character(track$CpG) %in% selected_cpg
     track$StrandDisplay <- ifelse(is.na(track$Strand) | !nzchar(trimws(track$Strand)), "genomic coordinate ->", track$Strand)
     track$Label <- paste0(
       "Transcript: ", track$Transcript,
       "<br>CpG: ", track$CpG,
       "<br>Gene region: ", track$GeneRegion,
-      "<br>Position: ", track$Chr, ":", track$Position,
+      "<br><span style='font-size:14px'><b>Position: ", track$Chr, ":", track$Position, "</b></span>",
       "<br>Direction: ", track$StrandDisplay,
-      "<br>Spearman rho: ", signif(track$SpearmanRho, 4),
-      "<br>|rho|: ", signif(track$AbsRho, 4),
+      "<br><span style='font-size:14px'><b>Spearman rho: ", signif(track$SpearmanRho, 4), "</b></span>",
+      "<br><span style='font-size:14px'><b>|rho|: ", signif(track$AbsRho, 4), "</b></span>",
+      "<br>ML importance: ", ifelse(is.finite(track$Importance), signif(track$Importance, 4), "not run"),
+      "<br>Importance rank: ", ifelse(is.finite(track$ImportanceRank), track$ImportanceRank, "not run"),
       "<br>Kept for ML: ", ifelse(track$CpGKeptForML, "yes", "no")
     )
     segment_df <- do.call(rbind, lapply(split(track, track$Transcript), function(df) {
@@ -3421,7 +4569,34 @@ server <- function(input, output, session) {
       )
     }))
 
-    p <- ggplot(track, aes(x = PositionNumeric, y = Transcript)) +
+    p <- ggplot(track, aes(x = PositionNumeric, y = Transcript))
+    if (is.data.frame(region_bands) && nrow(region_bands) > 0) {
+      p <- p +
+        geom_tile(
+          data = region_bands,
+          aes(x = x, y = Transcript, width = width, height = 0.20, fill = Sector, text = Label),
+          inherit.aes = FALSE,
+          alpha = 0.32,
+          color = NA
+        ) +
+        scale_fill_manual(
+          values = c(
+            Promoter = "#f6c85f",
+            TSS1500 = "#f6c85f",
+            TSS200 = "#f08a4b",
+            `5'UTR` = "#8ecae6",
+            Exon = "#4dab6d",
+            `1stExon` = "#4dab6d",
+            Intron = "#d9e2ec",
+            Body = "#b8c0ff",
+            `3'UTR` = "#c77dff"
+          ),
+          labels = region_labels,
+          na.translate = FALSE,
+          name = "Region"
+        )
+    }
+    p <- p +
       geom_segment(
         data = segment_df,
         aes(x = x_start, xend = x_end, y = Transcript, yend = Transcript),
@@ -3439,21 +4614,52 @@ server <- function(input, output, session) {
         arrow = grid::arrow(length = grid::unit(0.16, "cm"), type = "closed")
       ) +
       geom_segment(
-        aes(xend = PositionNumeric, y = YBase, yend = YEnd, color = SpearmanRho, alpha = CpGKeptForML, text = Label),
+        aes(xend = PositionNumeric, y = YBase, yend = YEnd, color = AbsRhoScaled, alpha = CpGKeptForML, text = Label),
         linewidth = 1.2,
         lineend = "round"
       ) +
       geom_point(
-        aes(y = YEnd, color = SpearmanRho, alpha = CpGKeptForML, text = Label),
+        aes(y = YEnd, color = AbsRhoScaled, alpha = CpGKeptForML, size = ImportanceScaled, text = Label),
         shape = 21,
-        size = 3.2,
         stroke = 0.7,
         fill = "white"
-      ) +
-      scale_color_gradient2(low = "#d84a3a", mid = "#f7f9fc", high = "#2f6fdd", midpoint = 0, na.value = "#8792a2") +
+      )
+    selected_track <- track[isTRUE(length(selected_cpg) > 0) & track$SelectedCpG, , drop = FALSE]
+    if (is.data.frame(selected_track) && nrow(selected_track) > 0) {
+      p <- p +
+        geom_point(
+          data = selected_track,
+          aes(x = PositionNumeric, y = YEnd, text = Label),
+          inherit.aes = FALSE,
+          shape = 21,
+          size = 8.5,
+          stroke = 1.5,
+          color = "#111827",
+          fill = NA
+        ) +
+        geom_point(
+          data = selected_track,
+          aes(x = PositionNumeric, y = YEnd, text = Label),
+          inherit.aes = FALSE,
+          shape = 4,
+          size = 4.5,
+          stroke = 1.2,
+          color = "#111827"
+        )
+    }
+    p <- p +
+      viridis::scale_color_viridis(option = "plasma", discrete = FALSE, na.value = "#8792a2", limits = c(0, 1)) +
       scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.3), guide = "none") +
+      scale_size_continuous(
+        range = c(2.6, 7),
+        breaks = c(0, 0.5, 1),
+        labels = function(x) {
+          ifelse(x <= 0, "none", ifelse(x >= 1, "high", "mid"))
+        },
+        name = "ML importance"
+      ) +
       scale_y_discrete(expand = expansion(mult = c(0.35, 0.35))) +
-      labs(x = x_label, y = NULL, color = "rho") +
+      labs(x = x_label, y = NULL, color = "|rho|") +
       theme_minimal(base_size = 12) +
       theme(
         panel.grid.major.y = element_blank(),
@@ -3469,29 +4675,66 @@ server <- function(input, output, session) {
     )
   })
 
-  observeEvent(input$geo_download_loadable_only, {
+  observeEvent(input$geo_matrix_source, {
+    source <- geo_matrix_source_value(input$geo_matrix_source %||% "processed")
+    geo_spearman_results(data.frame())
+    geo_spearman_raw_results(data.frame())
+    geo_transcript_candidates(data.frame())
+    geo_transcript_groups(data.frame())
+    geo_transcript_group_details(data.frame())
+    geo_transcript_ml_results(data.frame())
+    geo_preview_data(data.frame())
+    update_geo_transcript_build_progress(
+      phase = "idle",
+      message = "Matrix source changed. Run Spearman again before building transcript datasets.",
+      processed = 0L,
+      total = 0L,
+      compatible = 0L,
+      excluded = 0L,
+      current = "",
+      cache = ""
+    )
+    update_geo_transcript_ml_progress(
+      phase = "idle",
+      message = "Matrix source changed. Load or run transcript ML for this source.",
+      processed = 0L,
+      total = 0L,
+      current = "",
+      cache = ""
+    )
     remote_files <- geo_remote_files()
     accession <- isolate(trimws(input$geo_accession %||% ""))
-    if (!is.data.frame(remote_files) || nrow(remote_files) == 0 || !nzchar(accession)) {
+    if (!nzchar(accession)) {
       return()
     }
     cache_dir <- ugplot_geo_cache_dir(accession)
+    load_geo_cached_state(accession)
+    if (!is.data.frame(remote_files) || nrow(remote_files) == 0) {
+      return()
+    }
     remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
     geo_remote_files(remote_files)
     processed_files <- remote_files[remote_files$Loadable, , drop = FALSE]
     pending_files <- processed_files[processed_files$NeedsDownload, , drop = FALSE]
-    if (nrow(processed_files) > 0 && nrow(pending_files) == 0) {
+    selected_files <- geo_download_selection(remote_files, input$geo_matrix_source %||% "processed")
+    selected_pending <- selected_files[selected_files$NeedsDownload, , drop = FALSE]
+    if (nrow(selected_files) > 0 && nrow(selected_pending) == 0) {
       shinyjs::disable("geo_fetch_files")
       if (any(processed_files$LocalStatus == "downloaded" & grepl("\\.gz$", processed_files$File, ignore.case = TRUE))) {
         shinyjs::enable("geo_extract_files")
       } else {
         shinyjs::disable("geo_extract_files")
       }
-      geo_stage(list(step = "Step 5", title = "Matrix files already local", message = "Required processed matrix files are already available locally. Extract compressed matrices next."))
+      load_geo_cached_state(accession)
+      geo_stage(list(
+        step = "Step 5",
+        title = "Matrix files already local",
+        message = paste0("Required ", geo_matrix_source_label(source), " files are already available locally. Continue with the next step for this path.")
+      ))
     } else {
       shinyjs::enable("geo_fetch_files")
       shinyjs::disable("geo_extract_files")
-      geo_stage(list(step = "Step 3", title = "Review matrix download plan", message = paste0("Required processed matrices still needed: ", nrow(pending_files), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(pending_files), na.rm = TRUE)), ".")))
+      geo_stage(list(step = "Step 3", title = "Review matrix download plan", message = paste0("Selected ", geo_matrix_source_label(source), " files still needed: ", nrow(selected_pending), " file(s), ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(selected_pending), na.rm = TRUE)), ".")))
     }
   }, ignoreInit = TRUE)
 
@@ -3546,6 +4789,8 @@ server <- function(input, output, session) {
       } else {
         processed_files <- remote_files[remote_files$Loadable, , drop = FALSE]
         pending_files <- processed_files[processed_files$NeedsDownload, , drop = FALSE]
+        selected_files <- geo_download_selection(remote_files, input$geo_matrix_source %||% "processed")
+        selected_pending <- selected_files[selected_files$NeedsDownload, , drop = FALSE]
         selected_size <- sum(ugplot_geo_size_bytes(processed_files), na.rm = TRUE)
         geo_status(ugplot_geo_append_log(
           geo_status(),
@@ -3583,7 +4828,7 @@ server <- function(input, output, session) {
             )
           }
         ))
-        if (nrow(processed_files) > 0 && nrow(pending_files) == 0) {
+        if (nrow(selected_files) > 0 && nrow(selected_pending) == 0) {
           shinyjs::disable("geo_fetch_files")
           if (any(processed_files$LocalStatus == "downloaded" & grepl("\\.gz$", processed_files$File, ignore.case = TRUE))) {
             shinyjs::enable("geo_extract_files")
@@ -3634,9 +4879,11 @@ server <- function(input, output, session) {
         geo_remote_files(remote_files)
         processed_files <- remote_files[remote_files$Loadable, , drop = FALSE]
         pending_files <- processed_files[processed_files$NeedsDownload, , drop = FALSE]
-        if (nrow(processed_files) == 0 || nrow(pending_files) > 0) {
+        selected_files <- geo_download_selection(remote_files, input$geo_matrix_source %||% "processed")
+        selected_pending <- selected_files[selected_files$NeedsDownload, , drop = FALSE]
+        if (nrow(selected_files) == 0 || nrow(selected_pending) > 0) {
           shinyjs::enable("geo_fetch_files")
-          geo_stage(list(step = "Step 3", title = "Review matrix download plan", message = paste0("Metadata is ready. Required processed matrices still needed: ", nrow(pending_files), " file(s), about ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(pending_files), na.rm = TRUE)), ".")))
+          geo_stage(list(step = "Step 3", title = "Review matrix download plan", message = paste0("Metadata is ready. Selected GEO files still needed: ", nrow(selected_pending), " file(s), about ", ugplot_format_bytes(sum(ugplot_geo_size_bytes(selected_pending), na.rm = TRUE)), ".")))
         } else {
           shinyjs::disable("geo_fetch_files")
           if (any(processed_files$LocalStatus == "downloaded" & grepl("\\.gz$", processed_files$File, ignore.case = TRUE))) {
@@ -3701,20 +4948,30 @@ server <- function(input, output, session) {
       if (!is.data.frame(remote_files) || nrow(remote_files) == 0) {
         stop("No supplementary files were found to download.")
       }
-      if (isTRUE(input$geo_download_loadable_only)) {
-        remote_files <- remote_files[remote_files$Loadable, , drop = FALSE]
+      source <- input$geo_matrix_source %||% "processed"
+      selected_remote_files <- geo_download_selection(remote_files, source)
+      if (identical(source, "processed")) {
+        remote_files <- selected_remote_files
         if (nrow(remote_files) == 0) {
-          stop("No directly loadable processed tables were found. Disable 'Download only loadable processed tables' to download all supplementary files.")
+          stop("No directly loadable processed tables were found for this GEO accession.")
         }
         geo_status(ugplot_geo_append_log(
           geo_status(),
-          paste0("Download filter enabled: downloading only ", nrow(remote_files), " loadable processed table(s).")
+          paste0("Processed matrix workflow selected: downloading ", nrow(remote_files), " loadable processed table(s).")
         ))
       } else {
-        geo_status(ugplot_geo_append_log(geo_status(), "Download filter disabled: downloading all supplementary files."))
+        remote_files <- selected_remote_files
+        if (nrow(remote_files) == 0) {
+          stop("No raw IDAT/archive supplementary files were found for sesame reprocessing.")
+        }
+        geo_status(ugplot_geo_append_log(
+          geo_status(),
+          paste0("Raw IDAT sesame workflow selected: downloading ", nrow(remote_files), " raw IDAT/archive file(s).")
+        ))
       }
       remote_files <- remote_files[remote_files$NeedsDownload, , drop = FALSE]
       if (nrow(remote_files) == 0) {
+        source <- input$geo_matrix_source %||% "processed"
         files <- ugplot_geo_list_candidate_files(accession, cache_dir)
         geo_files(files)
         annotated_files <- ugplot_geo_annotate_remote_files(geo_remote_files(), cache_dir)
@@ -3727,7 +4984,11 @@ server <- function(input, output, session) {
         geo_stage(list(
           step = "Step 5",
           title = "Files already local",
-          message = "All selected files are already available locally. Extract compressed matrices before preprocessing."
+          message = if (identical(source, "raw_sesame")) {
+            "All selected raw files are already local. Run sesame IDAT QC/reprocessing for this path."
+          } else {
+            "All selected processed matrices are already local. Extract compressed matrices before preprocessing."
+          }
         ))
         geo_download_progress(list(percent = 100, file = "Already downloaded", detail = paste0(nrow(files), " local file(s) available."), folder = cache_dir))
         session$sendCustomMessage("geoProgress", list(percent = 100, file = "Already downloaded", detail = paste0(nrow(files), " local file(s) available.")))
@@ -3860,16 +5121,21 @@ server <- function(input, output, session) {
         geo_status(ugplot_geo_append_log(geo_status(), paste0(
           "Fetched ", nrow(files), " files for ", accession, ". ",
           loadable_n, " processed table candidates are directly loadable. ",
-          idat_n, " IDAT files detected; IDAT preprocessing is not implemented in this first version."
+          idat_n, " IDAT files detected. Raw IDAT reprocessing is available in Step 5 when complete Red/Grn pairs are local."
         )))
         geo_stage(list(
           step = "Step 5",
-          title = "Ready to extract",
-          message = paste0("Download complete. Extract compressed matrix files before building an analysis table.")
+          title = if (identical(input$geo_matrix_source %||% "processed", "raw_sesame")) "Raw files ready for sesame" else "Ready to extract",
+          message = if (identical(input$geo_matrix_source %||% "processed", "raw_sesame")) {
+            "Download complete. Install sesame if needed, then run raw IDAT QC/reprocessing."
+          } else {
+            "Download complete. Extract compressed matrix files before building an analysis table."
+          }
         ))
         geo_download_progress(list(percent = 100, file = "Download complete", detail = paste0(nrow(files), " file(s) available."), folder = cache_dir))
         session$sendCustomMessage("geoProgress", list(percent = 100, file = "Download complete", detail = paste0(nrow(files), " file(s) available.")))
-        if (!any(annotated_files$NeedsDownload[if (isTRUE(input$geo_download_loadable_only)) annotated_files$Loadable else rep(TRUE, nrow(annotated_files))])) {
+        selected_after_download <- geo_download_selection(annotated_files, input$geo_matrix_source %||% "processed")
+        if (!any(selected_after_download$NeedsDownload)) {
           shinyjs::disable("geo_fetch_files")
           if (any(annotated_files$LocalStatus == "downloaded" & annotated_files$Loadable & grepl("\\.gz$", annotated_files$File, ignore.case = TRUE))) {
             shinyjs::enable("geo_extract_files")
@@ -4024,6 +5290,7 @@ server <- function(input, output, session) {
     if (!nzchar(accession)) {
       return(invisible(data.frame()))
     }
+    source <- geo_matrix_source_value()
     cache_dir <- ugplot_geo_cache_dir(accession)
     target_column <- isolate(input$geo_target_column %||% "")
     metadata <- geo_sample_metadata()
@@ -4033,7 +5300,7 @@ server <- function(input, output, session) {
     }
     results <- geo_spearman_raw_results()
     if (!is.data.frame(results) || nrow(results) == 0) {
-      spearman_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, ".csv"))
+      spearman_path <- geo_spearman_cache_paths(cache_dir, target_column, source = source)$raw
       if (nzchar(target_column) && file.exists(spearman_path)) {
         results <- tryCatch(utils::read.csv(spearman_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
         geo_spearman_raw_results(results)
@@ -4042,6 +5309,17 @@ server <- function(input, output, session) {
     if (!is.data.frame(results) || nrow(results) == 0) {
       if (isTRUE(update_stage)) {
         geo_stage(list(step = "Step 6", title = "Run Spearman first", message = "Run the CpG Spearman scan before building the transcript CpG table."))
+      }
+      return(invisible(data.frame()))
+    }
+    results <- geo_filter_spearman_min_samples(results)
+    if (!is.data.frame(results) || nrow(results) == 0) {
+      if (isTRUE(update_stage)) {
+        geo_stage(list(
+          step = "Step 6",
+          title = "No CpGs after sample filter",
+          message = paste0("No CpG passed the minimum per-CpG sample filter of ", geo_spearman_min_samples_pct(), "%. Lower that filter or rerun Spearman after checking the matrix.")
+        ))
       }
       return(invisible(data.frame()))
     }
@@ -4064,7 +5342,7 @@ server <- function(input, output, session) {
     candidates <- ugplot_geo_transcript_candidates(results, annotation_map, threshold)
     geo_transcript_candidates(candidates)
     safe_threshold <- gsub("[^0-9]+", "_", format(threshold, trim = TRUE, scientific = FALSE))
-    candidates_path <- file.path(cache_dir, paste0("ugplot_geo_transcript_candidates_", target_column, "_absrho_", safe_threshold, ".csv"))
+    candidates_path <- file.path(geo_analysis_cache_dir(cache_dir, source), paste0("ugplot_geo_transcript_candidates_", geo_safe_cache_token(target_column), "_absrho_", safe_threshold, ".csv"))
     if (is.data.frame(candidates) && nrow(candidates) > 0) {
       utils::write.csv(candidates, candidates_path, row.names = FALSE)
       geo_status(ugplot_geo_append_log(
@@ -4100,15 +5378,15 @@ server <- function(input, output, session) {
     if (!isTRUE(build_groups)) {
       return(invisible(candidates))
     }
-    group_paths <- geo_transcript_group_cache_paths(cache_dir, target_column, threshold, min_samples_pct)
+    group_paths <- geo_transcript_group_cache_paths(cache_dir, target_column, threshold, min_samples_pct, source = source)
     if (file.exists(group_paths$summary) && file.exists(group_paths$details)) {
       cached_summary <- tryCatch(utils::read.csv(group_paths$summary, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
       cached_details <- tryCatch(utils::read.csv(group_paths$details, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
       if (is.data.frame(cached_summary) && nrow(cached_summary) > 0 && is.data.frame(cached_details)) {
         if (all(c("PrincipalTranscript", "DatasetPath") %in% names(cached_summary))) {
           for (summary_i in seq_len(nrow(cached_summary))) {
-            final_path <- geo_transcript_dataset_cache_path(cache_dir, cached_summary$PrincipalTranscript[[summary_i]], target_column)
-            raw_path <- geo_transcript_raw_dataset_cache_path(cache_dir, cached_summary$PrincipalTranscript[[summary_i]], target_column)
+            final_path <- geo_transcript_dataset_cache_path(cache_dir, cached_summary$PrincipalTranscript[[summary_i]], target_column, source = source)
+            raw_path <- geo_transcript_raw_dataset_cache_path(cache_dir, cached_summary$PrincipalTranscript[[summary_i]], target_column, source = source)
             old_path <- as.character(cached_summary$DatasetPath[[summary_i]])
             if (file.exists(final_path) && !file.exists(raw_path)) {
               legacy_dataset <- tryCatch(utils::read.csv(final_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
@@ -4188,20 +5466,52 @@ server <- function(input, output, session) {
     if (is.data.frame(files)) {
       geo_files(files)
     }
+    qc_path <- ugplot_geo_sesame_qc_path(cache_dir)
+    beta_path <- ugplot_geo_sesame_beta_path(cache_dir)
+    if (file.exists(qc_path)) {
+      qc_report <- tryCatch(utils::read.csv(qc_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+      if (is.data.frame(qc_report) && nrow(qc_report) > 0) {
+        geo_idat_qc_report(qc_report)
+        geo_idat_qc_progress(list(
+          phase = if (file.exists(beta_path)) "loaded from cache" else "qc report only",
+          message = if (file.exists(beta_path)) "Loaded cached sesame beta matrix and QC report." else "Loaded cached sesame QC report, but beta matrix was not found.",
+          processed = nrow(qc_report),
+          total = nrow(qc_report),
+          current = "",
+          beta_path = if (file.exists(beta_path)) beta_path else "",
+          qc_path = qc_path
+        ))
+      }
+    }
 
+    source <- geo_matrix_source_value()
     metadata <- geo_sample_metadata()
     target_column <- isolate(input$geo_target_column %||% "")
     if ((!nzchar(target_column) || !target_column %in% names(metadata)) && is.data.frame(metadata) && nrow(metadata) > 0) {
       candidates <- ugplot_geo_target_candidates(metadata)
       target_column <- if ("age" %in% candidates) "age" else if (length(candidates) > 0) candidates[[1]] else ""
     }
-    spearman_paths <- list.files(cache_dir, pattern = "^ugplot_geo_spearman_.*\\.csv$", full.names = TRUE)
+    analysis_dir <- geo_analysis_cache_dir(cache_dir, source, create = FALSE)
+    spearman_paths <- if (dir.exists(analysis_dir)) {
+      list.files(analysis_dir, pattern = "^ugplot_geo_spearman_.*\\.csv$", full.names = TRUE)
+    } else {
+      character(0)
+    }
+    if (identical(source, "processed") && length(spearman_paths) == 0) {
+      spearman_paths <- list.files(cache_dir, pattern = "^ugplot_geo_spearman_.*\\.csv$", full.names = TRUE)
+    }
     spearman_paths <- spearman_paths[!grepl("_annotated|_by_gene|_by_transcript", basename(spearman_paths))]
     if (!nzchar(target_column) && length(spearman_paths) > 0) {
       spearman_names <- sub("^ugplot_geo_spearman_(.*)\\.csv$", "\\1", basename(spearman_paths))
       target_column <- if ("age" %in% spearman_names) "age" else spearman_names[[1]]
     }
-    spearman_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, ".csv"))
+    spearman_path <- if (nzchar(target_column)) geo_spearman_cache_paths(cache_dir, target_column, source = source, create = FALSE)$raw else ""
+    if (identical(source, "processed") && nzchar(target_column) && !file.exists(spearman_path)) {
+      legacy_spearman_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, ".csv"))
+      if (file.exists(legacy_spearman_path)) {
+        spearman_path <- legacy_spearman_path
+      }
+    }
     if (nzchar(target_column) && file.exists(spearman_path)) {
       spearman_results <- tryCatch(utils::read.csv(spearman_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
       if (is.data.frame(spearman_results) && nrow(spearman_results) > 0) {
@@ -4214,7 +5524,14 @@ server <- function(input, output, session) {
         }
       }
     }
-    candidate_paths <- list.files(cache_dir, pattern = "^ugplot_geo_transcript_candidates_.*\\.csv$", full.names = TRUE)
+    candidate_paths <- if (dir.exists(analysis_dir)) {
+      list.files(analysis_dir, pattern = "^ugplot_geo_transcript_candidates_.*\\.csv$", full.names = TRUE)
+    } else {
+      character(0)
+    }
+    if (identical(source, "processed") && length(candidate_paths) == 0) {
+      candidate_paths <- list.files(cache_dir, pattern = "^ugplot_geo_transcript_candidates_.*\\.csv$", full.names = TRUE)
+    }
     if (length(candidate_paths) > 0 && (!is.data.frame(geo_transcript_candidates()) || nrow(geo_transcript_candidates()) == 0)) {
       target_matches <- if (nzchar(target_column)) grepl(paste0("^ugplot_geo_transcript_candidates_", target_column, "_"), basename(candidate_paths)) else rep(FALSE, length(candidate_paths))
       preferred_paths <- candidate_paths[target_matches]
@@ -4224,7 +5541,14 @@ server <- function(input, output, session) {
         geo_transcript_candidates(transcript_candidates)
       }
     }
-    group_summary_paths <- list.files(cache_dir, pattern = "^ugplot_geo_transcript_ml_groups_.*_summary\\.csv$", full.names = TRUE)
+    group_summary_paths <- if (dir.exists(analysis_dir)) {
+      list.files(analysis_dir, pattern = "^ugplot_geo_transcript_ml_groups_.*_summary\\.csv$", full.names = TRUE)
+    } else {
+      character(0)
+    }
+    if (identical(source, "processed") && length(group_summary_paths) == 0) {
+      group_summary_paths <- list.files(cache_dir, pattern = "^ugplot_geo_transcript_ml_groups_.*_summary\\.csv$", full.names = TRUE)
+    }
     if (length(group_summary_paths) > 0 && (!is.data.frame(geo_transcript_groups()) || nrow(geo_transcript_groups()) == 0)) {
       current_prefix <- if (nzchar(target_column)) {
         paste0("^ugplot_geo_transcript_ml_groups_", target_column, "_", geo_transcript_cache_version(), "_")
@@ -4246,7 +5570,7 @@ server <- function(input, output, session) {
           phase = "needs rebuild",
           message = paste0(
             "Transcript groups exist in an older cache format, but the GEO matrix reader was updated. ",
-            "Click Build/continue transcript CSVs to rebuild clean reader_v2 transcript datasets."
+            "Click Build/continue transcript CSVs to rebuild clean transcript datasets."
           ),
           processed = 0L,
           total = 0L,
@@ -4270,7 +5594,7 @@ server <- function(input, output, session) {
         geo_transcript_group_details(cached_details)
         update_geo_transcript_build_progress(
           phase = "loaded from cache",
-          message = paste0("Loaded reader_v2 transcript ML groups: ", nrow(cached_summary), " group(s)."),
+          message = paste0("Loaded transcript ML groups: ", nrow(cached_summary), " group(s)."),
           processed = nrow(cached_summary),
           total = nrow(cached_summary),
           compatible = nrow(cached_summary),
@@ -4281,10 +5605,42 @@ server <- function(input, output, session) {
       }
       }
     }
+    ml_pipeline_dir <- geo_transcript_ml_dir(cache_dir, source)
+    ml_summary_candidates <- c(
+      file.path(ml_pipeline_dir, "summary.csv"),
+      file.path(ml_pipeline_dir, "screening_summary.csv")
+    )
+    ml_summary_existing <- ml_summary_candidates[file.exists(ml_summary_candidates)]
+    ml_summary_path <- if (length(ml_summary_existing) > 0) ml_summary_existing[[1]] else ""
+    if (file.exists(ml_summary_path)) {
+      ml_summary <- tryCatch(utils::read.csv(ml_summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+      if (is.data.frame(ml_summary) && nrow(ml_summary) > 0) {
+        ml_summary <- geo_ml_rank_summary(ml_summary)
+        geo_transcript_ml_results(ml_summary)
+        update_geo_transcript_ml_progress(
+          phase = "loaded from cache",
+          message = paste0("Loaded cached transcript ML results: ", nrow(ml_summary), " group(s)."),
+          processed = nrow(ml_summary),
+          total = nrow(ml_summary),
+          current = "",
+          cache = ml_summary_path
+        )
+      }
+    } else {
+      geo_transcript_ml_results(data.frame())
+      update_geo_transcript_ml_progress(
+        phase = "idle",
+        message = paste0("No transcript ML result cache found for ", geo_matrix_source_label(source), "."),
+        processed = 0L,
+        total = 0L,
+        current = "",
+        cache = ml_pipeline_dir
+      )
+    }
     geo_stage(list(
       step = "Local cache",
       title = "Loaded GEO cache",
-      message = paste0("Loaded local files and cached results for ", accession, " from ", cache_dir, ".")
+      message = paste0("Loaded local files and ", geo_matrix_source_label(source), " cached results for ", accession, " from ", cache_dir, ".")
     ))
     invisible(TRUE)
   }
@@ -4419,19 +5775,30 @@ server <- function(input, output, session) {
       geo_stage(list(step = "Step 6", title = "Select target", message = "Choose a metadata target column before running Spearman by CpG."))
       return()
     }
-    matrix_files <- ugplot_geo_matrix_files(cache_dir)
+    source <- geo_matrix_source_value()
+    matrix_files <- ugplot_geo_matrix_files(cache_dir, source = source)
     if (length(matrix_files) == 0) {
-      geo_stage(list(step = "Step 6", title = "Missing matrix files", message = "Download and extract matrix files before running CpG correlation."))
+      geo_stage(list(step = "Step 6", title = "Missing matrix files", message = paste0("Prepare ", geo_matrix_source_label(source), " files before running CpG correlation.")))
       return()
     }
 
     max_cpgs <- suppressWarnings(as.integer(input$geo_spearman_max_cpgs %||% 50000))
+    sample_map <- tryCatch(ugplot_geo_matrix_sample_map(matrix_files, metadata), error = function(e) data.frame())
+    target <- suppressWarnings(as.numeric(as.character(metadata[[target_column]])))
+    matched_numeric_samples <- if (is.data.frame(sample_map) && nrow(sample_map) > 0) {
+      sum(!is.na(target[sample_map$MetadataRow]))
+    } else {
+      0L
+    }
+    min_samples_pct <- geo_spearman_min_samples_pct()
+    min_matched_samples <- if (matched_numeric_samples > 0) ceiling(matched_numeric_samples * min_samples_pct / 100) else 3L
+    min_matched_samples <- max(3L, min_matched_samples)
     geo_spearman_results(data.frame())
     geo_spearman_raw_results(data.frame())
     geo_transcript_candidates(data.frame())
     geo_status(ugplot_geo_append_log(
       geo_status(),
-      paste0("Running Spearman scan for target '", target_column, "' across ", length(matrix_files), " matrix file(s).")
+      paste0("Running ", geo_matrix_source_label(source), " Spearman scan for target '", target_column, "' across ", length(matrix_files), " matrix file(s).")
     ))
     geo_stage(list(
       step = "Step 6",
@@ -4446,6 +5813,7 @@ server <- function(input, output, session) {
           metadata = metadata,
           target_column = target_column,
           max_cpgs = max_cpgs,
+          min_matched_samples = min_matched_samples,
           progress_callback = function(scanned) {
             scanned_last <<- scanned
             if (max_cpgs > 0) {
@@ -4458,7 +5826,9 @@ server <- function(input, output, session) {
       })
       scanned <- attr(results, "scanned_cpgs") %||% scanned_last
       matched_samples <- attr(results, "matched_samples") %||% NA_integer_
-      results_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, ".csv"))
+      min_used_samples <- attr(results, "min_matched_samples") %||% min_matched_samples
+      spearman_paths <- geo_spearman_cache_paths(cache_dir, target_column, source = source)
+      results_path <- spearman_paths$raw
       utils::write.csv(results, results_path, row.names = FALSE)
       geo_spearman_raw_results(results)
 
@@ -4477,18 +5847,18 @@ server <- function(input, output, session) {
       display_results <- results
       if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
         annotated_results <- ugplot_geo_join_spearman_annotation(results, annotation_map)
-        annotated_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, "_annotated.csv"))
+        annotated_path <- spearman_paths$annotated
         utils::write.csv(annotated_results, annotated_path, row.names = FALSE)
         display_results <- annotated_results
 
         transcript_summary <- ugplot_geo_group_spearman_annotation(annotated_results, "Transcript")
         if (is.data.frame(transcript_summary) && nrow(transcript_summary) > 0) {
-          transcript_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, "_by_transcript.csv"))
+          transcript_path <- spearman_paths$by_transcript
           utils::write.csv(transcript_summary, transcript_path, row.names = FALSE)
         }
         gene_summary <- ugplot_geo_group_spearman_annotation(annotated_results, "Gene")
         if (is.data.frame(gene_summary) && nrow(gene_summary) > 0) {
-          gene_path <- file.path(cache_dir, paste0("ugplot_geo_spearman_", target_column, "_by_gene.csv"))
+          gene_path <- spearman_paths$by_gene
           utils::write.csv(gene_summary, gene_path, row.names = FALSE)
         }
       }
@@ -4501,14 +5871,15 @@ server <- function(input, output, session) {
         geo_status(),
         paste0(
           "Spearman scan complete: ", scanned, " CpGs scanned, ", matched_samples,
-          " matched samples. Saved files: ", paste(saved_files, collapse = "; "), "."
+          " matched samples, minimum per CpG ", min_used_samples,
+          ". Saved files: ", paste(saved_files, collapse = "; "), "."
         )
       ))
       geo_stage(list(
         step = "Step 6",
         title = "CpG Spearman scan complete",
         message = paste0(
-          "Saved all ", nrow(results), " raw CpG results for target '", target_column, "'.",
+          "Saved all ", nrow(results), " raw CpG results for ", geo_matrix_source_label(source), " target '", target_column, "'.",
           if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
             " Annotated many-to-many CpG-gene/transcript results and grouped summaries were also saved."
           } else {
@@ -4560,6 +5931,466 @@ server <- function(input, output, session) {
     )
   })
 
+  observeEvent(input$geo_run_transcript_ml, {
+    accession <- trimws(input$geo_accession %||% "")
+    if (!nzchar(accession)) {
+      geo_stage(list(step = "Step 8", title = "Missing accession", message = "Enter and inspect a GEO accession first."))
+      return()
+    }
+    source <- geo_matrix_source_value()
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    groups <- geo_transcript_groups()
+    if (!is.data.frame(groups) || nrow(groups) == 0) {
+      geo_stage(list(step = "Step 8", title = "No transcript groups", message = "Build transcript ML datasets before running transcript ML."))
+      return()
+    }
+    min_absrho <- geo_ml_safe_num(input$geo_ml_min_absrho %||% 0.7, 0.7, 0, 1)
+    eligible <- groups[suppressWarnings(as.numeric(groups$TriggerMaxAbsRho)) >= min_absrho, , drop = FALSE]
+    eligible_tiebreak <- if ("PrincipalTranscript" %in% names(eligible)) eligible$PrincipalTranscript else eligible$GroupID
+    eligible <- eligible[order(-suppressWarnings(as.numeric(eligible$TriggerMaxAbsRho)), eligible_tiebreak), , drop = FALSE]
+    pipeline_dir <- geo_transcript_ml_dir(cache_dir, source)
+    summary_path <- file.path(pipeline_dir, "screening_summary.csv")
+    existing_summary <- if (file.exists(summary_path)) {
+      tryCatch(utils::read.csv(summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    } else {
+      data.frame()
+    }
+    processed_groups <- if (is.data.frame(existing_summary) && "GroupID" %in% names(existing_summary)) {
+      unique(as.character(existing_summary$GroupID))
+    } else {
+      character(0)
+    }
+    rank_limit <- suppressWarnings(as.integer(input$geo_ml_rank_limit %||% NA_integer_))
+    if (is.finite(rank_limit) && rank_limit > 0 && nrow(eligible) > rank_limit) {
+      eligible <- utils::head(eligible, rank_limit)
+    }
+    if (!is.data.frame(eligible) || nrow(eligible) == 0) {
+      geo_stage(list(step = "Step 8", title = "No eligible transcripts", message = paste0("No transcript group has trigger |rho| >= ", min_absrho, ".")))
+      return()
+    }
+    selected_processed <- intersect(processed_groups, as.character(eligible$GroupID))
+    if (length(selected_processed) == nrow(eligible)) {
+      current_summary <- geo_ml_rank_summary(existing_summary)
+      geo_transcript_ml_results(current_summary)
+      update_geo_transcript_ml_progress(
+        phase = "already complete",
+        message = paste0("The selected ", nrow(eligible), " transcript group(s) already have screening results. Nothing was rerun."),
+        processed = nrow(eligible),
+        total = nrow(eligible),
+        current = "",
+        cache = summary_path
+      )
+      geo_stage(list(
+        step = "Step 8",
+        title = "Transcript ML screening already complete",
+        message = paste0("The selected ", nrow(eligible), " transcript group(s) already exist in ", summary_path, ".")
+      ))
+      return()
+    }
+    models <- unique(as.character(ml_available))
+    models <- models[nzchar(models)]
+    if (length(models) == 0) {
+      geo_stage(list(step = "Step 8", title = "No ML models selected", message = "Select at least one installed caret model for transcript ML."))
+      return()
+    }
+    settings <- list(
+      screen_seeds = as.integer(geo_ml_safe_num(input$geo_ml_screen_seeds %||% 3, 3, 1)),
+      timeout = geo_ml_safe_num(input$geo_ml_timeout %||% 1200, 1200, 1)
+    )
+    update_geo_transcript_ml_progress(
+      phase = "running",
+      message = paste0("Screening models for ", nrow(eligible), " eligible group(s) on ", geo_matrix_source_label(source), "."),
+      processed = length(intersect(processed_groups, eligible$GroupID)),
+      total = nrow(eligible),
+      current = "",
+      cache = pipeline_dir
+    )
+    geo_stage(list(step = "Step 8", title = "Screening transcript ML models", message = paste0("Screening results are saved under ", pipeline_dir, " and can resume after interruption.")))
+    tryCatch({
+      withProgress(message = "Screening transcript ML models", value = 0, {
+        summaries <- existing_summary
+        for (group_i in seq_len(nrow(eligible))) {
+          group <- eligible[group_i, , drop = FALSE]
+          group_id <- as.character(group$GroupID[[1]])
+          if (group_id %in% processed_groups) {
+            next
+          }
+          update_geo_transcript_ml_progress(
+            phase = "running",
+            message = paste0("Screening group ", group_i, " / ", nrow(eligible), ": ", group_id, "."),
+            processed = length(intersect(processed_groups, eligible$GroupID)),
+            total = nrow(eligible),
+            current = paste0(group_id, " / ", group$PrincipalTranscript[[1]]),
+            cache = geo_transcript_ml_group_dir(cache_dir, source, group_id)
+          )
+          shiny::setProgress(value = (group_i - 1) / nrow(eligible), detail = paste0("Group ", group_id))
+          summary_row <- geo_ml_run_group_screen(
+            group,
+            source,
+            models,
+            settings,
+            progress_callback = function(message) {
+              update_geo_transcript_ml_progress(
+                phase = "running",
+                message = message,
+                processed = length(intersect(processed_groups, eligible$GroupID)),
+                total = nrow(eligible),
+                current = paste0(group_id, " / ", group$PrincipalTranscript[[1]]),
+                cache = geo_transcript_ml_group_dir(cache_dir, source, group_id)
+              )
+              shiny::setProgress(value = (group_i - 1) / nrow(eligible), detail = message)
+            }
+          )
+          summaries <- if (is.data.frame(summaries) && nrow(summaries) > 0) {
+            summaries <- summaries[as.character(summaries$GroupID) != group_id, , drop = FALSE]
+            rbind(summaries, summary_row)
+          } else {
+            summary_row
+          }
+          summaries <- geo_ml_rank_summary(summaries)
+          utils::write.csv(summaries, summary_path, row.names = FALSE)
+          geo_transcript_ml_results(summaries)
+          processed_groups <- union(processed_groups, group_id)
+          update_geo_transcript_ml_progress(
+            processed = length(intersect(processed_groups, eligible$GroupID)),
+            total = nrow(eligible),
+            message = paste0("Finished ", group_id, ".")
+          )
+        }
+      })
+      final_summary <- if (file.exists(summary_path)) {
+        tryCatch(utils::read.csv(summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+      } else {
+        data.frame()
+      }
+      final_summary <- geo_ml_rank_summary(final_summary)
+      if (is.data.frame(final_summary) && nrow(final_summary) > 0) {
+        utils::write.csv(final_summary, summary_path, row.names = FALSE)
+      }
+      geo_transcript_ml_results(final_summary)
+      update_geo_transcript_ml_progress(
+        phase = "complete",
+        message = paste0("Transcript ML model screening complete for ", nrow(final_summary), " group(s)."),
+        processed = nrow(final_summary),
+        total = nrow(eligible),
+        current = "",
+        cache = summary_path
+      )
+      geo_stage(list(step = "Step 8", title = "Transcript ML screening complete", message = paste0("Saved screening summary: ", summary_path, ". Continue with Step 9 for stability seeds.")))
+    }, error = function(e) {
+      update_geo_transcript_ml_progress(phase = "failed", message = conditionMessage(e), current = "")
+      geo_stage(list(step = "Step 8", title = "Transcript ML screening failed", message = conditionMessage(e)))
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Transcript ML screening failed: ", conditionMessage(e))))
+    })
+  })
+
+  observeEvent(input$geo_run_transcript_ml_stability, {
+    accession <- trimws(input$geo_accession %||% "")
+    if (!nzchar(accession)) {
+      geo_stage(list(step = "Step 9", title = "Missing accession", message = "Enter and inspect a GEO accession first."))
+      return()
+    }
+    source <- geo_matrix_source_value()
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    groups <- geo_transcript_groups()
+    if (!is.data.frame(groups) || nrow(groups) == 0) {
+      geo_stage(list(step = "Step 9", title = "No transcript groups", message = "Build transcript ML datasets before running stability seeds."))
+      return()
+    }
+    min_absrho <- geo_ml_safe_num(input$geo_ml_min_absrho %||% 0.7, 0.7, 0, 1)
+    eligible <- groups[suppressWarnings(as.numeric(groups$TriggerMaxAbsRho)) >= min_absrho, , drop = FALSE]
+    if (!is.data.frame(eligible) || nrow(eligible) == 0) {
+      geo_stage(list(step = "Step 9", title = "No eligible transcripts", message = paste0("No transcript group has trigger |rho| >= ", min_absrho, ".")))
+      return()
+    }
+    settings <- list(
+      screen_seeds = as.integer(geo_ml_safe_num(input$geo_ml_screen_seeds %||% 3, 3, 1)),
+      min_stability_seeds = as.integer(geo_ml_safe_num(input$geo_ml_min_stability_seeds %||% 30, 30, 2)),
+      max_stability_seeds = as.integer(geo_ml_safe_num(input$geo_ml_max_stability_seeds %||% 4000, 4000, 2)),
+      window = as.integer(geo_ml_safe_num(input$geo_ml_stability_window %||% 30, 30, 2)),
+      tolerance = geo_ml_safe_num(input$geo_ml_stability_tolerance %||% 0.01, 0.01, 0),
+      timeout = geo_ml_safe_num(input$geo_ml_timeout %||% 1200, 1200, 1)
+    )
+    settings$max_stability_seeds <- max(settings$max_stability_seeds, settings$min_stability_seeds)
+    settings$window <- min(settings$window, settings$max_stability_seeds)
+    pipeline_dir <- geo_transcript_ml_dir(cache_dir, source)
+    summary_path <- file.path(pipeline_dir, "summary.csv")
+    existing_summary <- if (file.exists(summary_path)) {
+      tryCatch(utils::read.csv(summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    } else {
+      data.frame()
+    }
+    processed_groups <- if (is.data.frame(existing_summary) && "GroupID" %in% names(existing_summary)) {
+      unique(as.character(existing_summary$GroupID))
+    } else {
+      character(0)
+    }
+    update_geo_transcript_ml_progress(
+      phase = "running",
+      message = paste0("Running stability seeds for ", nrow(eligible), " eligible group(s) on ", geo_matrix_source_label(source), "."),
+      processed = length(intersect(processed_groups, eligible$GroupID)),
+      total = nrow(eligible),
+      current = "",
+      cache = pipeline_dir
+    )
+    geo_stage(list(step = "Step 9", title = "Running stability seeds", message = paste0("Final results are saved under ", pipeline_dir, " and can resume after interruption.")))
+    tryCatch({
+      withProgress(message = "Running stability seeds", value = 0, {
+        summaries <- existing_summary
+        for (group_i in seq_len(nrow(eligible))) {
+          group <- eligible[group_i, , drop = FALSE]
+          group_id <- as.character(group$GroupID[[1]])
+          if (group_id %in% processed_groups) {
+            next
+          }
+          update_geo_transcript_ml_progress(
+            phase = "running",
+            message = paste0("Running stability seeds for group ", group_i, " / ", nrow(eligible), ": ", group_id, "."),
+            processed = length(intersect(processed_groups, eligible$GroupID)),
+            total = nrow(eligible),
+            current = paste0(group_id, " / ", group$PrincipalTranscript[[1]]),
+            cache = geo_transcript_ml_group_dir(cache_dir, source, group_id)
+          )
+          shiny::setProgress(value = (group_i - 1) / nrow(eligible), detail = paste0("Group ", group_id))
+          summary_row <- geo_ml_run_group_stability(
+            group,
+            source,
+            settings,
+            progress_callback = function(message) {
+              update_geo_transcript_ml_progress(
+                phase = "running",
+                message = message,
+                processed = length(intersect(processed_groups, eligible$GroupID)),
+                total = nrow(eligible),
+                current = paste0(group_id, " / ", group$PrincipalTranscript[[1]]),
+                cache = geo_transcript_ml_group_dir(cache_dir, source, group_id)
+              )
+              shiny::setProgress(value = (group_i - 1) / nrow(eligible), detail = message)
+            }
+          )
+          summaries <- if (is.data.frame(summaries) && nrow(summaries) > 0) {
+            summaries <- summaries[as.character(summaries$GroupID) != group_id, , drop = FALSE]
+            rbind(summaries, summary_row)
+          } else {
+            summary_row
+          }
+          summaries <- geo_ml_rank_summary(summaries)
+          utils::write.csv(summaries, summary_path, row.names = FALSE)
+          geo_transcript_ml_results(summaries)
+          processed_groups <- union(processed_groups, group_id)
+          update_geo_transcript_ml_progress(
+            processed = length(intersect(processed_groups, eligible$GroupID)),
+            total = nrow(eligible),
+            message = paste0("Finished stability seeds for ", group_id, ".")
+          )
+        }
+      })
+      final_summary <- if (file.exists(summary_path)) {
+        tryCatch(utils::read.csv(summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+      } else {
+        data.frame()
+      }
+      final_summary <- geo_ml_rank_summary(final_summary)
+      if (is.data.frame(final_summary) && nrow(final_summary) > 0) {
+        utils::write.csv(final_summary, summary_path, row.names = FALSE)
+      }
+      geo_transcript_ml_results(final_summary)
+      update_geo_transcript_ml_progress(
+        phase = "complete",
+        message = paste0("Transcript ML stability complete for ", nrow(final_summary), " group(s)."),
+        processed = nrow(final_summary),
+        total = nrow(eligible),
+        current = "",
+        cache = summary_path
+      )
+      geo_stage(list(step = "Step 9", title = "Transcript ML stability complete", message = paste0("Saved final summary: ", summary_path)))
+    }, error = function(e) {
+      update_geo_transcript_ml_progress(phase = "failed", message = conditionMessage(e), current = "")
+      geo_stage(list(step = "Step 9", title = "Transcript ML stability failed", message = conditionMessage(e)))
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Transcript ML stability failed: ", conditionMessage(e))))
+    })
+  })
+
+  observeEvent(input$geo_install_sesame, {
+    if (requireNamespace("sesame", quietly = TRUE)) {
+      geo_stage(list(step = "Step 5", title = "Sesame already installed", message = "Package 'sesame' is already available."))
+      return()
+    }
+    geo_stage(list(
+      step = "Step 5",
+      title = "Installing sesame",
+      message = "Installing Bioconductor package 'sesame'. This can take several minutes."
+    ))
+    geo_idat_qc_progress(list(
+      phase = "installing",
+      message = "Installing sesame and dependencies.",
+      processed = 0L,
+      total = 1L,
+      current = "sesame",
+      beta_path = "",
+      qc_path = ""
+    ))
+    geo_status(ugplot_geo_append_log(geo_status(), "Installing sesame for raw IDAT reprocessing."))
+    tryCatch({
+      withProgress(message = "Installing sesame", value = 0, {
+        if (!requireNamespace("BiocManager", quietly = TRUE)) {
+          shiny::setProgress(0.2, detail = "Installing BiocManager")
+          utils::install.packages("BiocManager", dependencies = TRUE)
+        }
+        shiny::setProgress(0.45, detail = "Installing sesame")
+        BiocManager::install("sesame", ask = FALSE, update = FALSE)
+        shiny::setProgress(1, detail = "sesame installed")
+      })
+      geo_idat_qc_progress(list(
+        phase = "idle",
+        message = "Sesame installed. Raw IDAT QC can now run when Red/Grn pairs are local.",
+        processed = 0L,
+        total = 0L,
+        current = "",
+        beta_path = "",
+        qc_path = ""
+      ))
+      geo_stage(list(
+        step = "Step 5",
+        title = "Sesame installed",
+        message = "Package 'sesame' is available. Download raw IDAT archives/files, then run sesame IDAT QC."
+      ))
+      geo_status(ugplot_geo_append_log(geo_status(), "Sesame installation complete."))
+    }, error = function(e) {
+      geo_idat_qc_progress(list(
+        phase = "install failed",
+        message = conditionMessage(e),
+        processed = 0L,
+        total = 1L,
+        current = "sesame",
+        beta_path = "",
+        qc_path = ""
+      ))
+      geo_stage(list(step = "Step 5", title = "Sesame install failed", message = conditionMessage(e)))
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Sesame installation failed: ", conditionMessage(e))))
+    })
+  })
+
+  observeEvent(input$geo_run_sesame_idat, {
+    accession <- trimws(input$geo_accession %||% "")
+    if (!nzchar(accession)) {
+      geo_stage(list(step = "Step 5", title = "Missing accession", message = "Enter and inspect a GEO accession before reprocessing raw IDATs."))
+      return()
+    }
+    cache_dir <- ugplot_geo_cache_dir(accession)
+    if (!dir.exists(cache_dir)) {
+      geo_stage(list(step = "Step 5", title = "No GEO cache", message = "Download raw IDAT files or archives before running sesame."))
+      return()
+    }
+    if (!requireNamespace("sesame", quietly = TRUE)) {
+      geo_stage(list(
+        step = "Step 5",
+        title = "Sesame is not installed",
+        message = "Install the Bioconductor package 'sesame' before raw Red/Grn IDAT reprocessing."
+      ))
+      geo_idat_qc_progress(list(
+        phase = "blocked",
+        message = "Package 'sesame' is not installed.",
+        processed = 0L,
+        total = 0L,
+        current = "",
+        beta_path = "",
+        qc_path = ""
+      ))
+      return()
+    }
+    detection_p <- suppressWarnings(as.numeric(input$geo_idat_detection_p %||% 0.01))
+    max_failed <- suppressWarnings(as.numeric(input$geo_idat_max_failed_fraction %||% 0.05))
+    prep_code <- trimws(input$geo_idat_sesame_prep %||% "QCDPB")
+    if (!nzchar(prep_code)) {
+      prep_code <- "QCDPB"
+    }
+    geo_stage(list(
+      step = "Step 5",
+      title = "Running sesame IDAT QC",
+      message = paste0("Reprocessing Red/Grn IDAT pairs with prep ", prep_code, ", detection p <= ", detection_p, ".")
+    ))
+    geo_status(ugplot_geo_append_log(
+      geo_status(),
+      paste0("Starting sesame IDAT reprocessing for ", accession, " with prep ", prep_code, ".")
+    ))
+    geo_idat_qc_progress(list(
+      phase = "running",
+      message = "Preparing raw archives and IDAT pairs.",
+      processed = 0L,
+      total = 0L,
+      current = "",
+      beta_path = ugplot_geo_sesame_beta_path(cache_dir),
+      qc_path = ugplot_geo_sesame_qc_path(cache_dir)
+    ))
+    tryCatch({
+      result <- withProgress(message = "Reprocessing raw IDATs with sesame", value = 0, {
+        ugplot_geo_reprocess_idats_sesame(
+          cache_dir = cache_dir,
+          detection_p = detection_p,
+          max_failed_probe_fraction = max_failed,
+          prep = prep_code,
+          progress_callback = function(done, total, detail) {
+            value <- if (is.finite(total) && total > 0) min(1, max(0, done / total)) else 0
+            shiny::setProgress(value = value, detail = detail)
+            geo_idat_qc_progress(list(
+              phase = "running",
+              message = detail,
+              processed = floor(done),
+              total = total,
+              current = detail,
+              beta_path = ugplot_geo_sesame_beta_path(cache_dir),
+              qc_path = ugplot_geo_sesame_qc_path(cache_dir)
+            ))
+          }
+        )
+      })
+      qc_report <- result$qc
+      geo_idat_qc_report(qc_report)
+      files <- ugplot_geo_list_candidate_files(accession, cache_dir)
+      geo_files(files)
+      geo_idat_qc_progress(list(
+        phase = "complete",
+        message = paste0("Sesame reprocessing complete. Passed samples: ", sum(as.logical(qc_report$PassedQC), na.rm = TRUE), " / ", nrow(qc_report), "."),
+        processed = nrow(qc_report),
+        total = nrow(qc_report),
+        current = "",
+        beta_path = result$beta_path,
+        qc_path = result$qc_path
+      ))
+      geo_stage(list(
+        step = "Step 5",
+        title = "Sesame IDAT QC complete",
+        message = paste0("Saved beta matrix: ", result$beta_path, ". QC report: ", result$qc_path, ". Re-run Spearman to use the reprocessed matrix.")
+      ))
+      geo_status(ugplot_geo_append_log(
+        geo_status(),
+        paste0("Sesame IDAT reprocessing complete. Beta matrix: ", result$beta_path, "; QC: ", result$qc_path, ".")
+      ))
+    }, error = function(e) {
+      qc_path <- ugplot_geo_sesame_qc_path(cache_dir)
+      qc_n <- 0L
+      if (file.exists(qc_path)) {
+        qc_report <- tryCatch(utils::read.csv(qc_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(err) data.frame())
+        if (is.data.frame(qc_report) && nrow(qc_report) > 0) {
+          geo_idat_qc_report(qc_report)
+          qc_n <- nrow(qc_report)
+        }
+      }
+      geo_idat_qc_progress(list(
+        phase = "failed",
+        message = conditionMessage(e),
+        processed = qc_n,
+        total = qc_n,
+        current = "",
+        beta_path = if (file.exists(ugplot_geo_sesame_beta_path(cache_dir))) ugplot_geo_sesame_beta_path(cache_dir) else "",
+        qc_path = if (file.exists(qc_path)) qc_path else ""
+      ))
+      geo_stage(list(step = "Step 5", title = "Sesame IDAT QC failed", message = conditionMessage(e)))
+      geo_status(ugplot_geo_append_log(geo_status(), paste0("Sesame IDAT reprocessing failed: ", conditionMessage(e))))
+    })
+  })
+
   observeEvent(input$geo_transcript_absrho_threshold, {
     if (is.data.frame(geo_spearman_raw_results()) && nrow(geo_spearman_raw_results()) > 0) {
       build_geo_transcript_candidates(update_stage = TRUE)
@@ -4584,9 +6415,10 @@ server <- function(input, output, session) {
       return(invisible(FALSE))
     }
     cache_dir <- ugplot_geo_cache_dir(accession)
-    matrix_files <- ugplot_geo_matrix_files(cache_dir)
+    source <- geo_matrix_source_value()
+    matrix_files <- ugplot_geo_matrix_files(cache_dir, source = source)
     if (length(matrix_files) == 0) {
-      geo_stage(list(step = "Step 6", title = "No extracted matrix files", message = "Extract downloaded GEO matrix files before building a transcript dataset."))
+      geo_stage(list(step = "Step 6", title = "No matrix files", message = paste0("Prepare ", geo_matrix_source_label(source), " files before building a transcript dataset.")))
       return(invisible(FALSE))
     }
     transcript_rows <- candidates[as.character(candidates$Transcript) == selected_transcript, , drop = FALSE]
@@ -4618,9 +6450,7 @@ server <- function(input, output, session) {
     if (!is.data.frame(transcript_dataset) || nrow(transcript_dataset) == 0) {
       return(invisible(FALSE))
     }
-    safe_transcript <- gsub("[^A-Za-z0-9_.-]+", "_", selected_transcript)
-    safe_target <- gsub("[^A-Za-z0-9_.-]+", "_", target_column)
-    dataset_path <- file.path(cache_dir, paste0("ugplot_geo_transcript_dataset_", safe_transcript, "_target_", safe_target, ".csv"))
+    dataset_path <- geo_transcript_dataset_cache_path(cache_dir, selected_transcript, target_column, source = source)
     utils::write.csv(transcript_dataset, dataset_path, row.names = FALSE)
     dff <<- as.data.frame(transcript_dataset, stringsAsFactors = FALSE, check.names = FALSE)
     original_dataset_filename(paste0(accession, "_", selected_transcript, "_", target_column, "_dataset"))
