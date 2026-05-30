@@ -54,6 +54,10 @@ test_that("sesame beta matrix GSM columns match GEO sample metadata", {
   expect_equal(sample_map$SampleID, c("GSM1", "GSM2"))
 })
 
+test_that("sesame IDAT QC defaults to sesame pOOBAH cutoff", {
+  expect_equal(formals(ugplot_geo_reprocess_idats_sesame)$detection_p, 0.05)
+})
+
 test_that("Spearman scan excludes CpGs below minimum matched samples", {
   cache_dir <- tempfile("geo_spearman_min_")
   dir.create(cache_dir)

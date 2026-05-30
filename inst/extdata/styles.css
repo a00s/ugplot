@@ -128,9 +128,28 @@
   white-space: pre-line !important;
   overflow-wrap: anywhere;
   font-family: Menlo, Consolas, "Liberation Mono", monospace;
-  font-size: 14px;
-  line-height: 1.45;
-  color: #2f3337;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #1f2937;
+  background: #f8fafc;
+  border-left: 4px solid #2563eb;
+  padding: 8px 10px;
+  margin-top: 6px;
+  border-radius: 4px;
+}
+
+.shiny-notification .progress-message {
+  font-weight: 700;
+  color: #111827;
+}
+
+.shiny-notification .progress {
+  height: 10px;
+  margin-bottom: 8px;
+}
+
+.shiny-notification .progress-bar {
+  background-color: #2563eb;
 }
 
 .scramble-controls {
@@ -630,6 +649,18 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
   margin-bottom: 18px;
 }
 
+.geo-run-target-panel {
+  border: 1px solid #e3e8ef;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  background: #f8fafc;
+}
+
+.geo-run-target-panel .form-group {
+  margin-bottom: 8px;
+}
+
 .geo-step {
   border: 1px solid #e3e8ef;
   border-radius: 8px;
@@ -779,6 +810,95 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
 
 .geo-step-table {
   margin-top: 12px;
+}
+
+.geo-ml-live-progress {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  z-index: 30000;
+  width: min(380px, calc(100vw - 36px));
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  color: #1f2937;
+  display: none;
+}
+
+.shinybusy-overlay {
+  background-color: rgba(255, 255, 255, 0.35) !important;
+  pointer-events: none;
+}
+
+.shinybusy {
+  pointer-events: none;
+}
+
+.geo-ml-live-progress.active {
+  display: block;
+}
+
+.geo-ml-live-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.geo-ml-live-bar-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.geo-ml-live-bar {
+  height: 100%;
+  width: 0;
+  background: #2563eb;
+  transition: width 180ms ease;
+}
+
+.geo-ml-live-task,
+.geo-ml-live-message,
+.geo-ml-live-cache {
+  margin: 0 0 5px 0;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.geo-ml-live-task {
+  font-weight: 600;
+}
+
+.geo-ml-live-message,
+.geo-ml-live-cache {
+  color: #475569;
+}
+
+.geo-ml-live-spark {
+  display: block;
+  width: 100%;
+  height: 58px;
+  margin: 6px 0;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+}
+
+.geo-ml-live-stability {
+  margin: 0;
+  padding: 7px;
+  max-height: 110px;
+  overflow: auto;
+  border-radius: 4px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 11px;
+  white-space: pre-wrap;
 }
 
 .geo-table-section > summary {

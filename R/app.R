@@ -218,6 +218,7 @@ source_local_helper("remote_client.R", "ugplot_remote_create_job", always_reload
 source_local_helper("remote_servers.R", "ugplot_read_remote_servers", always_reload = TRUE)
 source_local_helper("geo_import.R", "ugplot_geo_cache_dir", always_reload = TRUE)
 source_local_helper("ml_runner.R", "ugplot_run_ml_job", always_reload = TRUE)
+source_local_helper("geo_pipeline_runner.R", "ugplot_run_geo_pipeline_job", always_reload = TRUE)
 
 ugplot_cleanup_global_session_objects <- function() {
   objects_to_remove <- c(
@@ -481,7 +482,38 @@ ui <- fluidPage(
       $('#geoProgressFile').text(x.file || 'Waiting');
       $('#geoProgressDetail').text(x.detail || '');
     });
+
+    Shiny.addCustomMessageHandler('geoMlProgress', function(x) {
+      var pct = Math.max(0, Math.min(100, Number(x.percent || 0)));
+      var panel = $('#geoMlLiveProgress');
+      panel.toggleClass('active', x.active !== false);
+      $('#geoMlLiveTitle').text(x.title || 'Transcript ML progress');
+      $('#geoMlLiveBar').css('width', pct + '%').attr('aria-valuenow', pct);
+      $('#geoMlLivePct').text(Math.round(pct) + '%');
+      $('#geoMlLiveTask').text(x.task || '');
+      $('#geoMlLiveMessage').text(x.message || '');
+      $('#geoMlLiveStability').text(x.stability || '');
+      $('#geoMlLiveCache').text(x.cache || '');
+      var values = Array.isArray(x.values) ? x.values.map(Number).filter(Number.isFinite) : [];
+      var svg = $('#geoMlLiveSpark');
+      svg.empty();
+      if (values.length > 1) {
+        var width = 260, height = 58, pad = 4;
+        var min = Math.min.apply(null, values);
+        var max = Math.max.apply(null, values);
+        var span = max - min || 1;
+        var points = values.map(function(v, i) {
+          var px = pad + i * ((width - 2 * pad) / Math.max(1, values.length - 1));
+          var py = height - pad - ((v - min) / span) * (height - 2 * pad);
+          return px.toFixed(1) + ',' + py.toFixed(1);
+        }).join(' ');
+        svg.attr('viewBox', '0 0 ' + width + ' ' + height);
+        svg.append(document.createElementNS('http://www.w3.org/2000/svg', 'polyline'));
+        svg.find('polyline').attr({ points: points, fill: 'none', stroke: '#2563eb', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
+      }
+    });
   "),
+  uiOutput("geo_ml_live_progress_ui"),
   includeCSS(path_to_css()),
   add_busy_spinner(spin = "fading-circle"),
   useShinyjs(),
@@ -1821,7 +1853,6 @@ server <- function(input, output, session) {
   hideTab(inputId = "tabs", target = "MODEL ANALYSIS")
   hideTab(inputId = "tabs", target = "DEEP LEARNING")
   hideTab(inputId = "tabs", target = "GRAPH MODELS")
-  hideTab(inputId = "tabs", target = "CONFIGURATIONS")
 
   disable("merge_all_columns")
   disable("merge_all_rows")
@@ -1889,6 +1920,19 @@ server <- function(input, output, session) {
     server
   }
 
+  selected_geo_remote_server <- function() {
+    servers <- remote_servers()
+    if (!is.data.frame(servers) || nrow(servers) == 0) {
+      servers <- ugplot_default_remote_servers()
+    }
+    selected_name <- input$geo_remote_server_name %||% input$remote_server_name %||% servers$name[[1]]
+    server <- servers[servers$name == selected_name, , drop = FALSE]
+    if (nrow(server) == 0) {
+      server <- servers[1, , drop = FALSE]
+    }
+    server
+  }
+
   selected_remote_cpu_limit <- function(server = selected_remote_server()) {
     cpu_limit <- suppressWarnings(as.integer(server$cpu_limit[[1]] %||% configured_cpu_limit()))
     if (is.na(cpu_limit) || cpu_limit < 1L) {
@@ -1911,8 +1955,23 @@ server <- function(input, output, session) {
     updateSelectInput(session, "remote_server_name", choices = choices, selected = selected)
   }
 
+  refresh_geo_remote_server_inputs <- function(selected = NULL) {
+    servers <- remote_servers()
+    if (!is.data.frame(servers) || nrow(servers) == 0) {
+      servers <- ugplot_default_remote_servers()
+      remote_servers(servers)
+    }
+    choices <- stats::setNames(servers$name, servers$name)
+    selected <- selected %||% isolate(input$geo_remote_server_name) %||% isolate(input$remote_server_name) %||% servers$name[[1]]
+    if (!(selected %in% servers$name)) {
+      selected <- servers$name[[1]]
+    }
+    updateSelectInput(session, "geo_remote_server_name", choices = choices, selected = selected)
+  }
+
   observe({
     refresh_remote_server_inputs()
+    refresh_geo_remote_server_inputs()
   })
 
   load_selected_ml_list <- function() {
@@ -1935,6 +1994,26 @@ server <- function(input, output, session) {
 
   output$ml_model_source_status <- renderText({
     ml_model_source_status_text()
+  })
+
+  output$geo_remote_execution_status <- renderUI({
+    run_target <- input$geo_run_target %||% "local"
+    if (!identical(run_target, "remote")) {
+      return(tags$p(class = "geo-step-note", "GEO processing will run in this R session."))
+    }
+    server <- selected_geo_remote_server()
+    server_url <- as.character(server$url[[1]] %||% "")
+    server_name <- as.character(server$name[[1]] %||% "")
+    tags$div(
+      tags$p(class = "geo-step-note",
+        paste0("Remote GEO server selected: ", server_name),
+        if (nzchar(server_url)) paste0(" (", server_url, ").") else "."
+      ),
+      tags$p(class = "geo-step-note",
+        "Start a remote GEO pipeline to keep downloads, matrix preparation, CpG scan, and saved outputs on the selected server."
+      ),
+      tags$p(class = "geo-step-note", htmltools::htmlEscape(geo_remote_pipeline_status()))
+    )
   })
 
   observeEvent(input$ml_run_target, {
@@ -2438,6 +2517,7 @@ server <- function(input, output, session) {
     cache = ""
   ))
   geo_transcript_ml_results <- reactiveVal(data.frame())
+  geo_transcript_ml_focus_group <- reactiveVal("")
   geo_idat_qc_report <- reactiveVal(data.frame())
   geo_idat_qc_progress <- reactiveVal(list(
     phase = "idle",
@@ -2454,6 +2534,8 @@ server <- function(input, output, session) {
     title = "Inspect a GEO accession",
     message = "Enter a GEO accession and inspect the available supplementary files."
   ))
+  geo_remote_pipeline_job_id <- reactiveVal("")
+  geo_remote_pipeline_status <- reactiveVal("")
   geo_download_progress <- reactiveVal(list(
     type = "download",
     percent = 0,
@@ -2561,8 +2643,12 @@ server <- function(input, output, session) {
 
   output$geo_workflow_ui <- renderUI({
     accession_value <- isolate(input$geo_accession %||% "")
-    source_value <- isolate(input$geo_matrix_source %||% "processed")
+    source_value <- input$geo_matrix_source %||% "processed"
     threshold_value <- isolate(input$geo_transcript_absrho_threshold %||% 0.8)
+    threshold_value <- suppressWarnings(as.numeric(threshold_value))
+    if (!is.finite(threshold_value)) {
+      threshold_value <- 0.8
+    }
     max_cpgs_value <- isolate(input$geo_spearman_max_cpgs %||% 0)
     min_spearman_samples_value <- isolate(input$geo_spearman_min_samples %||% 80)
     metadata <- geo_sample_metadata()
@@ -2573,9 +2659,12 @@ server <- function(input, output, session) {
     transcript_table <- geo_transcript_candidates()
     transcript_groups <- geo_transcript_groups()
     transcript_progress <- geo_transcript_build_progress()
-    idat_progress <- geo_idat_qc_progress()
-    idat_qc <- geo_idat_qc_report()
-    preview <- geo_preview_data()
+    transcript_ml_progress <- geo_transcript_ml_progress()
+    transcript_ml_results <- geo_transcript_ml_results()
+	    idat_progress <- geo_idat_qc_progress()
+	    idat_qc <- geo_idat_qc_report()
+	    preview <- geo_preview_data()
+	    run_remote <- identical(input$geo_run_target %||% "local", "remote")
 
     metadata_done <- is.data.frame(metadata) && nrow(metadata) > 0
     files_seen <- (is.data.frame(remote_files) && nrow(remote_files) > 0) || (is.data.frame(local_files) && nrow(local_files) > 0)
@@ -2593,6 +2682,12 @@ server <- function(input, output, session) {
     matrix_files <- if (nzchar(trimws(accession_value))) ugplot_geo_matrix_files(ugplot_geo_cache_dir(trimws(accession_value)), source = source_value) else character(0)
     extract_done <- length(matrix_files) > 0
     annotation_done <- is.data.frame(annotation_map) && nrow(annotation_map) > 0
+    if (!annotation_done && metadata_done) {
+      platform_info <- ugplot_geo_platform_annotation_package(ugplot_geo_detect_platform(metadata))
+      if (!is.null(platform_info)) {
+        annotation_done <- file.exists(ugplot_geo_annotation_cache_path(platform_info$platform, "rds"))
+      }
+    }
     spearman_done <- is.data.frame(spearman_results) && nrow(spearman_results) > 0 && length(matrix_files) > 0
     transcript_needs_rebuild <- identical(transcript_progress$phase %||% "", "needs rebuild")
     transcript_groups_loaded <- is.data.frame(transcript_groups) && nrow(transcript_groups) > 0
@@ -2601,23 +2696,56 @@ server <- function(input, output, session) {
         transcript_groups_loaded
     ) && spearman_done
     transcript_ml_ready <- transcript_done && transcript_groups_loaded
+    transcript_ml_done <- transcript_ml_ready && (
+      (transcript_ml_progress$phase %||% "") %in% c("complete", "loaded from cache", "already complete") ||
+        (is.data.frame(transcript_ml_results) && nrow(transcript_ml_results) > 0)
+    )
+    transcript_ml_stability_done <- transcript_ml_ready &&
+      is.data.frame(transcript_ml_results) &&
+      nrow(transcript_ml_results) > 0 &&
+      "Phase" %in% names(transcript_ml_results) &&
+      any(as.character(transcript_ml_results$Phase) == "stability")
     idat_done <- (idat_progress$phase %||% "") %in% c("complete", "loaded from cache") ||
       (is.data.frame(idat_qc) && nrow(idat_qc) > 0 && nzchar(idat_progress$beta_path %||% "") && file.exists(idat_progress$beta_path %||% ""))
-    preview_done <- is.data.frame(preview) && nrow(preview) > 0
+	    preview_done <- is.data.frame(preview) && nrow(preview) > 0
 
-    tagList(
-      tags$div(class = "geo-workflow geo-workflow-top",
-        render_geo_step_card(1, "Inspect GEO accession", files_seen || metadata_done,
-          tags$div(
+	    tagList(
+	      tags$div(class = "geo-run-target-panel",
+	        radioButtons(
+	          "geo_run_target",
+	          "GEO processing location:",
+	          choices = c("Local" = "local", "Remote server" = "remote"),
+	          selected = isolate(input$geo_run_target %||% "local"),
+	          inline = TRUE
+	        ),
+	        conditionalPanel(
+	          condition = "input.geo_run_target == 'remote'",
+	          selectInput(
+	            "geo_remote_server_name",
+	            "Remote server:",
+	            choices = remote_server_choices(),
+	            selected = isolate(input$geo_remote_server_name %||% input$remote_server_name)
+	          ),
+	          tags$div(class = "remote-server-toolbar",
+	            actionButton("geo_start_remote_pipeline", "Start remote GEO pipeline", icon = icon("play")),
+	            actionButton("geo_refresh_remote_pipeline", "Refresh status", icon = icon("refresh")),
+	            actionButton("geo_load_remote_pipeline_result", "Load remote result", icon = icon("download"))
+	          )
+	        ),
+	        uiOutput("geo_remote_execution_status")
+	      ),
+	      tags$div(class = "geo-workflow geo-workflow-top",
+	        render_geo_step_card(1, "Inspect GEO accession", files_seen || metadata_done,
+	          tags$div(
             textInput("geo_accession", "GEO accession:", value = accession_value, placeholder = "GSE87571"),
-            actionButton("geo_inspect_files", if (files_seen || metadata_done) "Refresh GEO status" else "Inspect files")
+	            if (!run_remote) actionButton("geo_inspect_files", if (files_seen || metadata_done) "Refresh GEO status" else "Inspect files")
           )
         ),
         render_geo_step_card(2, "Sample metadata", metadata_done,
           tags$div(
             tags$p(class = "geo-step-note", "Sample metadata contains age, sex, tissue, disease, treatment, response, and other phenotype fields when GEO provides them."),
             uiOutput("geo_metadata_summary"),
-            if (!metadata_done) actionButton("geo_fetch_metadata", "Fetch sample metadata") else NULL
+	            if (!run_remote && !metadata_done) actionButton("geo_fetch_metadata", "Fetch sample metadata") else NULL
           )
         ),
         render_geo_step_card(3, "Matrix files", selected_download_done,
@@ -2631,7 +2759,7 @@ server <- function(input, output, session) {
             ),
             uiOutput("geo_source_status_summary"),
             uiOutput("geo_download_summary"),
-            if (!selected_download_done) actionButton("geo_fetch_files", if (source_is_raw) "Download raw IDAT files" else "Download processed matrices") else NULL
+	            if (!run_remote && !selected_download_done) actionButton("geo_fetch_files", if (source_is_raw) "Download raw IDAT files" else "Download processed matrices") else NULL
           )
         ),
         render_geo_step_card(4, "Download progress", selected_download_done,
@@ -2645,17 +2773,17 @@ server <- function(input, output, session) {
             if (source_is_raw) {
               tags$div(
                 tags$p(class = "geo-step-note", if (idat_done) "Sesame beta matrix is available for Spearman." else "Download raw IDAT files, then run sesame QC/reprocessing here before Spearman."),
-                numericInput("geo_idat_detection_p", "Probe detection p-value cutoff:", value = 0.01, min = 0.0001, max = 0.2, step = 0.001),
+                numericInput("geo_idat_detection_p", "Probe detection p-value cutoff:", value = 0.05, min = 0.0001, max = 0.2, step = 0.001),
                 numericInput("geo_idat_max_failed_fraction", "Maximum failed pOOBAH probe fraction per sample:", value = 0.05, min = 0, max = 1, step = 0.01),
                 textInput("geo_idat_sesame_prep", "Sesame prep code:", value = "QCDPB"),
                 uiOutput("geo_idat_qc_summary"),
-                uiOutput("geo_idat_action_ui"),
+	                if (!run_remote) uiOutput("geo_idat_action_ui") else NULL,
                 uiOutput("geo_idat_qc_progress_ui")
               )
             } else if (needs_extract) {
               tags$div(
                 tags$p(class = "geo-step-note", "Large .gz matrices must be extracted before preprocessing. They are still too large to load directly into ugPlot."),
-                actionButton("geo_extract_files", "Extract downloaded .gz files"),
+	                if (!run_remote) actionButton("geo_extract_files", "Extract downloaded .gz files") else NULL,
                 uiOutput("geo_extract_progress_ui")
               )
             } else {
@@ -2666,36 +2794,42 @@ server <- function(input, output, session) {
             }
           )
         ),
-        render_geo_step_card(6, "Analyze CpGs and transcripts", spearman_done,
+        render_geo_step_card(6, "Analyze CpGs", spearman_done,
           tags$div(
             uiOutput("geo_target_selector"),
-            tags$p(class = "geo-step-note", "Spearman scan uses numeric targets such as age. Transcript candidate tables are built automatically when annotation is available."),
+            tags$p(class = "geo-step-note", "Spearman scan uses the selected numeric metadata field and saves CpG-level correlations for the active matrix source."),
             numericInput("geo_spearman_max_cpgs", "Max CpGs to scan (0 = all):", value = max_cpgs_value, min = 0, step = 10000),
             numericInput("geo_spearman_min_samples", "Minimum samples per CpG for Spearman (%):", value = min_spearman_samples_value, min = 0, max = 100, step = 1),
             numericInput("geo_transcript_absrho_threshold", "Transcript CpG threshold |rho|:", value = threshold_value, min = 0, max = 1, step = 0.01),
-            uiOutput("geo_annotation_summary"),
-            if (!annotation_done) actionButton("geo_build_annotation", "Build/load CpG annotation cache") else NULL,
+            uiOutput("geo_spearman_summary"),
             if (length(matrix_files) > 0) {
-              actionButton("geo_run_spearman", if (spearman_done) "Re-run CpG Spearman scan" else "Run CpG Spearman scan")
+	              if (!run_remote) actionButton("geo_run_spearman", if (spearman_done) "Re-run CpG Spearman scan" else "Run CpG Spearman scan") else NULL
             } else {
               tags$p(class = "geo-step-note", if (source_is_raw) "Run sesame IDAT QC first to create the beta matrix." else "Download/extract processed matrices before running Spearman.")
             }
           )
         ),
-        render_geo_step_card(7, "Build transcript ML datasets", transcript_done,
+        render_geo_step_card(7, "Load CpG annotation", annotation_done,
+          tags$div(
+            tags$p(class = "geo-step-note", "Build or load the CpG-to-gene/transcript map for the current GEO platform."),
+            uiOutput("geo_annotation_summary"),
+	            if (!run_remote && !annotation_done) actionButton("geo_build_annotation", "Build/load CpG annotation cache") else NULL
+          )
+        ),
+        render_geo_step_card(8, "Build transcript ML datasets", transcript_done,
           tags$div(
             tags$p(class = "geo-step-note", "Build complete-case transcript CSVs and group transcripts that produce identical ML datasets."),
             numericInput("geo_transcript_min_samples", "Transcript complete-case minimum samples (%):", value = 80, min = 0, max = 100, step = 1),
             tags$p(class = "geo-step-note", "Transcript complete-case treats empty strings, NA/na text, true NA, and zero as missing."),
             if (spearman_done && annotation_done) {
-              actionButton("geo_build_transcript_groups", "Build/continue transcript CSVs")
+	              if (!run_remote) actionButton("geo_build_transcript_groups", "Build/continue transcript CSVs") else NULL
             } else {
               tags$p(class = "geo-step-note", "Run Spearman and load annotation before building transcript datasets.")
             },
             uiOutput("geo_transcript_build_progress_ui")
           )
         ),
-        render_geo_step_card(8, "Screen transcript ML models", FALSE,
+        render_geo_step_card(9, "Screen transcript ML models", transcript_ml_done,
           tags$div(
             tags$p(class = "geo-step-note", "Screen all installed caret models per transcript group for the active matrix source."),
             numericInput("geo_ml_min_absrho", "Run transcript groups with trigger |rho| >=:", value = 0.7, min = 0, max = 1, step = 0.01),
@@ -2704,8 +2838,10 @@ server <- function(input, output, session) {
             numericInput("geo_ml_screen_seeds", "Screening seeds per model:", value = 3, min = 1, step = 1),
             numericInput("geo_ml_timeout", "Timeout per model/seed (s):", value = 1200, min = 1, step = 1),
             uiOutput("geo_ml_model_summary"),
-            if (transcript_ml_ready) {
-              actionButton("geo_run_transcript_ml", "Start/resume model screening")
+	            if (run_remote) {
+	              tags$p(class = "geo-step-note", "Remote mode keeps transcript jobs on the selected server.")
+	            } else if (transcript_ml_ready) {
+	              actionButton("geo_run_transcript_ml", "Start/resume model screening")
             } else if (transcript_needs_rebuild) {
               tags$p(class = "geo-step-note", "Rebuild transcript ML datasets before screening models.")
             } else {
@@ -2713,15 +2849,21 @@ server <- function(input, output, session) {
             }
           )
         ),
-        render_geo_step_card(9, "Stabilize best transcript ML", FALSE,
+        render_geo_step_card(10, "Stabilize best transcript ML", transcript_ml_stability_done,
           tags$div(
             tags$p(class = "geo-step-note", "Use each transcript group's best screened model and run seed batches until the metric stabilizes."),
             numericInput("geo_ml_min_stability_seeds", "Minimum stability seeds:", value = 30, min = 2, step = 1),
             numericInput("geo_ml_max_stability_seeds", "Maximum stability seeds:", value = 4000, min = 2, step = 10),
             numericInput("geo_ml_stability_window", "Seeds compared for stability:", value = 30, min = 2, step = 1),
             numericInput("geo_ml_stability_tolerance", "Max metric change to stop:", value = 0.01, min = 0, max = 1, step = 0.001),
-            if (transcript_ml_ready) {
+            uiOutput("geo_ml_stability_group_selector"),
+            uiOutput("geo_ml_stability_group_summary"),
+	            if (run_remote) {
+	              tags$p(class = "geo-step-note", "Remote mode keeps stability jobs on the selected server.")
+	            } else if (transcript_ml_done) {
               actionButton("geo_run_transcript_ml_stability", "Start/resume stability seeds")
+            } else if (transcript_ml_ready) {
+              tags$p(class = "geo-step-note", "Run or load transcript ML screening before stability seeds.")
             } else if (transcript_needs_rebuild) {
               tags$p(class = "geo-step-note", "Rebuild transcript ML datasets before running transcript ML.")
             } else {
@@ -2739,7 +2881,7 @@ server <- function(input, output, session) {
           uiOutput("geo_spearman_table_title"),
           DT::DTOutput("geo_spearman_table"),
           open = FALSE,
-          class_name = "geo-table-section geo-step-table geo-no-scroll-table"
+          class_name = "geo-table-section geo-step-table"
         ) else NULL,
         if (source_is_raw && is.data.frame(idat_qc) && nrow(idat_qc) > 0) {
           render_geo_table_details("Open sesame IDAT QC report", uiOutput("geo_idat_qc_table_title"), DT::DTOutput("geo_idat_qc_table"), open = FALSE)
@@ -2763,6 +2905,28 @@ server <- function(input, output, session) {
           "Open transcript ML results",
           uiOutput("geo_transcript_ml_table_title"),
           tagList(
+            uiOutput("geo_transcript_ml_class_compare_title"),
+            uiOutput("geo_transcript_ml_class_order_control"),
+            tabsetPanel(
+              tabPanel(
+                "R2",
+                plotlyOutput("geo_transcript_ml_class_rank_plot", height = "420px"),
+                DT::DTOutput("geo_transcript_ml_class_compare_table")
+              ),
+              tabPanel(
+                "Spearman",
+                plotlyOutput("geo_transcript_ml_class_spearman_plot", height = "420px"),
+                DT::DTOutput("geo_transcript_ml_class_spearman_table")
+              ),
+              tabPanel(
+                "Combined",
+                plotlyOutput("geo_transcript_ml_class_combined_plot", height = "420px"),
+                DT::DTOutput("geo_transcript_ml_class_combined_table")
+              )
+            ),
+            uiOutput("geo_transcript_ml_epigenetic_story_title"),
+            plotlyOutput("geo_transcript_ml_epigenetic_story_plot", height = "340px"),
+            DT::DTOutput("geo_transcript_ml_epigenetic_story_table"),
             DT::DTOutput("geo_transcript_ml_table"),
             uiOutput("geo_transcript_ml_selected_title"),
             plotlyOutput("geo_transcript_ml_importance_track", height = "420px"),
@@ -2966,7 +3130,64 @@ server <- function(input, output, session) {
     req(is.data.frame(results), nrow(results) > 0)
     render_geo_table_title(
       "CpG Spearman results",
-      "CpG-level correlation against the selected metadata target. If annotation is loaded, CpGs may appear in multiple rows because one CpG can map to multiple transcripts."
+      "CpG-level correlation against the selected metadata field. If annotation is loaded, CpGs may appear in multiple rows because one CpG can map to multiple transcripts."
+    )
+  })
+
+  output$geo_spearman_summary <- renderUI({
+    results <- geo_spearman_raw_results()
+    if (!is.data.frame(results) || nrow(results) == 0) {
+      return(tags$p(class = "geo-step-note", "No CpG Spearman result is loaded yet."))
+    }
+    filtered <- geo_filter_spearman_min_samples(results)
+    threshold <- suppressWarnings(as.numeric(input$geo_transcript_absrho_threshold %||% 0.8))
+    if (!is.finite(threshold)) {
+      threshold <- 0.8
+    }
+    absrho <- suppressWarnings(as.numeric(filtered$AbsRho))
+    rho <- suppressWarnings(as.numeric(filtered$SpearmanRho))
+    trigger_rows <- filtered[is.finite(absrho) & absrho >= threshold, , drop = FALSE]
+    positive_rows <- filtered[is.finite(rho) & rho >= threshold, , drop = FALSE]
+    negative_rows <- filtered[is.finite(rho) & rho <= -threshold, , drop = FALSE]
+    max_absrho <- suppressWarnings(max(absrho, na.rm = TRUE))
+    max_text <- if (is.finite(max_absrho)) signif(max_absrho, 4) else "NA"
+    max_pos <- suppressWarnings(max(rho, na.rm = TRUE))
+    min_neg <- suppressWarnings(min(rho, na.rm = TRUE))
+    max_pos_text <- if (is.finite(max_pos)) signif(max_pos, 4) else "NA"
+    min_neg_text <- if (is.finite(min_neg)) signif(min_neg, 4) else "NA"
+    annotation_map <- geo_cpg_annotation()
+    annotation_line <- NULL
+    if (is.data.frame(annotation_map) && nrow(annotation_map) > 0 && nrow(trigger_rows) > 0) {
+      annotated <- annotation_map[
+        annotation_map$CpG %in% unique(trigger_rows$CpG) &
+          !is.na(annotation_map$Transcript) &
+          nzchar(as.character(annotation_map$Transcript)),
+        ,
+        drop = FALSE
+      ]
+      annotation_line <- tags$p(paste0(
+        "At current threshold: ", length(unique(annotated$CpG)), " annotated CpG(s), ",
+        nrow(annotated), " CpG-transcript link(s), ",
+        length(unique(annotated$Transcript)), " transcript(s)."
+      ))
+    } else if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
+      annotation_line <- tags$p("At current threshold: 0 annotated CpGs/transcripts.")
+    }
+    tags$div(class = "geo-step-status",
+      tags$p(tags$strong("Spearman totals: "), paste0(
+        format(nrow(results), big.mark = ","), " CpG(s) scanned; ",
+        format(nrow(filtered), big.mark = ","), " pass the sample filter; max |rho| ", max_text, "."
+      )),
+      tags$p(paste0(
+        "|rho| >= ", threshold, ": ",
+        format(nrow(trigger_rows), big.mark = ","), " CpG(s)."
+      )),
+      tags$p(paste0(
+        "rho >= +", threshold, ": ", format(nrow(positive_rows), big.mark = ","),
+        " CpG(s); rho <= -", threshold, ": ", format(nrow(negative_rows), big.mark = ","),
+        " CpG(s). Range: ", min_neg_text, " to +", max_pos_text, "."
+      )),
+      annotation_line
     )
   })
 
@@ -3083,14 +3304,14 @@ server <- function(input, output, session) {
   output$geo_target_selector <- renderUI({
     metadata <- geo_sample_metadata()
     if (!is.data.frame(metadata) || nrow(metadata) == 0) {
-      return(tags$p("Fetch sample metadata first to choose a target column."))
+      return(tags$p("Fetch sample metadata first to choose a field."))
     }
     candidates <- ugplot_geo_target_candidates(metadata)
     if (length(candidates) == 0) {
-      return(tags$p("No usable target-like metadata column was detected. Inspect the sample metadata table."))
+      return(tags$p("No usable metadata field was detected. Inspect the sample metadata table."))
     }
     selected <- if ("age" %in% candidates) "age" else candidates[[1]]
-    selectInput("geo_target_column", "Target metadata column:", choices = candidates, selected = selected)
+    selectInput("geo_target_column", "Metadata field to predict/correlate:", choices = candidates, selected = selected)
   })
 
   output$geo_annotation_summary <- renderUI({
@@ -3250,6 +3471,71 @@ server <- function(input, output, session) {
     c("empty", "na", "zero")
   }
 
+  geo_transcript_candidates_for_id <- function(candidates, transcript_id) {
+    transcript_id <- as.character(transcript_id %||% "")
+    if (!nzchar(transcript_id) || !is.data.frame(candidates) || nrow(candidates) == 0) {
+      return(data.frame())
+    }
+    annotation_map <- attr(candidates, "annotation_map", exact = TRUE)
+    raw_results <- attr(candidates, "raw_results", exact = TRUE)
+    threshold <- attr(candidates, "threshold", exact = TRUE)
+    if (is.data.frame(annotation_map) && nrow(annotation_map) > 0 &&
+        is.data.frame(raw_results) && nrow(raw_results) > 0) {
+      transcript_cpgs <- annotation_map[
+        !is.na(annotation_map$Transcript) &
+          as.character(annotation_map$Transcript) == transcript_id,
+        ,
+        drop = FALSE
+      ]
+      if (nrow(transcript_cpgs) == 0) {
+        return(data.frame())
+      }
+      transcript_cpgs <- unique(transcript_cpgs)
+      required_result_cols <- intersect(c("CpG", "SpearmanRho", "PValue", "N", "AbsRho"), names(raw_results))
+      transcript_candidates <- merge(
+        transcript_cpgs,
+        unique(raw_results[, required_result_cols, drop = FALSE]),
+        by = "CpG",
+        all.x = TRUE,
+        sort = FALSE
+      )
+      transcript_candidates$CpGInSpearmanScan <- !is.na(transcript_candidates$AbsRho)
+      trigger_rows <- candidates[as.character(candidates$Transcript) == transcript_id, , drop = FALSE]
+      trigger_rows <- trigger_rows[order(-suppressWarnings(as.numeric(trigger_rows$AbsRho)), suppressWarnings(as.numeric(trigger_rows$PValue))), , drop = FALSE]
+      if (nrow(trigger_rows) > 0) {
+        transcript_candidates$TriggerCpGs <- paste(unique(trigger_rows$CpG), collapse = ";")
+        transcript_candidates$TriggerGenes <- paste(unique(stats::na.omit(trigger_rows$Gene)), collapse = ";")
+        transcript_candidates$TriggerMaxAbsRho <- max(suppressWarnings(as.numeric(trigger_rows$AbsRho)), na.rm = TRUE)
+        transcript_candidates$TriggerBestCpG <- trigger_rows$CpG[[1]]
+        transcript_candidates$TriggerBestRho <- trigger_rows$SpearmanRho[[1]]
+        transcript_candidates$ThresholdAbsRho <- threshold %||% NA_real_
+      }
+      rownames(transcript_candidates) <- NULL
+      return(transcript_candidates)
+    }
+    candidates[as.character(candidates$Transcript) == transcript_id, , drop = FALSE]
+  }
+
+  geo_limit_transcript_detail_rows <- function(details, kept_cpgs, max_rows = 300L) {
+    if (!is.data.frame(details) || nrow(details) <= max_rows || !"CpG" %in% names(details)) {
+      return(details)
+    }
+    details$CpGKeptForML <- as.character(details$CpG) %in% kept_cpgs
+    absrho <- if ("AbsRho" %in% names(details)) suppressWarnings(as.numeric(details$AbsRho)) else rep(NA_real_, nrow(details))
+    order_idx <- order(!details$CpGKeptForML, -absrho, as.character(details$CpG), na.last = TRUE)
+    details <- details[order_idx, , drop = FALSE]
+    kept_rows <- details[details$CpGKeptForML, , drop = FALSE]
+    remaining_rows <- details[!details$CpGKeptForML, , drop = FALSE]
+    limited <- rbind(
+      utils::head(kept_rows, max_rows),
+      utils::head(remaining_rows, max(0L, max_rows - min(nrow(kept_rows), max_rows)))
+    )
+    limited$DetailRowsShown <- nrow(limited)
+    limited$DetailRowsTotal <- nrow(details)
+    limited$DetailRowsTruncated <- nrow(details) > nrow(limited)
+    limited
+  }
+
   geo_build_group_tables <- function(progress_rows, candidates) {
     compatible <- progress_rows[progress_rows$Status == "compatible", , drop = FALSE]
     if (nrow(compatible) == 0) {
@@ -3272,6 +3558,8 @@ server <- function(input, output, session) {
         ExtraTranscripts = paste(setdiff(group_df$Transcript, principal$Transcript[[1]]), collapse = ";"),
         CpGs = principal$KeptCpGs[[1]],
         TriggerMaxAbsRho = principal$TriggerMaxAbsRho[[1]],
+        TriggerBestCpG = if ("TriggerBestCpG" %in% names(principal)) principal$TriggerBestCpG[[1]] else "",
+        TriggerBestRho = if ("TriggerBestRho" %in% names(principal)) principal$TriggerBestRho[[1]] else NA_real_,
         DatasetPath = principal$DatasetPath[[1]],
         GroupKey = group_keys[[group_index]],
         stringsAsFactors = FALSE
@@ -3284,12 +3572,12 @@ server <- function(input, output, session) {
     group_lookup <- stats::setNames(summary$GroupID, summary$GroupKey)
     detail_rows <- lapply(seq_len(nrow(compatible)), function(i) {
       transcript_row <- compatible[i, , drop = FALSE]
-      transcript_candidates <- candidates[as.character(candidates$Transcript) == transcript_row$Transcript[[1]], , drop = FALSE]
+      transcript_candidates <- geo_transcript_candidates_for_id(candidates, transcript_row$Transcript[[1]])
       kept_cpgs <- strsplit(transcript_row$KeptCpGs[[1]], ";", fixed = TRUE)[[1]]
       transcript_candidates$GroupID <- unname(group_lookup[[transcript_row$GroupKey[[1]]]])
       transcript_candidates$PrincipalTranscript <- summary$PrincipalTranscript[match(transcript_candidates$GroupID, summary$GroupID)]
       transcript_candidates$CpGKeptForML <- as.character(transcript_candidates$CpG) %in% kept_cpgs
-      transcript_candidates
+      geo_limit_transcript_detail_rows(transcript_candidates, kept_cpgs)
     })
     details <- unique(do.call(rbind, detail_rows))
     rownames(summary) <- NULL
@@ -3452,15 +3740,29 @@ server <- function(input, output, session) {
     if (!is.data.frame(summary) || nrow(summary) == 0) {
       return(summary)
     }
-    metric <- suppressWarnings(as.numeric(summary$MedianMetric %||% summary$BestMetric))
-    rho <- suppressWarnings(as.numeric(summary$TriggerMaxAbsRho))
-    metric_rank <- rank(-metric, ties.method = "min", na.last = "keep")
-    rho_rank <- rank(-rho, ties.method = "min", na.last = "keep")
-    combined <- metric_rank + rho_rank
-    summary$ModelRank <- metric_rank
-    summary$RhoRank <- rho_rank
-    summary$CombinedRank <- rank(combined, ties.method = "min", na.last = "keep")
-    summary <- summary[order(summary$CombinedRank, summary$ModelRank, summary$RhoRank, summary$PrincipalTranscript), , drop = FALSE]
+    rank_one <- function(df) {
+      metric <- suppressWarnings(as.numeric(df$MedianMetric %||% df$BestMetric))
+      rho <- suppressWarnings(as.numeric(df$TriggerMaxAbsRho))
+      metric_rank <- rank(-metric, ties.method = "min", na.last = "keep")
+      rho_rank <- rank(-rho, ties.method = "min", na.last = "keep")
+      combined <- metric_rank + rho_rank
+      df$ModelRank <- metric_rank
+      df$RhoRank <- rho_rank
+      df$CombinedRank <- rank(combined, ties.method = "min", na.last = "keep")
+      df[order(df$CombinedRank, df$ModelRank, df$RhoRank, df$PrincipalTranscript), , drop = FALSE]
+    }
+    has_strata <- all(c("StratumColumn", "StratumValue") %in% names(summary)) &&
+      any(nzchar(as.character(summary$StratumColumn %||% "")) | nzchar(as.character(summary$StratumValue %||% "")))
+    if (isTRUE(has_strata)) {
+      summary$StratumColumn[is.na(summary$StratumColumn)] <- ""
+      summary$StratumValue[is.na(summary$StratumValue)] <- ""
+      split_key <- paste(summary$StratumColumn, summary$StratumValue, sep = "\f")
+      ranked <- lapply(split(summary, split_key, drop = TRUE), rank_one)
+      summary <- bind_summary_rows(ranked)
+      summary <- summary[order(summary$StratumColumn, summary$StratumValue, summary$CombinedRank, summary$PrincipalTranscript), , drop = FALSE]
+    } else {
+      summary <- rank_one(summary)
+    }
     rownames(summary) <- NULL
     summary
   }
@@ -3569,6 +3871,102 @@ server <- function(input, output, session) {
     unique(as.character(selected))
   }
 
+  geo_ml_class_value <- function(values) {
+    values <- as.character(values)
+    values <- trimws(values)
+    missing <- is.na(values) | !nzchar(values) | tolower(values) %in% c("na", "n/a", "nan", "null")
+    values[missing] <- NA_character_
+    values
+  }
+
+  geo_ml_stability_group_candidates <- function(metadata) {
+    if (!is.data.frame(metadata) || nrow(metadata) == 0) {
+      return(character(0))
+    }
+    ignored <- c("sample_id", "geo_accession", "title", "description", "supplementary_file")
+    candidates <- setdiff(names(metadata), ignored)
+    candidates <- candidates[vapply(candidates, function(column) {
+      values <- geo_ml_class_value(metadata[[column]])
+      unique_values <- unique(stats::na.omit(values))
+      length(unique_values) >= 2 && length(unique_values) <= 80
+    }, logical(1))]
+    likely <- grep("disease|status|case|control|group|class|phenotype|condition|treatment|response|sex|gender", candidates, value = TRUE, ignore.case = TRUE)
+    unique(c(likely, setdiff(candidates, likely)))
+  }
+
+  geo_ml_stability_strata <- function(metadata, column) {
+    column <- as.character(column %||% "")
+    if (!is.data.frame(metadata) || nrow(metadata) == 0 || !nzchar(column) || !column %in% names(metadata) || !"sample_id" %in% names(metadata)) {
+      return(data.frame())
+    }
+    values <- geo_ml_class_value(metadata[[column]])
+    sample_ids <- as.character(metadata$sample_id)
+    keep <- !is.na(values) & nzchar(values) & !is.na(sample_ids) & nzchar(sample_ids)
+    values <- values[keep]
+    sample_ids <- sample_ids[keep]
+    if (length(values) == 0) {
+      return(data.frame())
+    }
+    value_levels <- names(sort(table(values), decreasing = TRUE))
+    rows <- lapply(value_levels, function(value) {
+      ids <- unique(sample_ids[values == value])
+      data.frame(
+        StratumColumn = column,
+        StratumValue = value,
+        StratumSamples = length(ids),
+        SampleIDs = paste(ids, collapse = "\r"),
+        stringsAsFactors = FALSE
+      )
+    })
+    strata <- do.call(rbind, rows)
+    strata[order(-strata$StratumSamples, strata$StratumValue), , drop = FALSE]
+  }
+
+  geo_ml_stability_task_key <- function(group_id, stratum_column = "", stratum_value = "") {
+    paste(as.character(group_id), as.character(stratum_column %||% ""), as.character(stratum_value %||% ""), sep = "\f")
+  }
+
+  geo_ml_clean_runner_message <- function(message, model = "") {
+    message <- as.character(message %||% "")
+    model <- as.character(model %||% "")
+    dataset_seed <- regmatches(message, regexpr("dataset seed [0-9]+", message, ignore.case = TRUE))
+    training_seed <- regmatches(message, regexpr("training seed [0-9]+", message, ignore.case = TRUE))
+    elapsed <- regmatches(message, regexpr("elapsed [0-9.]+ seconds", message, ignore.case = TRUE))
+    pieces <- c(
+      if (nzchar(model)) paste0("model ", model) else character(0),
+      if (length(dataset_seed) > 0 && nzchar(dataset_seed)) dataset_seed else character(0),
+      if (length(training_seed) > 0 && nzchar(training_seed)) training_seed else character(0),
+      if (length(elapsed) > 0 && nzchar(elapsed)) elapsed else character(0)
+    )
+    if (length(pieces) > 0) {
+      return(paste(pieces, collapse = " | "))
+    }
+    if (grepl("running", message, ignore.case = TRUE)) {
+      return(paste(c(if (nzchar(model)) paste0("model ", model), "running trainer"), collapse = " | "))
+    }
+    paste(c(if (nzchar(model)) paste0("model ", model), "running"), collapse = " | ")
+  }
+
+  geo_ml_stability_progress_text <- function(task_detail, completed, total, runner_message = "",
+                                             stability_text = "", distribution_text = "") {
+    sections <- c(
+      "CURRENT",
+      paste0("  ", task_detail),
+      paste0("  completed tasks: ", completed, " / ", total),
+      "",
+      "RUNNING",
+      paste0("  ", runner_message %||% "waiting for trainer update")
+    )
+    if (nzchar(stability_text %||% "")) {
+      sections <- c(sections, "", "STABILITY", paste0("  ", stability_text))
+    }
+    if (nzchar(distribution_text %||% "")) {
+      distribution_lines <- strsplit(distribution_text, "\n", fixed = TRUE)[[1]]
+      sections <- c(sections, "", "METRIC DISTRIBUTION", paste0("  ", distribution_lines))
+    }
+    paste(sections, collapse = "\n")
+  }
+
   geo_ml_pipeline_config <- function(models, screen_seeds, seed_end, timeout, best_only_model = NULL) {
     list(
       target = "target",
@@ -3593,12 +3991,23 @@ server <- function(input, output, session) {
     )
   }
 
-  geo_ml_group_dataset <- function(group) {
+  geo_ml_group_dataset <- function(group, sample_ids = NULL) {
     dataset_path <- as.character(group$DatasetPath[[1]])
     if (!nzchar(dataset_path) || !file.exists(dataset_path)) {
       stop("Transcript group dataset file is missing: ", dataset_path)
     }
     dataset <- utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE)
+    if (!is.null(sample_ids)) {
+      sample_ids <- unique(as.character(sample_ids))
+      sample_ids <- sample_ids[nzchar(sample_ids) & !is.na(sample_ids)]
+      if (!"sample_id" %in% names(dataset)) {
+        stop("Transcript dataset has no sample_id column for class/group filtering.")
+      }
+      dataset <- dataset[as.character(dataset$sample_id) %in% sample_ids, , drop = FALSE]
+      if (nrow(dataset) == 0) {
+        stop("No transcript dataset samples matched the selected class/group.")
+      }
+    }
     if (!"target" %in% names(dataset)) {
       target_candidates <- setdiff(names(dataset), c("sample_id", grep("^cg", names(dataset), value = TRUE)))
       target_name <- target_candidates[[1]] %||% ""
@@ -3607,8 +4016,9 @@ server <- function(input, output, session) {
       }
       names(dataset)[names(dataset) == target_name] <- "target"
     }
+    sample_count <- nrow(dataset)
     dataset <- dataset[, setdiff(names(dataset), "sample_id"), drop = FALSE]
-    list(dataset = dataset, dataset_path = dataset_path)
+    list(dataset = dataset, dataset_path = dataset_path, sample_count = sample_count)
   }
 
   geo_ml_run_group_screen <- function(group, source, models, settings, progress_callback = NULL) {
@@ -3655,6 +4065,8 @@ server <- function(input, output, session) {
       PrincipalTranscript = group$PrincipalTranscript[[1]],
       Gene = group$Gene[[1]],
       TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
+      TriggerBestCpG = if ("TriggerBestCpG" %in% names(group)) as.character(group$TriggerBestCpG[[1]]) else "",
+      TriggerBestRho = if ("TriggerBestRho" %in% names(group)) suppressWarnings(as.numeric(group$TriggerBestRho[[1]])) else NA_real_,
       BestModel = best_model,
       MetricName = metric_name,
       BestMetric = suppressWarnings(as.numeric(screen_result$final_summary$metric_value %||% NA_real_)),
@@ -3672,18 +4084,30 @@ server <- function(input, output, session) {
     summary
   }
 
-  geo_ml_run_group_stability <- function(group, source, settings, progress_callback = NULL) {
-    dataset_info <- geo_ml_group_dataset(group)
+  geo_ml_run_group_stability <- function(group, source, settings, progress_callback = NULL, stratum = NULL) {
+    stratum_column <- as.character(stratum$StratumColumn %||% "")
+    stratum_value <- as.character(stratum$StratumValue %||% "")
+    stratum_label <- if (nzchar(stratum_column)) paste0(stratum_column, "=", stratum_value) else ""
+    sample_ids <- if (nzchar(stratum_column)) strsplit(as.character(stratum$SampleIDs %||% ""), "\r", fixed = TRUE)[[1]] else NULL
+    dataset_info <- geo_ml_group_dataset(group, sample_ids = sample_ids)
     dataset <- dataset_info$dataset
     dataset_path <- dataset_info$dataset_path
     cache_dir <- ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO"))
-    group_dir <- geo_transcript_ml_group_dir(cache_dir, source, group$GroupID[[1]])
+    base_group_dir <- geo_transcript_ml_group_dir(cache_dir, source, group$GroupID[[1]])
+    group_dir <- base_group_dir
+    if (nzchar(stratum_column)) {
+      group_dir <- file.path(base_group_dir, "stability_by", geo_safe_cache_token(stratum_column), geo_safe_cache_token(stratum_value))
+      dir.create(group_dir, recursive = TRUE, showWarnings = FALSE)
+    }
     screen_path <- file.path(group_dir, "screen_result.rds")
     stability_path <- file.path(group_dir, "stability_result.rds")
     summary_path <- file.path(group_dir, "summary.rds")
     importance_path <- file.path(group_dir, "importance.csv")
+    if (nzchar(stratum_column)) {
+      screen_path <- file.path(base_group_dir, "screen_result.rds")
+    }
     if (!file.exists(screen_path)) {
-      stop("Screening result is missing for ", group$GroupID[[1]], ". Run Step 8 first.")
+      stop("Screening result is missing for ", group$GroupID[[1]], ". Run Step 9 first.")
     }
     screen_result <- tryCatch(readRDS(screen_path), error = function(e) NULL)
     best_model <- screen_result$best_model_name %||% ""
@@ -3694,6 +4118,22 @@ server <- function(input, output, session) {
     current_end <- settings$min_stability_seeds
     stability_result <- if (file.exists(stability_path)) tryCatch(readRDS(stability_path), error = function(e) NULL) else NULL
     stable_state <- list(stable = FALSE, reason = "not started")
+    stability_progress_detail <- function(result = NULL, source = "cache") {
+      if (is.null(result) && file.exists(stability_path)) {
+        result <- tryCatch(readRDS(stability_path), error = function(e) NULL)
+      }
+      metric_values <- geo_ml_result_metric_values(result)
+      metric_name <- result$final_summary$metric_name %||% "R2"
+      if (length(metric_values) == 0) {
+        return(list(stability = "", distribution = "", values = numeric(0), source = source))
+      }
+      list(
+        stability = format_running_stability_signal(metric_values, metric_name = metric_name),
+        distribution = format_running_metric_distribution(metric_values, metric_name = metric_name, bins = 8, width = 14),
+        values = metric_values,
+        source = source
+      )
+    }
     repeat {
       existing_n <- length(geo_ml_result_metric_values(stability_result))
       current_end <- max(current_end, min(settings$max_stability_seeds, existing_n + settings$window))
@@ -3706,10 +4146,22 @@ server <- function(input, output, session) {
         progress_callback = function(...) {
           args <- list(...)
           if (!is.null(progress_callback)) {
-            progress_callback(paste0("Stabilizing ", group$GroupID[[1]], " / ", best_model, ": ", args$message %||% ""))
+            progress_callback(
+              geo_ml_clean_runner_message(args$message %||% "", best_model),
+              stability_progress_detail(source = "runner")
+            )
           }
         },
-        partial_callback = function(partial) saveRDS(partial, stability_path)
+        partial_callback = function(partial) {
+          saveRDS(partial, stability_path)
+          detail <- stability_progress_detail(partial, source = "partial")
+          if (!is.null(progress_callback)) {
+            progress_callback(
+              paste0("Model ", best_model, ": ", length(detail$values), " seed result(s) collected."),
+              detail
+            )
+          }
+        }
       )
       saveRDS(stability_result, stability_path)
       metric_values <- geo_ml_result_metric_values(stability_result)
@@ -3725,6 +4177,11 @@ server <- function(input, output, session) {
 
     importance <- geo_ml_importance_table(stability_result$best_model, group, source, "stability")
     if (is.data.frame(importance) && nrow(importance) > 0) {
+      if (nzchar(stratum_column)) {
+        importance$StratumColumn <- stratum_column
+        importance$StratumValue <- stratum_value
+        importance$StratumSamples <- dataset_info$sample_count
+      }
       utils::write.csv(importance, importance_path, row.names = FALSE)
     }
 
@@ -3732,10 +4189,16 @@ server <- function(input, output, session) {
     metric_name <- stability_result$final_summary$metric_name %||% "R2"
     summary <- data.frame(
       Source = source,
+      Phase = "stability",
+      StratumColumn = stratum_column,
+      StratumValue = stratum_value,
+      StratumSamples = if (nzchar(stratum_column)) dataset_info$sample_count else NA_integer_,
       GroupID = group$GroupID[[1]],
       PrincipalTranscript = group$PrincipalTranscript[[1]],
       Gene = group$Gene[[1]],
       TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
+      TriggerBestCpG = if ("TriggerBestCpG" %in% names(group)) as.character(group$TriggerBestCpG[[1]]) else "",
+      TriggerBestRho = if ("TriggerBestRho" %in% names(group)) suppressWarnings(as.numeric(group$TriggerBestRho[[1]])) else NA_real_,
       BestModel = best_model,
       MetricName = metric_name,
       BestMetric = suppressWarnings(as.numeric(stability_result$final_summary$metric_value %||% NA_real_)),
@@ -3757,7 +4220,9 @@ server <- function(input, output, session) {
 
   update_geo_transcript_ml_progress <- function(phase = NULL, message = NULL,
                                                 processed = NULL, total = NULL,
-                                                current = NULL, cache = NULL) {
+                                                current = NULL, cache = NULL,
+                                                detail = NULL, stability = NULL,
+                                                values = NULL, active = TRUE) {
     progress <- geo_transcript_ml_progress()
     if (!is.null(phase)) progress$phase <- phase
     if (!is.null(message)) progress$message <- message
@@ -3765,9 +4230,84 @@ server <- function(input, output, session) {
     if (!is.null(total)) progress$total <- total
     if (!is.null(current)) progress$current <- current
     if (!is.null(cache)) progress$cache <- cache
+    if (!is.null(detail)) progress$detail <- detail
+    if (!is.null(stability)) progress$stability <- stability
+    if (!is.null(values)) progress$values <- values
+    progress$live_active <- isTRUE(active)
     geo_transcript_ml_progress(progress)
+    total_value <- suppressWarnings(as.numeric(progress$total %||% 0))
+    processed_value <- suppressWarnings(as.numeric(progress$processed %||% 0))
+    percent <- if (is.finite(total_value) && total_value > 0) 100 * processed_value / total_value else 0
+    if (identical(progress$phase %||% "", "running") && nzchar(progress$current %||% "")) {
+      percent <- max(percent, min(99, percent))
+    }
+    session$sendCustomMessage("geoMlProgress", list(
+      active = isTRUE(active) && (progress$phase %||% "") %in% c("running", "failed"),
+      title = paste0("Transcript ML: ", progress$phase %||% "idle"),
+      percent = percent,
+      task = progress$current %||% "",
+      message = progress$detail %||% progress$message %||% "",
+      stability = progress$stability %||% "",
+      values = utils::tail(suppressWarnings(as.numeric(progress$values %||% numeric(0))), 80),
+      cache = progress$cache %||% ""
+    ))
+    flush_react <- get("flushReact", asNamespace("shiny"))
+    if (is.function(flush_react)) {
+      flush_react()
+    }
     invisible(progress)
   }
+
+  output$geo_ml_live_progress_ui <- renderUI({
+    progress <- geo_transcript_ml_progress()
+    active <- isTRUE(progress$live_active %||% FALSE) &&
+      (progress$phase %||% "") %in% c("running", "failed")
+    if (!isTRUE(active)) {
+      return(NULL)
+    }
+    total <- suppressWarnings(as.numeric(progress$total %||% 0))
+    processed <- suppressWarnings(as.numeric(progress$processed %||% 0))
+    percent <- if (is.finite(total) && total > 0) 100 * processed / total else 0
+    if (identical(progress$phase %||% "", "running") && nzchar(progress$current %||% "")) {
+      percent <- max(percent, min(99, percent))
+    }
+    percent <- max(0, min(100, percent))
+    values <- utils::tail(suppressWarnings(as.numeric(progress$values %||% numeric(0))), 80)
+    values <- values[is.finite(values)]
+    spark <- NULL
+    if (length(values) > 1) {
+      width <- 260
+      height <- 58
+      pad <- 4
+      value_min <- min(values)
+      value_max <- max(values)
+      span <- value_max - value_min
+      if (!is.finite(span) || span == 0) span <- 1
+      x <- pad + seq_along(values) - 1
+      x <- pad + (seq_along(values) - 1) * ((width - 2 * pad) / max(1, length(values) - 1))
+      y <- height - pad - ((values - value_min) / span) * (height - 2 * pad)
+      points <- paste(paste0(round(x, 1), ",", round(y, 1)), collapse = " ")
+      spark <- tags$svg(class = "geo-ml-live-spark", viewBox = paste("0 0", width, height),
+        tags$polyline(points = points, fill = "none", stroke = "#2563eb", `stroke-width` = 2, `stroke-linecap` = "round", `stroke-linejoin` = "round")
+      )
+    } else {
+      spark <- tags$svg(class = "geo-ml-live-spark")
+    }
+    tags$div(
+      id = "geoMlLiveProgress",
+      class = "geo-ml-live-progress active",
+      tags$div(class = "geo-ml-live-head",
+        tags$strong(paste0("Transcript ML: ", progress$phase %||% "idle")),
+        tags$span(paste0(round(percent), "%"))
+      ),
+      tags$div(class = "geo-ml-live-bar-track", tags$div(class = "geo-ml-live-bar", style = paste0("width: ", percent, "%;"))),
+      if (nzchar(progress$current %||% "")) tags$p(class = "geo-ml-live-task", progress$current) else NULL,
+      tags$p(class = "geo-ml-live-message", progress$detail %||% progress$message %||% ""),
+      spark,
+      if (nzchar(progress$stability %||% "")) tags$pre(class = "geo-ml-live-stability", progress$stability) else NULL,
+      if (nzchar(progress$cache %||% "")) tags$p(class = "geo-ml-live-cache", progress$cache) else NULL
+    )
+  })
 
   output$geo_ml_model_summary <- renderUI({
     available <- unique(as.character(ml_available))
@@ -3790,6 +4330,45 @@ server <- function(input, output, session) {
     )
   })
 
+  output$geo_ml_stability_group_selector <- renderUI({
+    metadata <- geo_sample_metadata()
+    choices <- geo_ml_stability_group_candidates(metadata)
+    labels <- if (length(choices) > 0) {
+      stats::setNames(choices, vapply(choices, function(column) {
+        values <- geo_ml_class_value(metadata[[column]])
+        paste0(column, " (", length(unique(stats::na.omit(values))), " classes)")
+      }, character(1)))
+    } else {
+      character(0)
+    }
+    selectInput(
+      "geo_ml_stability_group_column",
+      "Optional class/group column for stability seeds:",
+      choices = c("All samples together" = "", labels),
+      selected = isolate(input$geo_ml_stability_group_column %||% "")
+    )
+  })
+
+  output$geo_ml_stability_group_summary <- renderUI({
+    metadata <- geo_sample_metadata()
+    column <- input$geo_ml_stability_group_column %||% ""
+    if (!is.data.frame(metadata) || nrow(metadata) == 0) {
+      return(tags$p(class = "geo-step-note", "Sample metadata is needed to stratify stability seeds."))
+    }
+    if (!nzchar(column)) {
+      return(tags$p(class = "geo-step-note", "Stability seeds will use all samples together unless a class/group column is selected."))
+    }
+    strata <- geo_ml_stability_strata(metadata, column)
+    if (!is.data.frame(strata) || nrow(strata) == 0) {
+      return(tags$p(class = "geo-step-note", "Selected class/group column has no usable sample groups."))
+    }
+    shown <- utils::head(strata, 12)
+    tags$div(class = "geo-step-status",
+      tags$p(tags$strong("Class counts: "), paste0(nrow(strata), " class(es) in ", column, ".")),
+      tags$p(paste(paste0(shown$StratumValue, "=", shown$StratumSamples), collapse = "; "), if (nrow(strata) > nrow(shown)) " ..." else "")
+    )
+  })
+
   output$geo_transcript_ml_progress_ui <- renderUI({
     progress <- geo_transcript_ml_progress()
     total <- suppressWarnings(as.integer(progress$total %||% 0L))
@@ -3799,8 +4378,11 @@ server <- function(input, output, session) {
       style = "margin-top: 10px; padding: 10px; border: 1px solid #dbe7f3; background: #f8fbff; border-radius: 4px;",
       tags$p(style = "margin: 0 0 4px 0;", tags$strong("Transcript ML status: "), progress$phase %||% "idle"),
       tags$p(style = "margin: 0 0 4px 0;", progress$message %||% ""),
+      tags$div(class = "geo-ml-live-bar-track", tags$div(class = "geo-ml-live-bar", style = paste0("width: ", max(0, min(100, percent)), "%;"))),
       tags$p(style = "margin: 0 0 4px 0;", paste0("Processed ", processed, " / ", total, " (", percent, "%).")),
       if (nzchar(progress$current %||% "")) tags$p(style = "margin: 0 0 4px 0;", paste0("Current: ", progress$current)) else NULL,
+      if (nzchar(progress$detail %||% "")) tags$p(style = "margin: 0 0 4px 0;", progress$detail) else NULL,
+      if (nzchar(progress$stability %||% "")) tags$pre(class = "geo-ml-live-stability", progress$stability) else NULL,
       if (nzchar(progress$cache %||% "")) tags$p(style = "margin: 0; font-size: 12px; color: #596273;", paste0("Cache: ", progress$cache)) else NULL
     )
   })
@@ -3813,30 +4395,440 @@ server <- function(input, output, session) {
     render_geo_table_title("Transcript ML results", "Per-source transcript/group ranking from the local resumable ML pipeline.")
   })
 
+  geo_transcript_ml_class_rank_rows_for <- function(rank_mode = c("r2", "spearman", "combined")) {
+    rank_mode <- match.arg(rank_mode)
+    results <- geo_transcript_ml_results()
+    required <- c("StratumColumn", "StratumValue", "GroupID", "PrincipalTranscript", "Gene")
+    if (!is.data.frame(results) || nrow(results) == 0 || !all(required %in% names(results))) {
+      return(data.frame())
+    }
+    rows <- results[
+      nzchar(as.character(results$StratumColumn %||% "")) &
+        nzchar(as.character(results$StratumValue %||% "")) &
+        !is.na(results$StratumColumn) &
+        !is.na(results$StratumValue),
+      ,
+      drop = FALSE
+    ]
+    if (!is.data.frame(rows) || nrow(rows) == 0) {
+      return(data.frame())
+    }
+    if (!"TriggerBestCpG" %in% names(rows)) {
+      rows$TriggerBestCpG <- ""
+    }
+    if (!"TriggerBestRho" %in% names(rows)) {
+      rows$TriggerBestRho <- NA_real_
+    }
+    missing_cpg <- !nzchar(as.character(rows$TriggerBestCpG %||% "")) | is.na(rows$TriggerBestCpG)
+    details <- geo_transcript_group_details()
+    if (any(missing_cpg) && is.data.frame(details) && nrow(details) > 0 && all(c("GroupID", "CpG", "AbsRho") %in% names(details))) {
+      detail_absrho <- suppressWarnings(as.numeric(details$AbsRho))
+      detail_rows <- details[is.finite(detail_absrho), , drop = FALSE]
+      detail_absrho <- detail_absrho[is.finite(detail_absrho)]
+      best_by_group <- lapply(split(seq_len(nrow(detail_rows)), as.character(detail_rows$GroupID)), function(idx) {
+        best_idx <- idx[which.max(detail_absrho[idx])]
+        detail_rows[best_idx, , drop = FALSE]
+      })
+      best_by_group <- bind_summary_rows(best_by_group)
+      if (is.data.frame(best_by_group) && nrow(best_by_group) > 0) {
+        group_match <- match(as.character(rows$GroupID), as.character(best_by_group$GroupID))
+        fill <- missing_cpg & !is.na(group_match)
+        rows$TriggerBestCpG[fill] <- as.character(best_by_group$CpG[group_match[fill]])
+        if ("SpearmanRho" %in% names(best_by_group)) {
+          rows$TriggerBestRho[fill] <- suppressWarnings(as.numeric(best_by_group$SpearmanRho[group_match[fill]]))
+        }
+      }
+    }
+    rows$ModelMetric <- if ("MedianMetric" %in% names(rows)) suppressWarnings(as.numeric(rows$MedianMetric)) else NA_real_
+    rows$SpearmanMetric <- if ("TriggerMaxAbsRho" %in% names(rows)) suppressWarnings(as.numeric(rows$TriggerMaxAbsRho)) else NA_real_
+    rows$Metric <- switch(rank_mode,
+      r2 = rows$ModelMetric,
+      spearman = rows$SpearmanMetric,
+      combined = ifelse(is.finite(rows$ModelMetric) & is.finite(rows$SpearmanMetric), 1, NA_real_)
+    )
+    if (!any(is.finite(rows$Metric))) {
+      return(data.frame())
+    }
+    if (!"CombinedRank" %in% names(rows)) {
+      rows$CombinedRank <- NA_real_
+    }
+    if (!"StratumSamples" %in% names(rows)) {
+      rows$StratumSamples <- NA_integer_
+    }
+    rows <- rows[is.finite(rows$Metric), , drop = FALSE]
+    strata <- unique(as.character(rows$StratumValue))
+    strata <- strata[nzchar(strata)]
+    stratum_column_idx <- which(nzchar(as.character(rows$StratumColumn)))
+    if (length(stratum_column_idx) > 0) {
+      stratum_column <- as.character(rows$StratumColumn[[stratum_column_idx[[1]]]])
+      metadata_strata <- geo_ml_stability_strata(geo_sample_metadata(), stratum_column)
+      if (is.data.frame(metadata_strata) && nrow(metadata_strata) > 0) {
+        metadata_order <- as.character(metadata_strata$StratumValue)
+        strata <- c(intersect(metadata_order, strata), setdiff(strata, metadata_order))
+      }
+    }
+    custom_order <- input$geo_ml_class_compare_order %||% character(0)
+    custom_order <- trimws(as.character(custom_order))
+    custom_order <- custom_order[nzchar(custom_order)]
+    if (!is.null(input$geo_ml_class_compare_order)) {
+      strata <- intersect(custom_order, strata)
+    } else if (length(custom_order) > 0) {
+      strata <- c(intersect(custom_order, strata), setdiff(strata, custom_order))
+    }
+    if (length(strata) == 0) {
+      return(data.frame())
+    }
+    ranked <- lapply(seq_along(strata), function(stratum_i) {
+      stratum <- strata[[stratum_i]]
+      class_rows <- rows[as.character(rows$StratumValue) == stratum, , drop = FALSE]
+      if (identical(rank_mode, "combined")) {
+        model_rank <- if ("ModelRank" %in% names(class_rows)) suppressWarnings(as.numeric(class_rows$ModelRank)) else rep(NA_real_, nrow(class_rows))
+        rho_rank <- if ("RhoRank" %in% names(class_rows)) suppressWarnings(as.numeric(class_rows$RhoRank)) else rep(NA_real_, nrow(class_rows))
+        if (!any(is.finite(model_rank))) {
+          model_rank <- rank(-class_rows$ModelMetric, ties.method = "min", na.last = "keep")
+        }
+        if (!any(is.finite(rho_rank))) {
+          rho_rank <- rank(-class_rows$SpearmanMetric, ties.method = "min", na.last = "keep")
+        }
+        class_rows$ModelRankForOrder <- model_rank
+        class_rows$RhoRankForOrder <- rho_rank
+        class_rows$Metric <- model_rank + rho_rank
+        class_rows <- class_rows[is.finite(class_rows$Metric), , drop = FALSE]
+        class_rows <- class_rows[order(class_rows$Metric, class_rows$PrincipalTranscript, class_rows$GroupID), , drop = FALSE]
+        max_combined <- suppressWarnings(max(class_rows$Metric, na.rm = TRUE))
+        class_rows$PlotMetric <- if (is.finite(max_combined) && max_combined > 1) {
+          1 - ((class_rows$Metric - 1) / (max_combined - 1))
+        } else {
+          rep(1, nrow(class_rows))
+        }
+        class_rows$PlotY <- class_rows$PlotMetric
+      } else {
+        class_rows <- class_rows[order(-class_rows$Metric, class_rows$PrincipalTranscript, class_rows$GroupID), , drop = FALSE]
+        class_rows$PlotMetric <- class_rows$Metric
+        class_rows$PlotY <- class_rows$Metric
+      }
+      class_rows$Order <- seq_len(nrow(class_rows))
+      class_rows$StratumOrder <- stratum_i
+      class_rows$RankMode <- rank_mode
+      class_rows$TranscriptLabel <- paste0(
+        as.character(class_rows$GroupID),
+        " | ",
+        as.character(class_rows$PrincipalTranscript),
+        " / ",
+        as.character(class_rows$Gene)
+      )
+      class_rows
+    })
+    ranked <- bind_summary_rows(ranked)
+    if (!is.data.frame(ranked) || nrow(ranked) == 0) {
+      return(data.frame())
+    }
+    ranked$StratumValue <- factor(as.character(ranked$StratumValue), levels = strata)
+    ranked
+  }
+
+  geo_transcript_ml_class_rank_rows <- reactive({
+    geo_transcript_ml_class_rank_rows_for("r2")
+  })
+
+  output$geo_transcript_ml_class_order_control <- renderUI({
+    results <- geo_transcript_ml_results()
+    if (!is.data.frame(results) || nrow(results) == 0 ||
+        !all(c("StratumColumn", "StratumValue") %in% names(results))) {
+      return(NULL)
+    }
+    rows <- results[
+      nzchar(as.character(results$StratumColumn %||% "")) &
+        nzchar(as.character(results$StratumValue %||% "")) &
+        !is.na(results$StratumColumn) &
+        !is.na(results$StratumValue),
+      ,
+      drop = FALSE
+    ]
+    if (!is.data.frame(rows) || nrow(rows) == 0) {
+      return(NULL)
+    }
+    strata <- unique(as.character(rows$StratumValue))
+    strata <- strata[nzchar(strata)]
+    stratum_column_idx <- which(nzchar(as.character(rows$StratumColumn)))
+    if (length(stratum_column_idx) > 0) {
+      stratum_column <- as.character(rows$StratumColumn[[stratum_column_idx[[1]]]])
+      metadata_strata <- geo_ml_stability_strata(geo_sample_metadata(), stratum_column)
+      if (is.data.frame(metadata_strata) && nrow(metadata_strata) > 0) {
+        metadata_order <- as.character(metadata_strata$StratumValue)
+        strata <- c(intersect(metadata_order, strata), setdiff(strata, metadata_order))
+      }
+    }
+    if (length(strata) < 2) {
+      return(NULL)
+    }
+    selected <- isolate(input$geo_ml_class_compare_order)
+    selected <- if (is.null(selected)) strata else intersect(trimws(as.character(selected)), strata)
+    tags$div(
+      style = "max-width: 520px; margin: 8px 0 14px 0;",
+      selectizeInput(
+        "geo_ml_class_compare_order",
+        "Class order in plot/table:",
+        choices = strata,
+        selected = selected,
+        multiple = TRUE,
+        options = list(
+          plugins = list("drag_drop", "remove_button"),
+          persist = FALSE,
+          create = FALSE,
+          placeholder = "Drag classes to reorder"
+        )
+      ),
+      tags$p(
+        class = "geo-step-note",
+        "Drag the selected class tags to reorder the comparison."
+      )
+    )
+  })
+
+  geo_transcript_ml_class_compare_for <- function(ranked, metric_label = "R2") {
+    if (!is.data.frame(ranked) || nrow(ranked) == 0) {
+      return(data.frame())
+    }
+    strata <- levels(ranked$StratumValue)
+    ordered_by_class <- lapply(strata, function(stratum) {
+      class_rows <- ranked[as.character(ranked$StratumValue) == stratum, , drop = FALSE]
+      class_rows[order(class_rows$Order), , drop = FALSE]
+    })
+    max_order <- max(vapply(ordered_by_class, nrow, integer(1)))
+    compare <- data.frame(Order = seq_len(max_order))
+    for (i in seq_along(strata)) {
+      stratum <- strata[[i]]
+      class_rows <- ordered_by_class[[i]]
+      transcript_col <- rep(NA_character_, max_order)
+      if (nrow(class_rows) > 0) {
+        idx <- class_rows$Order
+        transcript_label <- paste0(
+          as.character(class_rows$PrincipalTranscript),
+          " / ",
+          as.character(class_rows$Gene),
+          " | R2=",
+          signif(class_rows$ModelMetric, 5),
+          " | |rho|=",
+          signif(class_rows$SpearmanMetric, 5)
+        )
+        if ("TriggerBestCpG" %in% names(class_rows)) {
+          transcript_label <- paste0(transcript_label, " | CpG=", as.character(class_rows$TriggerBestCpG))
+        }
+        if (identical(metric_label, "combined")) {
+          transcript_label <- paste0(transcript_label, " | rank sum=", signif(class_rows$Metric, 5))
+        }
+        if ("GroupID" %in% names(class_rows)) {
+          transcript_label <- paste0(as.character(class_rows$GroupID), " | ", transcript_label)
+        }
+        transcript_col[idx] <- transcript_label
+      }
+      compare[[stratum]] <- transcript_col
+    }
+    rownames(compare) <- NULL
+    compare
+  }
+
+  geo_transcript_ml_class_compare <- reactive({
+    geo_transcript_ml_class_compare_for(geo_transcript_ml_class_rank_rows(), "r2")
+  })
+
+  output$geo_transcript_ml_class_compare_title <- renderUI({
+    compare <- geo_transcript_ml_class_compare()
+    if (!is.data.frame(compare) || nrow(compare) == 0) {
+      return(NULL)
+    }
+      tags$div(
+      tags$h4("Transcript class comparison"),
+      tags$p(class = "geo-step-note", "Each row is one rank position. Use the tabs to compare median-R2 order, Spearman-trigger order, or the combined R2 + Spearman rank inside each metadata group.")
+    )
+  })
+
+  geo_transcript_ml_class_rank_plot_obj <- function(ranked, title, y_title, color_title, hover_metric_label) {
+    req(is.data.frame(ranked), nrow(ranked) > 0)
+    ranked$Order <- suppressWarnings(as.numeric(ranked$Order))
+    ranked$Metric <- suppressWarnings(as.numeric(ranked$Metric))
+    ranked$PlotMetric <- suppressWarnings(as.numeric(ranked$PlotMetric %||% ranked$Metric))
+    ranked$PlotY <- suppressWarnings(as.numeric(ranked$PlotY %||% ranked$Metric))
+    ranked$ModelMetric <- suppressWarnings(as.numeric(ranked$ModelMetric))
+    ranked$SpearmanMetric <- suppressWarnings(as.numeric(ranked$SpearmanMetric))
+    ranked$StratumOrder <- suppressWarnings(as.numeric(ranked$StratumOrder))
+    ranked <- ranked[is.finite(ranked$Order) & is.finite(ranked$StratumOrder) & is.finite(ranked$PlotY), , drop = FALSE]
+    req(nrow(ranked) > 0)
+    transcript_labels <- unique(as.character(ranked$TranscriptLabel))
+    palette <- grDevices::hcl.colors(max(3, length(transcript_labels)), palette = "Dark 3")
+    names(palette) <- transcript_labels
+    plot_obj <- plotly::plot_ly(source = "geo_ml_class_rank")
+    for (label in transcript_labels) {
+      transcript_rows <- ranked[as.character(ranked$TranscriptLabel) == label, , drop = FALSE]
+      transcript_rows <- transcript_rows[order(transcript_rows$StratumOrder), , drop = FALSE]
+      hover <- paste0(
+        "<b>", transcript_rows$TranscriptLabel, "</b>",
+        "<br>Class: ", as.character(transcript_rows$StratumValue),
+        "<br>Order: ", transcript_rows$Order,
+        "<br>Median R2: ", signif(transcript_rows$ModelMetric, 5),
+        "<br>Best Spearman |rho|: ", signif(transcript_rows$SpearmanMetric, 5),
+        if ("TriggerBestCpG" %in% names(transcript_rows)) paste0("<br>Best CpG: ", as.character(transcript_rows$TriggerBestCpG)) else "",
+        if ("TriggerBestRho" %in% names(transcript_rows)) paste0("<br>Best rho: ", signif(suppressWarnings(as.numeric(transcript_rows$TriggerBestRho)), 5)) else "",
+        "<br>", hover_metric_label, ": ", signif(transcript_rows$Metric, 5),
+        "<extra></extra>"
+      )
+      plot_obj <- plotly::add_trace(
+        plot_obj,
+        data = transcript_rows,
+        x = ~StratumOrder,
+        y = ~PlotY,
+        type = "scatter",
+        mode = "lines+markers+text",
+        key = ~GroupID,
+        customdata = ~GroupID,
+        text = ~GroupID,
+        textposition = "middle right",
+        hovertemplate = hover,
+        name = label,
+        line = list(color = palette[[label]], width = 2),
+        marker = list(
+          color = ~PlotMetric,
+          colorscale = "Viridis",
+          cmin = 0,
+          cmax = 1,
+          showscale = identical(label, transcript_labels[[1]]),
+          size = 12,
+          line = list(color = palette[[label]], width = 2),
+          colorbar = list(title = color_title)
+        ),
+        showlegend = TRUE
+      )
+    }
+    strata <- levels(ranked$StratumValue)
+    plotly::layout(
+      plot_obj,
+      title = list(text = title),
+      xaxis = list(
+        title = "",
+        tickmode = "array",
+        tickvals = seq_along(strata),
+        ticktext = strata
+      ),
+      yaxis = list(
+        title = y_title,
+        range = c(0, 1),
+        tickmode = "linear"
+      ),
+      margin = list(l = 70, r = 30, t = 55, b = 55),
+      legend = list(orientation = "h", x = 0, y = -0.18),
+      hovermode = "closest"
+    )
+  }
+
+  output$geo_transcript_ml_class_rank_plot <- renderPlotly({
+    geo_transcript_ml_class_rank_plot_obj(
+      geo_transcript_ml_class_rank_rows_for("r2"),
+      "Transcript order change by class",
+      "Median R2",
+      "R2",
+      "R2 used for order"
+    )
+  })
+
+  output$geo_transcript_ml_class_spearman_plot <- renderPlotly({
+    geo_transcript_ml_class_rank_plot_obj(
+      geo_transcript_ml_class_rank_rows_for("spearman"),
+      "Spearman trigger order change by class",
+      "Best CpG Spearman |rho|",
+      "|rho|",
+      "Spearman |rho| used for order"
+    )
+  })
+
+  output$geo_transcript_ml_class_combined_plot <- renderPlotly({
+    geo_transcript_ml_class_rank_plot_obj(
+      geo_transcript_ml_class_rank_rows_for("combined"),
+      "Combined R2 + Spearman order change by class",
+      "Combined score",
+      "Score",
+      "Combined rank sum"
+    )
+  })
+
+  output$geo_transcript_ml_class_compare_table <- DT::renderDT({
+    compare <- geo_transcript_ml_class_compare()
+    req(is.data.frame(compare), nrow(compare) > 0)
+    compare$Order <- suppressWarnings(as.integer(round(as.numeric(compare$Order))))
+    DT::datatable(compare, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  })
+
+  output$geo_transcript_ml_class_spearman_table <- DT::renderDT({
+    compare <- geo_transcript_ml_class_compare_for(geo_transcript_ml_class_rank_rows_for("spearman"), "spearman")
+    req(is.data.frame(compare), nrow(compare) > 0)
+    compare$Order <- suppressWarnings(as.integer(round(as.numeric(compare$Order))))
+    DT::datatable(compare, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  })
+
+  output$geo_transcript_ml_class_combined_table <- DT::renderDT({
+    compare <- geo_transcript_ml_class_compare_for(geo_transcript_ml_class_rank_rows_for("combined"), "combined")
+    req(is.data.frame(compare), nrow(compare) > 0)
+    compare$Order <- suppressWarnings(as.integer(round(as.numeric(compare$Order))))
+    DT::datatable(compare, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  })
+
   output$geo_transcript_ml_table <- DT::renderDT({
     results <- geo_transcript_ml_results()
     req(is.data.frame(results), nrow(results) > 0)
     display_cols <- intersect(
-      c("Source", "Phase", "GroupID", "PrincipalTranscript", "Gene", "CombinedRank", "ModelRank", "RhoRank", "TriggerMaxAbsRho", "BestModel", "ModelsRun", "ModelsOK", "MetricName", "BestMetric", "MedianMetric", "MeanMetric", "MetricSE", "SeedsRun", "Stable", "StabilityDetail"),
+      c("Source", "Phase", "StratumColumn", "StratumValue", "StratumSamples", "GroupID", "PrincipalTranscript", "Gene", "CombinedRank", "ModelRank", "RhoRank", "TriggerMaxAbsRho", "TriggerBestCpG", "TriggerBestRho", "BestModel", "ModelsRun", "ModelsOK", "MetricName", "BestMetric", "MedianMetric", "MeanMetric", "MetricSE", "SeedsRun", "Stable", "StabilityDetail"),
       names(results)
     )
     display <- results[, display_cols, drop = FALSE]
-    for (metric_col in intersect(c("TriggerMaxAbsRho", "BestMetric", "MedianMetric", "MeanMetric", "MetricSE"), names(display))) {
+    for (metric_col in intersect(c("TriggerMaxAbsRho", "TriggerBestRho", "BestMetric", "MedianMetric", "MeanMetric", "MetricSE"), names(display))) {
       display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
     }
     DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single")
   })
+
+  observeEvent(plotly::event_data("plotly_click", source = "geo_ml_class_rank", priority = "event"), {
+    click <- plotly::event_data("plotly_click", source = "geo_ml_class_rank", priority = "event")
+    group_id <- as.character(click$key %||% click$customdata %||% "")
+    if (nzchar(group_id)) {
+      geo_transcript_ml_focus_group(group_id)
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$geo_transcript_ml_table_rows_selected, {
+    results <- geo_transcript_ml_results()
+    selected <- input$geo_transcript_ml_table_rows_selected
+    if (is.data.frame(results) && nrow(results) > 0 && length(selected) > 0 &&
+        selected[[1]] <= nrow(results) && "GroupID" %in% names(results)) {
+      geo_transcript_ml_focus_group(as.character(results$GroupID[[selected[[1]]]] %||% ""))
+    }
+  }, ignoreInit = TRUE)
 
   geo_transcript_ml_selected_data <- reactive({
     results <- geo_transcript_ml_results()
     details <- geo_transcript_group_details()
     selected <- input$geo_transcript_ml_table_rows_selected
     if (!is.data.frame(results) || nrow(results) == 0 ||
-        !is.data.frame(details) || nrow(details) == 0 ||
-        length(selected) == 0 || selected[[1]] > nrow(results)) {
+        !is.data.frame(details) || nrow(details) == 0) {
       return(list(row = data.frame(), track = data.frame()))
     }
-    ml_row <- results[selected[[1]], , drop = FALSE]
+    focus_group <- geo_transcript_ml_focus_group()
+    if (nzchar(focus_group) && "GroupID" %in% names(results)) {
+      focus_rows <- results[as.character(results$GroupID) == focus_group, , drop = FALSE]
+      if (!is.data.frame(focus_rows) || nrow(focus_rows) == 0) {
+        return(list(row = data.frame(), track = data.frame()))
+      }
+      if ("Phase" %in% names(focus_rows)) {
+        stability_rows <- focus_rows[as.character(focus_rows$Phase) == "stability", , drop = FALSE]
+        if (nrow(stability_rows) > 0) {
+          focus_rows <- stability_rows
+        }
+      }
+      ml_row <- focus_rows[1, , drop = FALSE]
+    } else if (length(selected) > 0 && selected[[1]] <= nrow(results)) {
+      ml_row <- results[selected[[1]], , drop = FALSE]
+    } else {
+      return(list(row = data.frame(), track = data.frame()))
+    }
     group_id <- as.character(ml_row$GroupID[[1]] %||% "")
     track <- details[as.character(details$GroupID) == group_id, , drop = FALSE]
     if (!is.data.frame(track) || nrow(track) == 0) {
@@ -3876,16 +4868,271 @@ server <- function(input, output, session) {
     row <- selected$row
     track <- selected$track
     if (!is.data.frame(row) || nrow(row) == 0) {
-      return(tags$p(class = "geo-step-note", "Select a transcript ML result row to inspect CpG importance."))
+      return(tags$p(class = "geo-step-note", "Click a TG point in the rank plot or select a transcript ML result row to inspect it."))
     }
     tags$div(
       tags$h4(paste0("ML importance: ", row$PrincipalTranscript[[1]], " / ", row$Gene[[1]])),
       tags$p(paste0("Best model: ", row$BestModel[[1]], " | CpGs: ", nrow(track), " | Importance values: ", sum(is.finite(track$Importance)))),
       tags$p(
         class = "geo-step-note",
-        "Top plot shows CpG position with transcript regions; bottom plot compares normalized Spearman |rho| with normalized ML importance. Above the dashed line means ML importance is stronger than Spearman; below means Spearman is stronger."
+        "Selection can come from the rank plot or the table. The epigenetic story below compares classes against the first class in the selected order."
       )
     )
+  })
+
+  geo_transcript_ml_epigenetic_story_data <- reactive({
+    selected <- geo_transcript_ml_selected_data()
+    row <- selected$row
+    track <- selected$track
+    if (!is.data.frame(row) || nrow(row) == 0 || !is.data.frame(track) || nrow(track) == 0) {
+      return(data.frame())
+    }
+    dataset_path <- as.character(row$DatasetPath[[1]] %||% "")
+    if (!nzchar(dataset_path) || !file.exists(dataset_path)) {
+      return(data.frame())
+    }
+    dataset <- tryCatch(utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    metadata <- geo_sample_metadata()
+    if (!is.data.frame(dataset) || nrow(dataset) == 0 || !"sample_id" %in% names(dataset) ||
+        !is.data.frame(metadata) || nrow(metadata) == 0 || !"sample_id" %in% names(metadata)) {
+      return(data.frame())
+    }
+    class_col <- if ("StratumColumn" %in% names(row)) as.character(row$StratumColumn[[1]] %||% "") else ""
+    if (!nzchar(class_col)) {
+      class_col <- input$geo_ml_stability_group_column %||% ""
+    }
+    if (!nzchar(class_col) || !class_col %in% names(metadata)) {
+      return(data.frame())
+    }
+    target_col <- if ("target" %in% names(dataset)) {
+      "target"
+    } else {
+      candidates <- setdiff(names(dataset), c("sample_id", grep("^cg", names(dataset), value = TRUE)))
+      candidates[[1]] %||% ""
+    }
+    if (!nzchar(target_col) || !target_col %in% names(dataset)) {
+      return(data.frame())
+    }
+    kept_track <- track
+    if ("CpGKeptForML" %in% names(kept_track)) {
+      kept <- as.logical(kept_track$CpGKeptForML)
+      kept[is.na(kept)] <- FALSE
+      if (any(kept)) {
+        kept_track <- kept_track[kept, , drop = FALSE]
+      }
+    }
+    cpg_cols <- intersect(unique(as.character(kept_track$CpG)), names(dataset))
+    if (length(cpg_cols) == 0) {
+      cpg_cols <- grep("^cg", names(dataset), value = TRUE)
+    }
+    if (length(cpg_cols) == 0) {
+      return(data.frame())
+    }
+    metadata_values <- geo_ml_class_value(metadata[[class_col]])
+    names(metadata_values) <- as.character(metadata$sample_id)
+    dataset$EpigeneticClass <- metadata_values[as.character(dataset$sample_id)]
+    dataset <- dataset[!is.na(dataset$EpigeneticClass) & nzchar(dataset$EpigeneticClass), , drop = FALSE]
+    if (nrow(dataset) == 0) {
+      return(data.frame())
+    }
+    beta_matrix <- as.matrix(dataset[, cpg_cols, drop = FALSE])
+    storage.mode(beta_matrix) <- "numeric"
+    sample_beta <- rowMeans(beta_matrix, na.rm = TRUE)
+    sample_beta[!is.finite(sample_beta)] <- NA_real_
+    target_values <- suppressWarnings(as.numeric(dataset[[target_col]]))
+    strata <- geo_ml_stability_strata(metadata, class_col)
+    class_order <- if (is.data.frame(strata) && nrow(strata) > 0) as.character(strata$StratumValue) else unique(as.character(dataset$EpigeneticClass))
+    custom_order <- input$geo_ml_class_compare_order %||% character(0)
+    custom_order <- trimws(as.character(custom_order))
+    custom_order <- custom_order[nzchar(custom_order)]
+    if (!is.null(input$geo_ml_class_compare_order)) {
+      class_order <- intersect(custom_order, class_order)
+    } else if (length(custom_order) > 0) {
+      class_order <- c(intersect(custom_order, class_order), setdiff(class_order, custom_order))
+    }
+    class_order <- class_order[class_order %in% unique(as.character(dataset$EpigeneticClass))]
+    if (length(class_order) == 0) {
+      return(data.frame())
+    }
+    ml_results <- geo_transcript_ml_results()
+    group_id <- as.character(row$GroupID[[1]] %||% "")
+    group_rows <- if (is.data.frame(ml_results) && nrow(ml_results) > 0 && "GroupID" %in% names(ml_results)) {
+      ml_results[as.character(ml_results$GroupID) == group_id, , drop = FALSE]
+    } else {
+      data.frame()
+    }
+    story_rows <- lapply(seq_along(class_order), function(i) {
+      class_value <- class_order[[i]]
+      keep <- as.character(dataset$EpigeneticClass) == class_value
+      class_beta <- sample_beta[keep]
+      class_target <- target_values[keep]
+      cor_keep <- is.finite(class_beta) & is.finite(class_target)
+      target_rho <- if (sum(cor_keep) >= 3 && stats::sd(class_beta[cor_keep]) > 0 && stats::sd(class_target[cor_keep]) > 0) {
+        suppressWarnings(stats::cor(class_beta[cor_keep], class_target[cor_keep], method = "spearman"))
+      } else {
+        NA_real_
+      }
+      class_ml <- if (is.data.frame(group_rows) && nrow(group_rows) > 0 && all(c("StratumColumn", "StratumValue") %in% names(group_rows))) {
+        group_rows[
+          as.character(group_rows$StratumColumn) == class_col &
+            as.character(group_rows$StratumValue) == class_value,
+          ,
+          drop = FALSE
+        ]
+      } else {
+        data.frame()
+      }
+      if (is.data.frame(class_ml) && nrow(class_ml) > 1 && "Phase" %in% names(class_ml)) {
+        stability_rows <- class_ml[as.character(class_ml$Phase) == "stability", , drop = FALSE]
+        if (nrow(stability_rows) > 0) {
+          class_ml <- stability_rows
+        }
+      }
+      ml_metric <- if (is.data.frame(class_ml) && nrow(class_ml) > 0 && "MedianMetric" %in% names(class_ml)) {
+        suppressWarnings(as.numeric(class_ml$MedianMetric[[1]]))
+      } else {
+        NA_real_
+      }
+      data.frame(
+        Class = class_value,
+        ClassOrder = i,
+        Samples = sum(keep),
+        CpGs = length(cpg_cols),
+        MeanBeta = mean(class_beta, na.rm = TRUE),
+        BetaSD = stats::sd(class_beta, na.rm = TRUE),
+        TargetRho = target_rho,
+        MedianR2 = ml_metric,
+        stringsAsFactors = FALSE
+      )
+    })
+    story <- bind_summary_rows(story_rows)
+    if (!is.data.frame(story) || nrow(story) == 0 || !any(is.finite(story$MeanBeta))) {
+      return(data.frame())
+    }
+    ref_beta <- story$MeanBeta[[1]]
+    ref_r2 <- story$MedianR2[[1]]
+    story$DeltaBeta <- story$MeanBeta - ref_beta
+    story$DeltaR2 <- story$MedianR2 - ref_r2
+    story$MethylationCall <- mapply(function(beta, beta_sd, delta) {
+      if (is.finite(beta) && is.finite(beta_sd) && beta >= 0.8 && beta_sd <= 0.04) {
+        "locked high"
+      } else if (is.finite(beta) && is.finite(beta_sd) && beta <= 0.2 && beta_sd <= 0.04) {
+        "locked low"
+      } else if (is.finite(delta) && delta >= 0.08) {
+        "hypermethylated shift"
+      } else if (is.finite(delta) && delta <= -0.08) {
+        "hypomethylated shift"
+      } else {
+        "stable methylation"
+      }
+    }, story$MeanBeta, story$BetaSD, story$DeltaBeta)
+    story$PredictionCall <- mapply(function(r2, delta_r2) {
+      if (!is.finite(r2)) {
+      "prediction not measured"
+      } else if (!is.finite(delta_r2) || abs(delta_r2) < 0.12) {
+        "prediction similar"
+      } else if (delta_r2 <= -0.25) {
+        "prediction strongly reduced"
+      } else if (delta_r2 <= -0.12) {
+        "prediction reduced"
+      } else if (delta_r2 >= 0.25) {
+        "prediction strongly increased"
+      } else {
+        "prediction increased"
+      }
+    }, story$MedianR2, story$DeltaR2)
+    story$Mechanism <- mapply(function(methylation, prediction, delta_beta, delta_r2) {
+      if (identical(prediction, "prediction not measured")) {
+        return("no class ML result")
+      }
+      methylation_shift <- is.finite(delta_beta) && abs(delta_beta) >= 0.08
+      prediction_shift <- is.finite(delta_r2) && abs(delta_r2) >= 0.12
+      if (methylation_shift && prediction_shift) {
+        paste(prediction, "with", methylation)
+      } else if (prediction_shift) {
+        paste(prediction, "without beta shift")
+      } else if (methylation_shift) {
+        paste(methylation, "without prediction change")
+      } else {
+        "similar to reference"
+      }
+    }, story$MethylationCall, story$PredictionCall, story$DeltaBeta, story$DeltaR2)
+    story$Interpretation <- ifelse(story$ClassOrder == 1, "reference", story$Mechanism)
+    outcome_label <- input$geo_target_column %||% target_col
+    outcome_label <- if (nzchar(as.character(outcome_label))) as.character(outcome_label) else "selected variable"
+    story$Variable <- outcome_label
+    story$AssociationRho <- story$TargetRho
+    story$Label <- paste0(
+      "<b>", story$Class, "</b>",
+      "<br>", story$Interpretation,
+      "<br>Mean beta: ", signif(story$MeanBeta, 4),
+      "<br>Delta beta vs ", story$Class[[1]], ": ", signif(story$DeltaBeta, 4),
+      "<br>Beta SD: ", signif(story$BetaSD, 4),
+      "<br>Variable: ", outcome_label,
+      "<br>", outcome_label, " rho: ", signif(story$AssociationRho, 4),
+      "<br>Median R2: ", signif(story$MedianR2, 4),
+      "<br>Delta R2 vs ", story$Class[[1]], ": ", signif(story$DeltaR2, 4),
+      "<br>Samples: ", story$Samples,
+      "<br>CpGs: ", story$CpGs
+    )
+    story
+  })
+
+  output$geo_transcript_ml_epigenetic_story_title <- renderUI({
+    story <- geo_transcript_ml_epigenetic_story_data()
+    selected <- geo_transcript_ml_selected_data()
+    row <- selected$row
+    if (!is.data.frame(row) || nrow(row) == 0) {
+      return(NULL)
+    }
+    if (!is.data.frame(story) || nrow(story) == 0) {
+      return(tags$p(class = "geo-step-note", "Epigenetic story needs class-based ML results plus the cached transcript CpG dataset."))
+    }
+    changed <- story[story$ClassOrder > 1 & story$Interpretation != "similar to reference", , drop = FALSE]
+    headline <- if (nrow(changed) > 0) {
+      paste(paste0(changed$Class, ": ", changed$Interpretation), collapse = "; ")
+    } else {
+      paste0("All classes look similar to the reference for transcript-level beta and ", story$Variable[[1]], " prediction strength.")
+    }
+    tags$div(
+      tags$h4(paste0("Class comparison: ", row$PrincipalTranscript[[1]], " / ", row$Gene[[1]])),
+      tags$p(headline),
+      tags$p(class = "geo-step-note", paste0("Variable being predicted: ", story$Variable[[1]], ". Reference class: ", story$Class[[1]], ". Calls compare each class against that reference; 'without beta shift' means prediction changed but transcript-level mean methylation did not."))
+    )
+  })
+
+  output$geo_transcript_ml_epigenetic_story_plot <- renderPlotly({
+    story <- geo_transcript_ml_epigenetic_story_data()
+    req(is.data.frame(story), nrow(story) > 0)
+    story$Class <- factor(story$Class, levels = story$Class)
+    story$PlotR2 <- suppressWarnings(as.numeric(story$MedianR2))
+    story$PlotR2[!is.finite(story$PlotR2)] <- 0.05
+    delta_values <- suppressWarnings(as.numeric(story$DeltaBeta))
+    max_abs_delta <- suppressWarnings(max(abs(delta_values), na.rm = TRUE))
+    if (!is.finite(max_abs_delta)) {
+      max_abs_delta <- 0.01
+    }
+    y_limit <- max(0.01, max_abs_delta * 1.35)
+    p <- ggplot(story, aes(x = Class, y = DeltaBeta, group = 1, text = Label)) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "#8a96a8", linewidth = 0.45) +
+      geom_line(color = "#344054", linewidth = 0.8, alpha = 0.7) +
+      geom_point(aes(color = Interpretation, size = PlotR2), alpha = 0.92) +
+      scale_y_continuous(limits = c(-y_limit, y_limit)) +
+      scale_size_continuous(range = c(3.5, 7), name = "Median R2") +
+      labs(x = NULL, y = paste0("Delta mean beta vs ", story$Class[[1]]), color = "Class call", title = "Class-level change vs reference") +
+      theme_minimal(base_size = 12) +
+      theme(panel.grid.minor = element_blank(), legend.position = "bottom")
+    ggplotly(p, tooltip = "text") %>% config(displaylogo = FALSE)
+  })
+
+  output$geo_transcript_ml_epigenetic_story_table <- DT::renderDT({
+    story <- geo_transcript_ml_epigenetic_story_data()
+    req(is.data.frame(story), nrow(story) > 0)
+    display <- story[, intersect(c("Class", "Interpretation", "Variable", "Samples", "CpGs", "MeanBeta", "DeltaBeta", "BetaSD", "AssociationRho", "MedianR2", "DeltaR2"), names(story)), drop = FALSE]
+    for (metric_col in intersect(c("MeanBeta", "DeltaBeta", "BetaSD", "AssociationRho", "MedianR2", "DeltaR2"), names(display))) {
+      display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
+    }
+    DT::datatable(display, options = list(pageLength = 5, scrollX = TRUE), rownames = FALSE)
   })
 
   output$geo_transcript_ml_importance_track <- renderPlotly({
@@ -4206,7 +5453,9 @@ server <- function(input, output, session) {
     }
 
     candidate_matrix_path <- geo_candidate_cpg_matrix_cache_path(cache_dir, target_column, threshold, source = source)
-    candidate_matrix <- if (file.exists(candidate_matrix_path)) {
+    streaming_candidates <- is.data.frame(attr(candidates, "annotation_map", exact = TRUE)) &&
+      is.data.frame(attr(candidates, "raw_results", exact = TRUE))
+    candidate_matrix <- if (!isTRUE(streaming_candidates) && file.exists(candidate_matrix_path)) {
       tryCatch(utils::read.csv(candidate_matrix_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
     } else {
       data.frame()
@@ -4225,7 +5474,7 @@ server <- function(input, output, session) {
         }
       }
     }
-    if (!is.data.frame(candidate_matrix) || nrow(candidate_matrix) == 0) {
+    if (!isTRUE(streaming_candidates) && (!is.data.frame(candidate_matrix) || nrow(candidate_matrix) == 0)) {
       all_candidate_cpgs <- unique(as.character(stats::na.omit(candidates$CpG)))
       all_candidate_cpgs <- all_candidate_cpgs[nzchar(all_candidate_cpgs)]
       if (length(all_candidate_cpgs) > 0) {
@@ -4437,6 +5686,8 @@ server <- function(input, output, session) {
         CpGKey = geo_group_key(kept_cpgs),
         SampleKey = geo_group_key(kept_samples),
         TriggerMaxAbsRho = trigger_max,
+        TriggerBestCpG = if ("TriggerBestCpG" %in% names(transcript_rows)) as.character(transcript_rows$TriggerBestCpG[[1]]) else "",
+        TriggerBestRho = if ("TriggerBestRho" %in% names(transcript_rows)) suppressWarnings(as.numeric(transcript_rows$TriggerBestRho[[1]])) else NA_real_,
         ThresholdCols = if (nrow(best) > 0) best$thr_col[[1]] else NA_real_,
         ThresholdRows = if (nrow(best) > 0) best$thr_row[[1]] else NA_real_,
         FilterOrder = if (nrow(best) > 0) as.character(best$scan_order[[1]]) else "",
@@ -4512,6 +5763,7 @@ server <- function(input, output, session) {
       display,
       options = list(
         pageLength = 10,
+        scrollX = TRUE,
         autoWidth = FALSE,
         columnDefs = list(
           list(width = "28%", targets = 0),
@@ -4583,7 +5835,8 @@ server <- function(input, output, session) {
     tags$div(
       tags$h4(paste0("Details: ", group$PrincipalTranscript[[1]])),
       tags$p(paste0("Gene: ", group$Gene[[1]], " | CpGs: ", group$Columns[[1]], " | Samples: ", group$Samples[[1]])),
-      tags$p(paste0("Extra compatible transcripts: ", if (nzchar(extras)) extras else "None"))
+      tags$p(paste0("Extra compatible transcripts: ", if (nzchar(extras)) extras else "None")),
+      tags$p(class = "geo-step-note", "Detail rows are capped for inspection; downstream steps use the saved transcript datasets and group summary.")
     )
   })
 
@@ -4599,6 +5852,9 @@ server <- function(input, output, session) {
       names(display)
     )
     display <- display[, display_cols, drop = FALSE]
+    if ("DetailRowsTruncated" %in% names(details) && any(details$DetailRowsTruncated[details$GroupID == group_id] %in% TRUE)) {
+      display <- utils::head(display, 300)
+    }
     for (metric_col in intersect(c("SpearmanRho", "AbsRho"), names(display))) {
       display[[metric_col]] <- round(display[[metric_col]], 5)
     }
@@ -5078,8 +6334,9 @@ server <- function(input, output, session) {
     }
   }, ignoreInit = TRUE)
 
-  observeEvent(input$geo_inspect_files, {
-    accession <- trimws(input$geo_accession %||% "")
+	  observeEvent(input$geo_inspect_files, {
+	    if (block_local_geo_step_when_remote("GEO inspection")) return()
+	    accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
       geo_status("Please enter a GEO accession, for example GSE87571.")
       geo_stage(list(step = "Step 1", title = "Missing accession", message = "Enter a GEO accession before inspecting files."))
@@ -5186,8 +6443,9 @@ server <- function(input, output, session) {
     })
   })
 
-  observeEvent(input$geo_fetch_metadata, {
-    accession <- trimws(input$geo_accession %||% "")
+	  observeEvent(input$geo_fetch_metadata, {
+	    if (block_local_geo_step_when_remote("Sample metadata fetch")) return()
+	    accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
       geo_stage(list(step = "Step 2", title = "Missing accession", message = "Enter and inspect a GEO accession before fetching sample metadata."))
       return()
@@ -5240,8 +6498,9 @@ server <- function(input, output, session) {
     })
   })
 
-  observeEvent(input$geo_fetch_files, {
-    accession <- trimws(input$geo_accession %||% "")
+	  observeEvent(input$geo_fetch_files, {
+	    if (block_local_geo_step_when_remote("GEO file download")) return()
+	    accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
       geo_status("Please enter a GEO accession, for example GSE87571.")
       geo_stage(list(step = "Step 3", title = "Missing accession", message = "Enter a GEO accession before downloading."))
@@ -5490,8 +6749,9 @@ server <- function(input, output, session) {
     })
   })
 
-  observeEvent(input$geo_extract_files, {
-    accession <- trimws(input$geo_accession %||% "")
+	  observeEvent(input$geo_extract_files, {
+	    if (block_local_geo_step_when_remote("GEO matrix extraction")) return()
+	    accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
       geo_stage(list(step = "Step 5", title = "Missing accession", message = "Enter and inspect a GEO accession before extracting."))
       return()
@@ -5595,7 +6855,7 @@ server <- function(input, output, session) {
 
   load_geo_annotation_cache_for_platform <- function(platform_info) {
     geo_stage(list(
-      step = "Step 6",
+      step = "Step 7",
       title = "Loading CpG annotation",
       message = paste0("Building or loading many-to-many CpG annotation for ", platform_info$platform, ".")
     ))
@@ -5611,7 +6871,7 @@ server <- function(input, output, session) {
       )
     ))
     geo_stage(list(
-      step = "Step 6",
+      step = "Step 7",
       title = "CpG annotation ready",
       message = paste0(
         "Loaded ", nrow(annotation_map), " many-to-many CpG-gene/transcript links for ",
@@ -5649,6 +6909,18 @@ server <- function(input, output, session) {
     if (!is.data.frame(results) || nrow(results) == 0) {
       if (isTRUE(update_stage)) {
         geo_stage(list(step = "Step 6", title = "Run Spearman first", message = "Run the CpG Spearman scan before building the transcript CpG table."))
+        if (isTRUE(build_groups)) {
+          update_geo_transcript_build_progress(
+            phase = "blocked",
+            message = "Run the CpG Spearman scan before building transcript datasets.",
+            processed = 0L,
+            total = 0L,
+            compatible = 0L,
+            excluded = 0L,
+            current = "",
+            cache = geo_analysis_cache_dir(cache_dir, source)
+          )
+        }
       }
       return(invisible(data.frame()))
     }
@@ -5660,6 +6932,18 @@ server <- function(input, output, session) {
           title = "No CpGs after sample filter",
           message = paste0("No CpG passed the minimum per-CpG sample filter of ", geo_spearman_min_samples_pct(), "%. Lower that filter or rerun Spearman after checking the matrix.")
         ))
+        if (isTRUE(build_groups)) {
+          update_geo_transcript_build_progress(
+            phase = "no CpGs",
+            message = paste0("No CpG passed the minimum per-CpG sample filter of ", geo_spearman_min_samples_pct(), "%. Lower that filter or rerun Spearman."),
+            processed = 0L,
+            total = 0L,
+            compatible = 0L,
+            excluded = 0L,
+            current = "",
+            cache = geo_analysis_cache_dir(cache_dir, source)
+          )
+        }
       }
       return(invisible(data.frame()))
     }
@@ -5673,42 +6957,140 @@ server <- function(input, output, session) {
     }
     if (!is.data.frame(annotation_map) || nrow(annotation_map) == 0) {
       if (isTRUE(update_stage)) {
-        geo_stage(list(step = "Step 6", title = "Build annotation first", message = "Build/load the CpG annotation cache before building transcript candidates."))
+        geo_stage(list(step = "Step 7", title = "Build annotation first", message = "Build/load the CpG annotation cache before building transcript candidates."))
+        if (isTRUE(build_groups)) {
+          update_geo_transcript_build_progress(
+            phase = "blocked",
+            message = "Build/load the CpG annotation cache before building transcript datasets.",
+            processed = 0L,
+            total = 0L,
+            compatible = 0L,
+            excluded = 0L,
+            current = "",
+            cache = geo_analysis_cache_dir(cache_dir, source)
+          )
+        }
       }
       return(invisible(data.frame()))
     }
 
     threshold <- suppressWarnings(as.numeric(isolate(input$geo_transcript_absrho_threshold %||% 0.8)))
-    candidates <- ugplot_geo_transcript_candidates(results, annotation_map, threshold)
+    if (!is.finite(threshold)) {
+      threshold <- 0.8
+    }
+    absrho <- suppressWarnings(as.numeric(results$AbsRho))
+    result_cols <- intersect(c("CpG", "SpearmanRho", "PValue", "N", "AbsRho"), names(results))
+    trigger_results <- unique(results[is.finite(absrho) & absrho >= threshold, result_cols, drop = FALSE])
+    trigger_links <- merge(
+      trigger_results,
+      annotation_map[, intersect(c("CpG", "Gene", "Transcript"), names(annotation_map)), drop = FALSE],
+      by = "CpG",
+      all.x = FALSE,
+      sort = FALSE
+    )
+    trigger_links <- trigger_links[
+      !is.na(trigger_links$Transcript) &
+        nzchar(as.character(trigger_links$Transcript)),
+      ,
+      drop = FALSE
+    ]
+    selected_transcripts <- unique(as.character(trigger_links$Transcript))
+    selected_transcripts <- selected_transcripts[nzchar(selected_transcripts) & !is.na(selected_transcripts)]
+    candidate_link_count <- if (length(selected_transcripts) > 0) {
+      sum(!is.na(annotation_map$Transcript) & as.character(annotation_map$Transcript) %in% selected_transcripts)
+    } else {
+      0L
+    }
+    use_streaming_candidates <- candidate_link_count > 500000L || length(selected_transcripts) > 5000L
+    candidates <- if (isTRUE(use_streaming_candidates)) {
+      trigger_links <- trigger_links[order(as.character(trigger_links$Transcript), -suppressWarnings(as.numeric(trigger_links$AbsRho)), suppressWarnings(as.numeric(trigger_links$PValue))), , drop = FALSE]
+      transcript_levels <- unique(as.character(trigger_links$Transcript))
+      streaming_rows <- lapply(transcript_levels, function(transcript_id) {
+        df <- trigger_links[as.character(trigger_links$Transcript) == transcript_id, , drop = FALSE]
+        best <- df[1, , drop = FALSE]
+        best$TriggerCpGs <- paste(unique(df$CpG), collapse = ";")
+        best$TriggerGenes <- paste(unique(stats::na.omit(df$Gene)), collapse = ";")
+        best$TriggerMaxAbsRho <- max(suppressWarnings(as.numeric(df$AbsRho)), na.rm = TRUE)
+        best$TriggerBestCpG <- best$CpG[[1]]
+        best$TriggerBestRho <- best$SpearmanRho[[1]]
+        best$ThresholdAbsRho <- threshold
+        best
+      })
+      streaming_candidates <- do.call(rbind, streaming_rows)
+      rownames(streaming_candidates) <- NULL
+      attr(streaming_candidates, "annotation_map") <- annotation_map
+      attr(streaming_candidates, "raw_results") <- results
+      attr(streaming_candidates, "threshold") <- threshold
+      if (isTRUE(update_stage)) {
+        geo_status(ugplot_geo_append_log(
+          geo_status(),
+          paste0(
+            "Using streaming transcript candidate mode for ", format(length(selected_transcripts), big.mark = ","),
+            " transcript(s) and about ", format(candidate_link_count, big.mark = ","),
+            " CpG-transcript links."
+          )
+        ))
+      }
+      streaming_candidates
+    } else {
+      ugplot_geo_transcript_candidates(results, annotation_map, threshold)
+    }
     geo_transcript_candidates(candidates)
     safe_threshold <- gsub("[^0-9]+", "_", format(threshold, trim = TRUE, scientific = FALSE))
     candidates_path <- file.path(geo_analysis_cache_dir(cache_dir, source), paste0("ugplot_geo_transcript_candidates_", geo_safe_cache_token(target_column), "_absrho_", safe_threshold, ".csv"))
     if (is.data.frame(candidates) && nrow(candidates) > 0) {
-      utils::write.csv(candidates, candidates_path, row.names = FALSE)
+      if (!isTRUE(use_streaming_candidates)) {
+        utils::write.csv(candidates, candidates_path, row.names = FALSE)
+      }
       geo_status(ugplot_geo_append_log(
         geo_status(),
         paste0(
-          "Transcript candidate table ready: ", nrow(candidates), " CpG-transcript rows across ",
-          length(unique(candidates$Transcript)), " transcript(s). Saved to ", candidates_path, "."
+          "Transcript candidate table ready: ", nrow(candidates), " trigger CpG-transcript rows across ",
+          length(unique(candidates$Transcript)), " transcript(s)",
+          if (isTRUE(use_streaming_candidates)) {
+            "; full candidate CpGs will be reconstructed per transcript without writing one giant candidate CSV."
+          } else {
+            paste0(". Saved to ", candidates_path, ".")
+          }
         )
       ))
       if (isTRUE(update_stage)) {
         geo_stage(list(
-          step = "Step 6",
+          step = "Step 8",
           title = "Transcript CpG table ready",
           message = paste0(
             "Found ", length(unique(candidates$Transcript)), " transcript(s) with at least one CpG above |rho| >= ",
-            threshold, ". Saved expanded CpG table to disk."
+            threshold,
+            if (isTRUE(use_streaming_candidates)) {
+              ". Large candidate set will be processed transcript-by-transcript."
+            } else {
+              ". Saved expanded CpG table to disk."
+            }
           )
         ))
       }
     } else if (isTRUE(update_stage)) {
       geo_status(ugplot_geo_append_log(geo_status(), paste0("No transcript candidates found for |rho| >= ", threshold, ".")))
       geo_stage(list(
-        step = "Step 6",
+        step = "Step 8",
         title = "No transcript candidates",
         message = paste0("No annotated CpG passed |rho| >= ", threshold, ". Lower the threshold or scan more CpGs.")
       ))
+      if (isTRUE(build_groups)) {
+        geo_transcript_groups(data.frame())
+        geo_transcript_group_details(data.frame())
+        update_geo_transcript_build_progress(
+          phase = "no candidates",
+          message = paste0("No annotated CpG passed |rho| >= ", threshold, ". Lower the transcript CpG threshold and run again."),
+          processed = 0L,
+          total = 0L,
+          compatible = 0L,
+          excluded = 0L,
+          current = "",
+          cache = candidates_path
+        )
+        return(invisible(candidates))
+      }
     }
 
     min_samples_pct <- suppressWarnings(as.numeric(isolate(input$geo_transcript_min_samples %||% 80)))
@@ -5946,12 +7328,22 @@ server <- function(input, output, session) {
       }
     }
     ml_pipeline_dir <- geo_transcript_ml_dir(cache_dir, source)
+    ml_stability_summaries <- if (dir.exists(ml_pipeline_dir)) {
+      list.files(ml_pipeline_dir, pattern = "^summary_by_.*[.]csv$", full.names = TRUE)
+    } else {
+      character(0)
+    }
     ml_summary_candidates <- c(
       file.path(ml_pipeline_dir, "summary.csv"),
+      ml_stability_summaries,
       file.path(ml_pipeline_dir, "screening_summary.csv")
     )
     ml_summary_existing <- ml_summary_candidates[file.exists(ml_summary_candidates)]
-    ml_summary_path <- if (length(ml_summary_existing) > 0) ml_summary_existing[[1]] else ""
+    ml_summary_path <- if (length(ml_summary_existing) > 0) {
+      ml_summary_existing[[which.max(file.info(ml_summary_existing)$mtime)]]
+    } else {
+      ""
+    }
     if (file.exists(ml_summary_path) || dir.exists(ml_pipeline_dir)) {
       ml_summary <- if (!nzchar(ml_summary_path) || identical(basename(ml_summary_path), "screening_summary.csv")) {
         geo_ml_load_screening_summary(ml_pipeline_dir)
@@ -5989,15 +7381,33 @@ server <- function(input, output, session) {
     invisible(TRUE)
   }
 
-  session$onFlushed(function() {
-    accession <- isolate(trimws(input$geo_accession %||% ""))
-    if (nchar(accession) >= 6) {
-      load_geo_cached_state(accession)
-    }
-  }, once = TRUE)
+	  session$onFlushed(function() {
+	    accession <- isolate(trimws(input$geo_accession %||% ""))
+	    if (nchar(accession) >= 6) {
+	      load_geo_cached_state(accession)
+	    }
+	  }, once = TRUE)
 
-  observeEvent(input$geo_build_annotation, {
-    accession <- trimws(input$geo_accession %||% "")
+	  geo_remote_mode_active <- function() {
+	    identical(input$geo_run_target %||% "local", "remote")
+	  }
+
+	  block_local_geo_step_when_remote <- function(step_title = "GEO step") {
+	    if (!geo_remote_mode_active()) {
+	      return(FALSE)
+	    }
+	    geo_stage(list(
+	      step = "Remote GEO",
+	      title = "Remote pipeline selected",
+	      message = paste0(step_title, " was not run locally. Start or refresh the remote GEO pipeline from the top GEO controls.")
+	    ))
+	    geo_remote_pipeline_status("Remote mode is active; local GEO step buttons are blocked.")
+	    TRUE
+	  }
+
+	  observeEvent(input$geo_build_annotation, {
+	    if (block_local_geo_step_when_remote("CpG annotation build")) return()
+	    accession <- trimws(input$geo_accession %||% "")
     cache_dir <- if (nzchar(accession)) ugplot_geo_cache_dir(accession) else ""
     metadata <- geo_sample_metadata()
     if ((!is.data.frame(metadata) || nrow(metadata) == 0) && nzchar(cache_dir) && file.exists(ugplot_geo_sample_metadata_path(cache_dir, "rds"))) {
@@ -6005,17 +7415,17 @@ server <- function(input, output, session) {
       geo_sample_metadata(metadata)
     }
     if (!is.data.frame(metadata) || nrow(metadata) == 0) {
-      geo_stage(list(step = "Step 6", title = "Missing sample metadata", message = "Fetch sample metadata before building CpG annotation."))
+      geo_stage(list(step = "Step 7", title = "Missing sample metadata", message = "Fetch sample metadata before building CpG annotation."))
       return()
     }
     platform_id <- ugplot_geo_detect_platform(metadata)
     if (!nzchar(platform_id %||% "")) {
-      geo_stage(list(step = "Step 6", title = "Missing platform", message = "Sample metadata does not include a usable platform_id."))
+      geo_stage(list(step = "Step 7", title = "Missing platform", message = "Sample metadata does not include a usable platform_id."))
       return()
     }
     platform_info <- ugplot_geo_platform_annotation_package(platform_id)
     if (is.null(platform_info)) {
-      geo_stage(list(step = "Step 6", title = "Unsupported platform", message = paste0("No built-in annotation mapping is configured for ", platform_id, ".")))
+      geo_stage(list(step = "Step 7", title = "Unsupported platform", message = paste0("No built-in annotation mapping is configured for ", platform_id, ".")))
       return()
     }
 
@@ -6023,7 +7433,7 @@ server <- function(input, output, session) {
     if (length(missing_packages) > 0) {
       geo_pending_annotation_platform(platform_info)
       geo_stage(list(
-        step = "Step 6",
+        step = "Step 7",
         title = "CpG annotation packages missing",
         message = paste0("ugPlot needs permission to install: ", paste(missing_packages, collapse = ", "), ".")
       ))
@@ -6046,31 +7456,32 @@ server <- function(input, output, session) {
     }, error = function(e) {
       geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not build/load CpG annotation: ", conditionMessage(e))))
       geo_stage(list(
-        step = "Step 6",
+        step = "Step 7",
         title = "CpG annotation unavailable",
         message = conditionMessage(e)
       ))
     })
   })
 
-  observeEvent(input$geo_confirm_install_annotation, {
-    platform_info <- geo_pending_annotation_platform()
+	  observeEvent(input$geo_confirm_install_annotation, {
+	    if (block_local_geo_step_when_remote("CpG annotation package install")) return()
+	    platform_info <- geo_pending_annotation_platform()
     if (is.null(platform_info)) {
       removeModal()
-      geo_stage(list(step = "Step 6", title = "No pending install", message = "No annotation platform is waiting for package installation."))
+      geo_stage(list(step = "Step 7", title = "No pending install", message = "No annotation platform is waiting for package installation."))
       return()
     }
     removeModal()
     missing_packages <- ugplot_geo_missing_annotation_packages(platform_info)
     if (length(missing_packages) == 0) {
       tryCatch(load_geo_annotation_cache_for_platform(platform_info), error = function(e) {
-        geo_stage(list(step = "Step 6", title = "CpG annotation unavailable", message = conditionMessage(e)))
+        geo_stage(list(step = "Step 7", title = "CpG annotation unavailable", message = conditionMessage(e)))
       })
       return()
     }
 
     geo_stage(list(
-      step = "Step 6",
+      step = "Step 7",
       title = "Installing CpG annotation packages",
       message = paste0("Installing: ", paste(missing_packages, collapse = ", "), ". This may take several minutes.")
     ))
@@ -6091,15 +7502,16 @@ server <- function(input, output, session) {
     }, error = function(e) {
       geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not install/build CpG annotation packages: ", conditionMessage(e))))
       geo_stage(list(
-        step = "Step 6",
+        step = "Step 7",
         title = "CpG annotation install failed",
         message = conditionMessage(e)
       ))
     })
   })
 
-  observeEvent(input$geo_run_spearman, {
-    accession <- trimws(input$geo_accession %||% "")
+	  observeEvent(input$geo_run_spearman, {
+	    if (block_local_geo_step_when_remote("CpG Spearman scan")) return()
+	    accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
       geo_stage(list(step = "Step 6", title = "Missing accession", message = "Enter and inspect a GEO accession before running CpG correlation."))
       return()
@@ -6116,7 +7528,7 @@ server <- function(input, output, session) {
     }
     target_column <- input$geo_target_column %||% ""
     if (!nzchar(target_column) || !target_column %in% names(metadata)) {
-      geo_stage(list(step = "Step 6", title = "Select target", message = "Choose a metadata target column before running Spearman by CpG."))
+      geo_stage(list(step = "Step 6", title = "Select metadata field", message = "Choose a metadata field before running Spearman by CpG."))
       return()
     }
     source <- geo_matrix_source_value()
@@ -6142,7 +7554,7 @@ server <- function(input, output, session) {
     geo_transcript_candidates(data.frame())
     geo_status(ugplot_geo_append_log(
       geo_status(),
-      paste0("Running ", geo_matrix_source_label(source), " Spearman scan for target '", target_column, "' across ", length(matrix_files), " matrix file(s).")
+      paste0("Running ", geo_matrix_source_label(source), " Spearman scan for '", target_column, "' across ", length(matrix_files), " matrix file(s).")
     ))
     geo_stage(list(
       step = "Step 6",
@@ -6223,7 +7635,7 @@ server <- function(input, output, session) {
         step = "Step 6",
         title = "CpG Spearman scan complete",
         message = paste0(
-          "Saved all ", nrow(results), " raw CpG results for ", geo_matrix_source_label(source), " target '", target_column, "'.",
+            "Saved all ", nrow(results), " raw CpG results for ", geo_matrix_source_label(source), " field '", target_column, "'.",
           if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
             " Annotated many-to-many CpG-gene/transcript results and grouped summaries were also saved."
           } else {
@@ -6237,14 +7649,15 @@ server <- function(input, output, session) {
     })
   })
 
-  observeEvent(input$geo_build_transcript_groups, {
-    accession <- trimws(input$geo_accession %||% "")
+	  observeEvent(input$geo_build_transcript_groups, {
+	    if (block_local_geo_step_when_remote("Transcript dataset build")) return()
+	    accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
-      geo_stage(list(step = "Step 6", title = "Missing accession", message = "Enter and inspect a GEO accession first."))
+      geo_stage(list(step = "Step 8", title = "Missing accession", message = "Enter and inspect a GEO accession first."))
       return()
     }
     geo_stage(list(
-      step = "Step 6",
+      step = "Step 8",
       title = "Building transcript CSVs",
       message = "Continuing from cached Spearman/annotation results. Existing transcript CSVs and partial progress will be reused."
     ))
@@ -6270,22 +7683,23 @@ server <- function(input, output, session) {
       }),
       error = function(e) {
         geo_status(ugplot_geo_append_log(geo_status(), paste0("Could not build transcript CSVs/groups: ", conditionMessage(e))))
-        geo_stage(list(step = "Step 6", title = "Transcript CSV build failed", message = conditionMessage(e)))
+        geo_stage(list(step = "Step 8", title = "Transcript CSV build failed", message = conditionMessage(e)))
       }
     )
   })
 
-  observeEvent(input$geo_run_transcript_ml, {
-    accession <- trimws(input$geo_accession %||% "")
+	  observeEvent(input$geo_run_transcript_ml, {
+	    if (block_local_geo_step_when_remote("Transcript ML screening")) return()
+	    accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
-      geo_stage(list(step = "Step 8", title = "Missing accession", message = "Enter and inspect a GEO accession first."))
+      geo_stage(list(step = "Step 9", title = "Missing accession", message = "Enter and inspect a GEO accession first."))
       return()
     }
     source <- geo_matrix_source_value()
     cache_dir <- ugplot_geo_cache_dir(accession)
     groups <- geo_transcript_groups()
     if (!is.data.frame(groups) || nrow(groups) == 0) {
-      geo_stage(list(step = "Step 8", title = "No transcript groups", message = "Build transcript ML datasets before running transcript ML."))
+      geo_stage(list(step = "Step 9", title = "No transcript groups", message = "Build transcript ML datasets before running transcript ML."))
       return()
     }
     min_absrho <- geo_ml_safe_num(input$geo_ml_min_absrho %||% 0.7, 0.7, 0, 1)
@@ -6306,7 +7720,7 @@ server <- function(input, output, session) {
       eligible <- utils::head(eligible, rank_limit)
     }
     if (!is.data.frame(eligible) || nrow(eligible) == 0) {
-      geo_stage(list(step = "Step 8", title = "No eligible transcripts", message = paste0("No transcript group has trigger |rho| >= ", min_absrho, ".")))
+      geo_stage(list(step = "Step 9", title = "No eligible transcripts", message = paste0("No transcript group has trigger |rho| >= ", min_absrho, ".")))
       return()
     }
     selected_processed <- intersect(processed_groups, as.character(eligible$GroupID))
@@ -6322,7 +7736,7 @@ server <- function(input, output, session) {
         cache = summary_path
       )
       geo_stage(list(
-        step = "Step 8",
+        step = "Step 9",
         title = "Transcript ML screening already complete",
         message = paste0("The selected ", nrow(eligible), " transcript group(s) already exist in ", summary_path, ".")
       ))
@@ -6334,7 +7748,7 @@ server <- function(input, output, session) {
       models <- geo_ml_quick_models(models)
     }
     if (length(models) == 0) {
-      geo_stage(list(step = "Step 8", title = "No ML models selected", message = "Select at least one installed caret model for transcript ML."))
+      geo_stage(list(step = "Step 9", title = "No ML models selected", message = "Select at least one installed caret model for transcript ML."))
       return()
     }
     settings <- list(
@@ -6353,7 +7767,7 @@ server <- function(input, output, session) {
       cache = pipeline_dir
     )
     geo_stage(list(
-      step = "Step 8",
+      step = "Step 9",
       title = "Screening transcript ML models",
       message = paste0("Screening results are saved under ", pipeline_dir, " and can resume after interruption.")
     ))
@@ -6427,31 +7841,32 @@ server <- function(input, output, session) {
         current = "",
         cache = summary_path
       )
-      geo_stage(list(step = "Step 8", title = "Transcript ML screening complete", message = paste0("Saved screening summary: ", summary_path, ". Continue with Step 9 for stability seeds.")))
+      geo_stage(list(step = "Step 9", title = "Transcript ML screening complete", message = paste0("Saved screening summary: ", summary_path, ". Continue with Step 10 for stability seeds.")))
     }, error = function(e) {
       update_geo_transcript_ml_progress(phase = "failed", message = conditionMessage(e), current = "")
-      geo_stage(list(step = "Step 8", title = "Transcript ML screening failed", message = conditionMessage(e)))
+      geo_stage(list(step = "Step 9", title = "Transcript ML screening failed", message = conditionMessage(e)))
       geo_status(ugplot_geo_append_log(geo_status(), paste0("Transcript ML screening failed: ", conditionMessage(e))))
     })
   })
 
-  observeEvent(input$geo_run_transcript_ml_stability, {
-    accession <- trimws(input$geo_accession %||% "")
+	  observeEvent(input$geo_run_transcript_ml_stability, {
+	    if (block_local_geo_step_when_remote("Transcript ML stability")) return()
+	    accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
-      geo_stage(list(step = "Step 9", title = "Missing accession", message = "Enter and inspect a GEO accession first."))
+      geo_stage(list(step = "Step 10", title = "Missing accession", message = "Enter and inspect a GEO accession first."))
       return()
     }
     source <- geo_matrix_source_value()
     cache_dir <- ugplot_geo_cache_dir(accession)
     groups <- geo_transcript_groups()
     if (!is.data.frame(groups) || nrow(groups) == 0) {
-      geo_stage(list(step = "Step 9", title = "No transcript groups", message = "Build transcript ML datasets before running stability seeds."))
+      geo_stage(list(step = "Step 10", title = "No transcript groups", message = "Build transcript ML datasets before running stability seeds."))
       return()
     }
     min_absrho <- geo_ml_safe_num(input$geo_ml_min_absrho %||% 0.7, 0.7, 0, 1)
     eligible <- groups[suppressWarnings(as.numeric(groups$TriggerMaxAbsRho)) >= min_absrho, , drop = FALSE]
     if (!is.data.frame(eligible) || nrow(eligible) == 0) {
-      geo_stage(list(step = "Step 9", title = "No eligible transcripts", message = paste0("No transcript group has trigger |rho| >= ", min_absrho, ".")))
+      geo_stage(list(step = "Step 10", title = "No eligible transcripts", message = paste0("No transcript group has trigger |rho| >= ", min_absrho, ".")))
       return()
     }
     settings <- list(
@@ -6465,75 +7880,170 @@ server <- function(input, output, session) {
     settings$max_stability_seeds <- max(settings$max_stability_seeds, settings$min_stability_seeds)
     settings$window <- min(settings$window, settings$max_stability_seeds)
     pipeline_dir <- geo_transcript_ml_dir(cache_dir, source)
-    summary_path <- file.path(pipeline_dir, "summary.csv")
+    metadata <- geo_sample_metadata()
+    stratum_column <- input$geo_ml_stability_group_column %||% ""
+    strata <- if (nzchar(stratum_column)) {
+      geo_ml_stability_strata(metadata, stratum_column)
+    } else {
+      data.frame(StratumColumn = "", StratumValue = "", StratumSamples = NA_integer_, SampleIDs = "", stringsAsFactors = FALSE)
+    }
+    if (!is.data.frame(strata) || nrow(strata) == 0) {
+      geo_stage(list(step = "Step 10", title = "No usable class groups", message = "The selected class/group column has no usable sample groups."))
+      return()
+    }
+    summary_path <- if (nzchar(stratum_column)) {
+      file.path(pipeline_dir, paste0("summary_by_", geo_safe_cache_token(stratum_column), ".csv"))
+    } else {
+      file.path(pipeline_dir, "summary.csv")
+    }
     existing_summary <- if (file.exists(summary_path)) {
       tryCatch(utils::read.csv(summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
     } else {
       data.frame()
     }
-    processed_groups <- if (is.data.frame(existing_summary) && "GroupID" %in% names(existing_summary)) {
-      unique(as.character(existing_summary$GroupID))
+    processed_keys <- if (is.data.frame(existing_summary) && "GroupID" %in% names(existing_summary)) {
+      existing_col <- if ("StratumColumn" %in% names(existing_summary)) existing_summary$StratumColumn else rep("", nrow(existing_summary))
+      existing_value <- if ("StratumValue" %in% names(existing_summary)) existing_summary$StratumValue else rep("", nrow(existing_summary))
+      unique(geo_ml_stability_task_key(existing_summary$GroupID, existing_col, existing_value))
     } else {
       character(0)
     }
+    total_tasks <- nrow(eligible) * nrow(strata)
     update_geo_transcript_ml_progress(
       phase = "running",
-      message = paste0("Running stability seeds for ", nrow(eligible), " eligible group(s) on ", geo_matrix_source_label(source), "."),
-      processed = length(intersect(processed_groups, eligible$GroupID)),
-      total = nrow(eligible),
+      message = paste0(
+        "Running stability seeds for ", nrow(eligible), " eligible group(s)",
+        if (nzchar(stratum_column)) paste0(" across ", nrow(strata), " class(es) from ", stratum_column) else "",
+        " on ", geo_matrix_source_label(source), "."
+      ),
+      processed = length(processed_keys),
+      total = total_tasks,
       current = "",
       cache = pipeline_dir
     )
-    geo_stage(list(step = "Step 9", title = "Running stability seeds", message = paste0("Final results are saved under ", pipeline_dir, " and can resume after interruption.")))
+    geo_stage(list(step = "Step 10", title = "Running stability seeds", message = paste0("Final results are saved under ", pipeline_dir, " and can resume after interruption.")))
     tryCatch({
       withProgress(message = "Running stability seeds", value = 0, {
-        summaries <- existing_summary
-        for (group_i in seq_len(nrow(eligible))) {
-          group <- eligible[group_i, , drop = FALSE]
-          group_id <- as.character(group$GroupID[[1]])
-          if (group_id %in% processed_groups) {
-            next
+        last_progress_detail <- ""
+        last_progress_time <- Sys.time() - 10
+        last_runner_message <- "waiting for trainer update"
+        set_stability_progress <- function(value, detail, force = FALSE) {
+          now <- Sys.time()
+          elapsed <- as.numeric(difftime(now, last_progress_time, units = "secs"))
+          if (isTRUE(force) || (!identical(detail, last_progress_detail) && elapsed >= 2)) {
+            shiny::setProgress(value = value, detail = detail)
+            last_progress_detail <<- detail
+            last_progress_time <<- now
           }
-          update_geo_transcript_ml_progress(
-            phase = "running",
-            message = paste0("Running stability seeds for group ", group_i, " / ", nrow(eligible), ": ", group_id, "."),
-            processed = length(intersect(processed_groups, eligible$GroupID)),
-            total = nrow(eligible),
-            current = paste0(group_id, " / ", group$PrincipalTranscript[[1]]),
-            cache = geo_transcript_ml_group_dir(cache_dir, source, group_id)
-          )
-          shiny::setProgress(value = (group_i - 1) / nrow(eligible), detail = paste0("Group ", group_id))
-          summary_row <- geo_ml_run_group_stability(
+        }
+        summaries <- existing_summary
+        task_i <- 0L
+        for (stratum_i in seq_len(nrow(strata))) {
+          stratum <- strata[stratum_i, , drop = FALSE]
+          stratum_label <- if (nzchar(stratum$StratumColumn[[1]])) paste0(stratum$StratumColumn[[1]], "=", stratum$StratumValue[[1]]) else "all samples"
+          for (group_i in seq_len(nrow(eligible))) {
+            task_i <- task_i + 1L
+            group <- eligible[group_i, , drop = FALSE]
+            group_id <- as.character(group$GroupID[[1]])
+            task_key <- geo_ml_stability_task_key(group_id, stratum$StratumColumn[[1]], stratum$StratumValue[[1]])
+            if (task_key %in% processed_keys) {
+              set_stability_progress(
+                value = task_i / total_tasks,
+                detail = geo_ml_stability_progress_text(
+                  paste0("Task ", task_i, " / ", total_tasks, ": ", group_id, " / ", stratum_label),
+                  length(processed_keys),
+                  total_tasks,
+                  "already complete"
+                ),
+                force = TRUE
+              )
+              next
+            }
+            cache_path <- geo_transcript_ml_group_dir(cache_dir, source, group_id)
+            if (nzchar(stratum$StratumColumn[[1]])) {
+              cache_path <- file.path(cache_path, "stability_by", geo_safe_cache_token(stratum$StratumColumn[[1]]), geo_safe_cache_token(stratum$StratumValue[[1]]))
+            }
+            current_task <- paste0(group_id, " / ", group$PrincipalTranscript[[1]], " / ", stratum_label)
+            task_detail <- paste0("Task ", task_i, " / ", total_tasks, ": ", current_task)
+            update_geo_transcript_ml_progress(
+              phase = "running",
+              message = paste0("Running task ", task_i, " / ", total_tasks, "."),
+              processed = length(processed_keys),
+              total = total_tasks,
+              current = current_task,
+              detail = "Starting stability run.",
+              stability = "",
+              values = numeric(0),
+              cache = cache_path
+            )
+            set_stability_progress(
+              value = (task_i - 1) / total_tasks,
+              detail = geo_ml_stability_progress_text(task_detail, length(processed_keys), total_tasks, "starting stability run"),
+              force = TRUE
+            )
+            summary_row <- geo_ml_run_group_stability(
             group,
             source,
             settings,
-            progress_callback = function(message) {
+            stratum = stratum,
+            progress_callback = function(message, detail = NULL) {
+              stability_text <- detail$stability %||% ""
+              distribution_text <- detail$distribution %||% ""
+              if (nzchar(message %||% "")) {
+                last_runner_message <<- message
+              }
+              runner_message <- last_runner_message
+              clean_detail <- geo_ml_stability_progress_text(
+                task_detail,
+                length(processed_keys),
+                total_tasks,
+                runner_message,
+                stability_text,
+                distribution_text
+              )
               update_geo_transcript_ml_progress(
                 phase = "running",
-                message = message,
-                processed = length(intersect(processed_groups, eligible$GroupID)),
-                total = nrow(eligible),
-                current = paste0(group_id, " / ", group$PrincipalTranscript[[1]]),
-                cache = geo_transcript_ml_group_dir(cache_dir, source, group_id)
-              )
-              shiny::setProgress(value = (group_i - 1) / nrow(eligible), detail = message)
+                message = paste0("Running task ", task_i, " / ", total_tasks, "."),
+                  processed = length(processed_keys),
+                  total = total_tasks,
+                  current = current_task,
+                  detail = message,
+                  stability = detail$stability %||% NULL,
+                  values = detail$values %||% NULL,
+                  cache = cache_path
+                )
+                set_stability_progress(
+                  value = min(0.99, (task_i - 0.25) / total_tasks),
+                  detail = clean_detail,
+                  force = identical(detail$source %||% "", "partial")
+                )
+              }
+            )
+            summaries <- if (is.data.frame(summaries) && nrow(summaries) > 0) {
+              existing_col <- if ("StratumColumn" %in% names(summaries)) summaries$StratumColumn else rep("", nrow(summaries))
+              existing_value <- if ("StratumValue" %in% names(summaries)) summaries$StratumValue else rep("", nrow(summaries))
+              keep <- geo_ml_stability_task_key(summaries$GroupID, existing_col, existing_value) != task_key
+              summaries <- summaries[keep, , drop = FALSE]
+              bind_summary_rows(list(summaries, summary_row))
+            } else {
+              summary_row
             }
-          )
-          summaries <- if (is.data.frame(summaries) && nrow(summaries) > 0) {
-            summaries <- summaries[as.character(summaries$GroupID) != group_id, , drop = FALSE]
-            bind_summary_rows(list(summaries, summary_row))
-          } else {
-            summary_row
+            summaries <- geo_ml_rank_summary(summaries)
+            utils::write.csv(summaries, summary_path, row.names = FALSE)
+            geo_transcript_ml_results(summaries)
+            processed_keys <- union(processed_keys, task_key)
+            update_geo_transcript_ml_progress(
+              processed = length(processed_keys),
+              total = total_tasks,
+              message = paste0("Finished stability seeds for ", group_id, " / ", stratum_label, "."),
+              detail = "Task complete."
+            )
+            set_stability_progress(
+              value = task_i / total_tasks,
+              detail = geo_ml_stability_progress_text(task_detail, length(processed_keys), total_tasks, "task complete"),
+              force = TRUE
+            )
           }
-          summaries <- geo_ml_rank_summary(summaries)
-          utils::write.csv(summaries, summary_path, row.names = FALSE)
-          geo_transcript_ml_results(summaries)
-          processed_groups <- union(processed_groups, group_id)
-          update_geo_transcript_ml_progress(
-            processed = length(intersect(processed_groups, eligible$GroupID)),
-            total = nrow(eligible),
-            message = paste0("Finished stability seeds for ", group_id, ".")
-          )
         }
       })
       final_summary <- if (file.exists(summary_path)) {
@@ -6548,22 +8058,24 @@ server <- function(input, output, session) {
       geo_transcript_ml_results(final_summary)
       update_geo_transcript_ml_progress(
         phase = "complete",
-        message = paste0("Transcript ML stability complete for ", nrow(final_summary), " group(s)."),
+        message = paste0("Transcript ML stability complete for ", nrow(final_summary), " result row(s)."),
         processed = nrow(final_summary),
-        total = nrow(eligible),
+        total = total_tasks,
         current = "",
-        cache = summary_path
+        cache = summary_path,
+        active = FALSE
       )
-      geo_stage(list(step = "Step 9", title = "Transcript ML stability complete", message = paste0("Saved final summary: ", summary_path)))
+      geo_stage(list(step = "Step 10", title = "Transcript ML stability complete", message = paste0("Saved final summary: ", summary_path)))
     }, error = function(e) {
-      update_geo_transcript_ml_progress(phase = "failed", message = conditionMessage(e), current = "")
-      geo_stage(list(step = "Step 9", title = "Transcript ML stability failed", message = conditionMessage(e)))
+      update_geo_transcript_ml_progress(phase = "failed", message = conditionMessage(e), current = "", active = FALSE)
+      geo_stage(list(step = "Step 10", title = "Transcript ML stability failed", message = conditionMessage(e)))
       geo_status(ugplot_geo_append_log(geo_status(), paste0("Transcript ML stability failed: ", conditionMessage(e))))
     })
   })
 
-  observeEvent(input$geo_install_sesame, {
-    if (requireNamespace("sesame", quietly = TRUE)) {
+	  observeEvent(input$geo_install_sesame, {
+	    if (block_local_geo_step_when_remote("Sesame installation")) return()
+	    if (requireNamespace("sesame", quietly = TRUE)) {
       geo_stage(list(step = "Step 5", title = "Sesame already installed", message = "Package 'sesame' is already available."))
       return()
     }
@@ -6622,8 +8134,9 @@ server <- function(input, output, session) {
     })
   })
 
-  observeEvent(input$geo_run_sesame_idat, {
-    accession <- trimws(input$geo_accession %||% "")
+	  observeEvent(input$geo_run_sesame_idat, {
+	    if (block_local_geo_step_when_remote("Sesame IDAT reprocessing")) return()
+	    accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
       geo_stage(list(step = "Step 5", title = "Missing accession", message = "Enter and inspect a GEO accession before reprocessing raw IDATs."))
       return()
@@ -6650,7 +8163,7 @@ server <- function(input, output, session) {
       ))
       return()
     }
-    detection_p <- suppressWarnings(as.numeric(input$geo_idat_detection_p %||% 0.01))
+    detection_p <- suppressWarnings(as.numeric(input$geo_idat_detection_p %||% 0.05))
     max_failed <- suppressWarnings(as.numeric(input$geo_idat_max_failed_fraction %||% 0.05))
     prep_code <- trimws(input$geo_idat_sesame_prep %||% "QCDPB")
     if (!nzchar(prep_code)) {
@@ -6744,7 +8257,19 @@ server <- function(input, output, session) {
 
   observeEvent(input$geo_transcript_absrho_threshold, {
     if (is.data.frame(geo_spearman_raw_results()) && nrow(geo_spearman_raw_results()) > 0) {
-      build_geo_transcript_candidates(update_stage = TRUE)
+      geo_transcript_candidates(data.frame())
+      geo_transcript_groups(data.frame())
+      geo_transcript_group_details(data.frame())
+      update_geo_transcript_build_progress(
+        phase = "threshold changed",
+        message = "Review the positive/negative Spearman totals, then click Build/continue transcript CSVs.",
+        processed = 0L,
+        total = 0L,
+        compatible = 0L,
+        excluded = 0L,
+        current = "",
+        cache = ""
+      )
     }
   }, ignoreInit = TRUE)
 
@@ -6762,7 +8287,7 @@ server <- function(input, output, session) {
     }
     metadata <- geo_sample_metadata()
     if (!is.data.frame(metadata) || nrow(metadata) == 0 || !target_column %in% names(metadata)) {
-      geo_stage(list(step = "Step 6", title = "Missing target metadata", message = "Fetch sample metadata and choose a valid target column first."))
+      geo_stage(list(step = "Step 6", title = "Missing metadata field", message = "Fetch sample metadata and choose a valid metadata field first."))
       return(invisible(FALSE))
     }
     cache_dir <- ugplot_geo_cache_dir(accession)
@@ -8453,7 +9978,7 @@ server <- function(input, output, session) {
     selected_remote_server()$name[[1]]
   }
 
-  refresh_remote_jobs <- function() {
+	  refresh_remote_jobs <- function() {
     servers <- remote_servers()
     if (!is.data.frame(servers) || nrow(servers) == 0) {
       servers <- ugplot_default_remote_servers()
@@ -8546,11 +10071,145 @@ server <- function(input, output, session) {
     }
     remote_server_capabilities(capabilities_by_server)
     remote_server_connection_state(if (length(server_connection_rows) > 0) do.call(rbind, server_connection_rows) else data.frame())
-    remote_jobs(jobs)
-    invisible(jobs)
-  }
+	    remote_jobs(jobs)
+	    invisible(jobs)
+	  }
 
-  remote_server_supports <- function(capability, server_name = NULL) {
+	  build_remote_geo_config <- function() {
+	    accession <- trimws(input$geo_accession %||% "")
+	    if (!nzchar(accession)) {
+	      stop("Enter a GEO accession before starting a remote GEO pipeline.", call. = FALSE)
+	    }
+	    list(
+	      runner = "ugplot_run_geo_pipeline_job",
+	      type = "geo",
+	      job_name = paste("GEO", accession, input$geo_matrix_source %||% "processed"),
+	      accession = accession,
+	      matrix_source = input$geo_matrix_source %||% "processed",
+	      target_column = input$geo_target_column %||% "",
+	      spearman_max_cpgs = input$geo_spearman_max_cpgs %||% 0,
+	      spearman_min_samples_pct = input$geo_spearman_min_samples %||% 80,
+	      transcript_absrho_threshold = input$geo_transcript_absrho_threshold %||% 0.8,
+	      transcript_min_samples = input$geo_transcript_min_samples %||% 80,
+	      idat_detection_p = input$geo_idat_detection_p %||% 0.05,
+	      idat_max_failed_fraction = input$geo_idat_max_failed_fraction %||% 0.05,
+	      idat_sesame_prep = input$geo_idat_sesame_prep %||% "QCDPB",
+	      geo_ml_min_absrho = input$geo_ml_min_absrho %||% 0.7,
+	      geo_ml_rank_limit = input$geo_ml_rank_limit %||% NA_integer_,
+	      geo_ml_quick_models = isTRUE(input$geo_ml_quick_models),
+	      geo_ml_screen_seeds = input$geo_ml_screen_seeds %||% 3,
+	      geo_ml_timeout = input$geo_ml_timeout %||% 1200,
+	      geo_ml_min_stability_seeds = input$geo_ml_min_stability_seeds %||% 30,
+	      geo_ml_max_stability_seeds = input$geo_ml_max_stability_seeds %||% 4000,
+	      geo_ml_stability_window = input$geo_ml_stability_window %||% 30,
+	      geo_ml_stability_tolerance = input$geo_ml_stability_tolerance %||% 0.01,
+	      geo_ml_stability_group_column = input$geo_ml_stability_group_column %||% "",
+	      models = input$ml_checkbox_group %||% character(0),
+	      timeout = 0
+	    )
+	  }
+
+	  apply_remote_geo_result <- function(result, job_id = "") {
+	    if (!is.list(result) || !identical(result$kind %||% "", "geo_pipeline")) {
+	      stop("Remote job result is not a GEO pipeline result.", call. = FALSE)
+	    }
+	    if (is.data.frame(result$tables$remote_files)) {
+	      geo_remote_files(result$tables$remote_files)
+	    }
+	    if (is.data.frame(result$tables$metadata_preview)) {
+	      geo_sample_metadata(result$tables$metadata_preview)
+	    }
+	    if (is.data.frame(result$tables$spearman_preview)) {
+	      geo_spearman_raw_results(result$tables$spearman_preview)
+	      geo_spearman_results(result$tables$spearman_preview)
+	    }
+	    if (is.data.frame(result$tables$transcript_groups)) {
+	      geo_transcript_groups(result$tables$transcript_groups)
+	    }
+	    if (is.data.frame(result$tables$transcript_candidates_preview)) {
+	      geo_transcript_candidates(result$tables$transcript_candidates_preview)
+	    }
+	    ml_summary <- result$tables$transcript_ml_summary
+	    if (!is.data.frame(ml_summary) || nrow(ml_summary) == 0) {
+	      ml_summary <- result$tables$transcript_ml_screening
+	    }
+	    if (is.data.frame(ml_summary) && nrow(ml_summary) > 0) {
+	      geo_transcript_ml_results(ml_summary)
+	      update_geo_transcript_ml_progress(
+	        phase = "loaded from remote",
+	        message = paste0("Loaded remote transcript ML summary: ", nrow(ml_summary), " row(s). Large artifacts remain on the remote server."),
+	        processed = nrow(ml_summary),
+	        total = nrow(ml_summary),
+	        current = "",
+	        cache = result$paths$transcript_ml_summary %||% result$paths$transcript_ml_screening_summary %||% ""
+	      )
+	    }
+	    if (is.data.frame(result$tables$idat_qc)) {
+	      geo_idat_qc_report(result$tables$idat_qc)
+	    }
+	    accession <- result$accession %||% ""
+	    if (nzchar(accession)) {
+	      updateTextInput(session, "geo_accession", value = accession)
+	    }
+	    if (nzchar(result$matrix_source %||% "")) {
+	      updateSelectInput(session, "geo_matrix_source", selected = result$matrix_source)
+	    }
+	    if (nzchar(result$target_column %||% "")) {
+	      updateSelectInput(session, "geo_target_column", selected = result$target_column)
+	    }
+	    geo_remote_pipeline_job_id(job_id %||% geo_remote_pipeline_job_id())
+	    geo_remote_pipeline_status(paste0(
+	      "Remote GEO result loaded",
+	      if (nzchar(job_id %||% "")) paste0(" from job ", job_id) else "",
+	      ". Remote cache: ", result$cache_dir %||% ""
+	    ))
+	    geo_status(ugplot_geo_append_log(geo_status(), geo_remote_pipeline_status()))
+	    geo_stage(list(
+	      step = "Remote GEO",
+	      title = "Remote result loaded",
+	      message = paste0("Pipeline outputs remain on the remote server cache: ", result$cache_dir %||% "")
+	    ))
+	    invisible(result)
+	  }
+
+	  refresh_remote_geo_pipeline_status <- function(job_id = geo_remote_pipeline_job_id()) {
+	    if (!nzchar(job_id %||% "")) {
+	      stop("No remote GEO job id is selected.", call. = FALSE)
+	    }
+	    server <- selected_geo_remote_server()
+	    status <- ugplot_remote_job_status(
+	      server_url = server$url,
+	      job_id = job_id,
+	      token = server$token %||% ""
+	    )
+	    geo_remote_pipeline_status(remote_status_summary_text(status))
+	    remote_job_preview_status(status)
+	    updateTextInput(session, "remote_job_id", value = job_id)
+	    invisible(status)
+	  }
+
+	  submit_remote_geo_pipeline <- function() {
+	    config <- build_remote_geo_config()
+	    server <- selected_geo_remote_server()
+	    started <- ugplot_remote_create_job(
+	      server_url = server$url,
+	      dataset = data.frame(geo_pipeline = TRUE),
+	      config = config,
+	      token = server$token %||% ""
+	    )
+	    job_id <- started$id %||% ""
+	    geo_remote_pipeline_job_id(job_id)
+	    updateTextInput(session, "remote_job_id", value = job_id)
+	    updateRadioButtons(session, "geo_run_target", selected = "remote")
+	    refresh_geo_remote_server_inputs(selected = server$name[[1]])
+	    geo_remote_pipeline_status(paste("Remote GEO pipeline submitted:", job_id))
+	    remote_job_status_text(geo_remote_pipeline_status())
+	    refresh_remote_jobs()
+	    updateTabsetPanel(session, "tabs", selected = "JOBS")
+	    invisible(started)
+	  }
+
+	  remote_server_supports <- function(capability, server_name = NULL) {
     capabilities <- remote_server_capabilities()
     if (!is.null(server_name) && nzchar(server_name %||% "") && is.list(capabilities[[server_name]])) {
       return(isTRUE(capabilities[[server_name]][[capability]] %||% FALSE))
@@ -8829,14 +10488,54 @@ server <- function(input, output, session) {
     })
   })
 
-  observeEvent(input$remote_refresh_jobs, {
-    tryCatch({
-      refresh_remote_jobs()
-      remote_job_status_text("Remote jobs refreshed.")
-    }, error = function(e) {
-      remote_job_status_text(paste("Remote refresh failed:", conditionMessage(e)))
-    })
-  })
+	  observeEvent(input$remote_refresh_jobs, {
+	    tryCatch({
+	      refresh_remote_jobs()
+	      remote_job_status_text("Remote jobs refreshed.")
+	    }, error = function(e) {
+	      remote_job_status_text(paste("Remote refresh failed:", conditionMessage(e)))
+	    })
+	  })
+
+	  observeEvent(input$geo_start_remote_pipeline, {
+	    tryCatch({
+	      submit_remote_geo_pipeline()
+	    }, error = function(e) {
+	      geo_remote_pipeline_status(paste("Remote GEO submit failed:", conditionMessage(e)))
+	      remote_job_status_text(geo_remote_pipeline_status())
+	    })
+	  })
+
+	  observeEvent(input$geo_refresh_remote_pipeline, {
+	    tryCatch({
+	      job_id <- geo_remote_pipeline_job_id() %||% input$remote_job_id %||% ""
+	      refresh_remote_geo_pipeline_status(job_id)
+	      refresh_remote_jobs()
+	    }, error = function(e) {
+	      geo_remote_pipeline_status(paste("Remote GEO status failed:", conditionMessage(e)))
+	      remote_job_status_text(geo_remote_pipeline_status())
+	    })
+	  })
+
+	  observeEvent(input$geo_load_remote_pipeline_result, {
+	    tryCatch({
+	      job_id <- geo_remote_pipeline_job_id() %||% input$remote_job_id %||% ""
+	      if (!nzchar(job_id)) {
+	        stop("No remote GEO job id is selected.", call. = FALSE)
+	      }
+	      server <- selected_geo_remote_server()
+	      result <- ugplot_remote_get_result(
+	        server_url = server$url,
+	        job_id = job_id,
+	        token = server$token %||% ""
+	      )
+	      apply_remote_geo_result(result, job_id)
+	      refresh_remote_geo_pipeline_status(job_id)
+	    }, error = function(e) {
+	      geo_remote_pipeline_status(paste("Remote GEO result load failed:", conditionMessage(e)))
+	      remote_job_status_text(geo_remote_pipeline_status())
+	    })
+	  })
 
   output$remote_jobs_table <- DT::renderDT({
     jobs <- remote_jobs()

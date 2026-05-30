@@ -143,6 +143,7 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
           source(file.path(source_dir, "R", "app.R"), local = .GlobalEnv)
           source(file.path(source_dir, "R", "job_store.R"), local = .GlobalEnv)
           source(file.path(source_dir, "R", "ml_runner.R"), local = .GlobalEnv)
+          source(file.path(source_dir, "R", "geo_pipeline_runner.R"), local = .GlobalEnv)
           source(file.path(source_dir, "R", "job_process.R"), local = .GlobalEnv)
           ugplot_run_job_from_dir(job_id, jobs_dir)
         } else {
@@ -169,7 +170,7 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
 }
 
 ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugplot_default_jobs_dir()) {
-  status <- ugplot_create_job(dataset = dataset, config = config, jobs_dir = jobs_dir)
+  status <- ugplot_create_job(dataset = dataset, config = config, jobs_dir = jobs_dir, type = config$type %||% "ml")
   ugplot_launch_background_job(status$id, jobs_dir)
 }
 

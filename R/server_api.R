@@ -181,7 +181,8 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         auto_resume_monitor = !is.null(auto_resume_process),
         job_bundle = TRUE,
         job_preview = TRUE,
-        job_config_summary = TRUE
+        job_config_summary = TRUE,
+        geo_pipeline = TRUE
       )
     )
   })

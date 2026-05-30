@@ -943,7 +943,7 @@ ugplot_geo_prepare_sesame_data_cache <- function(data_titles = "idatSignature", 
   invisible(TRUE)
 }
 
-ugplot_geo_reprocess_idats_sesame <- function(cache_dir, detection_p = 0.01,
+ugplot_geo_reprocess_idats_sesame <- function(cache_dir, detection_p = 0.05,
                                              max_failed_probe_fraction = 0.05,
                                              prep = "QCDPB",
                                              progress_callback = NULL) {
@@ -972,7 +972,7 @@ ugplot_geo_reprocess_idats_sesame <- function(cache_dir, detection_p = 0.01,
   qc_rows <- vector("list", nrow(pairs))
   detection_p <- suppressWarnings(as.numeric(detection_p))
   if (!is.finite(detection_p) || detection_p <= 0 || detection_p >= 1) {
-    detection_p <- 0.01
+    detection_p <- 0.05
   }
   max_failed_probe_fraction <- suppressWarnings(as.numeric(max_failed_probe_fraction))
   if (!is.finite(max_failed_probe_fraction) || max_failed_probe_fraction < 0 || max_failed_probe_fraction > 1) {
@@ -1012,7 +1012,7 @@ ugplot_geo_reprocess_idats_sesame <- function(cache_dir, detection_p = 0.01,
         betas <- suppressWarnings(as.numeric(beta_raw))
         names(betas) <- names(beta_raw)
         if (!is.null(p_oobah)) {
-          pval_raw <- p_oobah(sset, return.pval = TRUE, pval.threshold = detection_p)
+          pval_raw <- p_oobah(sset, return.pval = TRUE)
           pvals <- suppressWarnings(as.numeric(pval_raw))
           names(pvals) <- names(pval_raw)
           common <- intersect(names(betas), names(pvals))
@@ -1077,7 +1077,22 @@ ugplot_geo_reprocess_idats_sesame <- function(cache_dir, detection_p = 0.01,
         "Report saved to ", ugplot_geo_sesame_qc_path(cache_dir), "."
       ))
     }
-    stop(paste0("All IDAT samples failed QC. Report saved to ", ugplot_geo_sesame_qc_path(cache_dir), "."))
+    min_failed <- suppressWarnings(min(qc_report$FailedProbeFraction, na.rm = TRUE))
+    threshold_note <- if (is.finite(min_failed)) {
+      paste0(
+        " Lowest failed probe fraction was ", signif(min_failed, 4),
+        " with detection p cutoff ", signif(detection_p, 4),
+        " and maximum failed fraction ", signif(max_failed_probe_fraction, 4), "."
+      )
+    } else {
+      ""
+    }
+    stop(paste0(
+      "All IDAT samples failed QC.",
+      threshold_note,
+      " Adjust the detection p cutoff or maximum failed pOOBAH fraction if this is expected for the dataset. ",
+      "Report saved to ", ugplot_geo_sesame_qc_path(cache_dir), "."
+    ))
   }
   all_probes <- Reduce(union, lapply(beta_list, names))
   beta_matrix <- matrix(NA_real_, nrow = length(all_probes), ncol = length(beta_list), dimnames = list(all_probes, names(beta_list)))

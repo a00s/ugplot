@@ -266,6 +266,12 @@ ugplot_job_config_summary <- function(status, jobs_dir = ugplot_default_jobs_dir
   }
   config <- tryCatch(readRDS(config_path), error = function(e) list())
   models <- config$models %||% config$model_names %||% character(0)
+  if (identical(config$type %||% "", "geo") || identical(config$runner %||% "", "ugplot_run_geo_pipeline_job")) {
+    return(list(
+      target = as.character(config$accession %||% ""),
+      models = paste(c(config$matrix_source %||% "", config$target_column %||% ""), collapse = " / ")
+    ))
+  }
   list(
     target = as.character(config$target %||% config$target_name %||% ""),
     models = paste(as.character(models), collapse = ", ")
