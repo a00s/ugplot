@@ -10300,6 +10300,74 @@ server <- function(input, output, session) {
     invisible(model_deps)
   }
 
+  remote_config_is_geo <- function(config) {
+    is.list(config) &&
+      (
+        identical(config$type %||% "", "geo") ||
+          identical(config$runner %||% "", "ugplot_run_geo_pipeline_job")
+      )
+  }
+
+  remote_status_is_geo <- function(status) {
+    is.list(status) && identical(status$type %||% "", "geo")
+  }
+
+  remote_result_is_geo <- function(result) {
+    is.list(result) && identical(result$kind %||% "", "geo_pipeline")
+  }
+
+  activate_geo_remote_server_for_job <- function(server) {
+    server_name <- as.character(server$name[[1]])
+    updateRadioButtons(session, "geo_run_target", selected = "remote")
+    refresh_geo_remote_server_inputs(selected = server_name)
+    updateSelectInput(session, "geo_remote_server_name", selected = server_name)
+    invisible(server)
+  }
+
+  load_remote_geo_job_locally <- function(job_id, server, status = NULL, result = NULL) {
+    activate_geo_remote_server_for_job(server)
+    if (!is.list(status)) {
+      status <- tryCatch(
+        ugplot_remote_job_status(
+          server_url = server$url,
+          job_id = job_id,
+          token = server$token %||% ""
+        ),
+        error = function(e) NULL
+      )
+    }
+    remote_job_preview_status(status)
+    geo_remote_pipeline_job_id(job_id)
+    updateTextInput(session, "remote_job_id", value = job_id)
+    if (!remote_result_is_geo(result) && remote_status_has_result(status)) {
+      result <- tryCatch(
+        ugplot_remote_get_result(
+          server_url = server$url,
+          job_id = job_id,
+          token = server$token %||% ""
+        ),
+        error = function(e) NULL
+      )
+    }
+    if (remote_result_is_geo(result)) {
+      remote_job_preview_result(result)
+      apply_remote_geo_result(result, job_id)
+      remote_job_status_text(paste("Remote GEO result loaded:", job_id, "- large artifacts remain on", server$name[[1]]))
+    } else {
+      remote_job_preview_result(NULL)
+      status_text <- remote_status_summary_text(status)
+      if (!nzchar(status_text)) {
+        status_text <- paste("Remote GEO job selected:", job_id)
+      }
+      geo_remote_pipeline_status(status_text)
+      remote_job_status_text(status_text)
+    }
+    session$onFlushed(function() {
+      updateTabsetPanel(session, "tabs", selected = "GEO IMPORT")
+    }, once = TRUE)
+    invisible(result)
+  }
+
   refresh_remote_job_preview <- function(job_id, switch_to_ml = FALSE, server_name = NULL) {
     req(nzchar(job_id %||% ""))
     server <- remote_server_by_name(server_name %||% remote_server_name_for_job(job_id))
@@ -10310,6 +10378,11 @@ server <- function(input, output, session) {
     )
     remote_job_preview_status(status)
     status_text <- remote_status_summary_text(status)
+    if (remote_status_is_geo(status)) {
+      activate_geo_remote_server_for_job(server)
+      geo_remote_pipeline_job_id(job_id)
+      geo_remote_pipeline_status(status_text)
+    }
 
     if (remote_status_has_result(status)) {
       if (isTRUE(switch_to_ml)) {
@@ -10318,10 +10391,15 @@ server <- function(input, output, session) {
           job_id = job_id,
           token = server$token %||% ""
         )
-        remote_job_preview_result(ugplot_job_result_preview(result))
-        apply_remote_ml_result(result, job_id)
-        updateTabsetPanel(session, "tabs", selected = "MACHINE LEARNING")
-        status_text <- paste(status_text, "| full result loaded")
+        if (remote_result_is_geo(result)) {
+          load_remote_geo_job_locally(job_id, server, status = status, result = result)
+          return(invisible(status))
+        } else {
+          remote_job_preview_result(ugplot_job_result_preview(result))
+          apply_remote_ml_result(result, job_id)
+          updateTabsetPanel(session, "tabs", selected = "MACHINE LEARNING")
+          status_text <- paste(status_text, "| full result loaded")
+        }
       } else {
         result <- if (remote_server_supports("job_preview", server$name[[1]])) {
           ugplot_remote_get_job_preview(
@@ -10361,13 +10439,26 @@ server <- function(input, output, session) {
   load_remote_job_bundle_locally <- function(job_id, server_name = NULL) {
     req(nzchar(job_id %||% ""))
     server <- remote_server_by_name(server_name %||% remote_server_name_for_job(job_id))
-    activate_remote_server_for_job(server)
+    status <- tryCatch(
+      ugplot_remote_job_status(
+        server_url = server$url,
+        job_id = job_id,
+        token = server$token %||% ""
+      ),
+      error = function(e) NULL
+    )
+    if (remote_status_is_geo(status) && !remote_server_supports("job_bundle", server$name[[1]])) {
+      return(load_remote_geo_job_locally(job_id, server, status = status))
+    }
     if (!remote_server_supports("job_bundle", server$name[[1]])) {
       result <- ugplot_remote_get_result(
         server_url = server$url,
         job_id = job_id,
         token = server$token %||% ""
       )
+      if (remote_result_is_geo(result)) {
+        return(load_remote_geo_job_locally(job_id, server, status = status, result = result))
+      }
       remote_job_preview_result(result)
       apply_remote_ml_result(result, job_id)
       remote_job_status_text(paste(
@@ -10383,10 +10474,15 @@ server <- function(input, output, session) {
       token = server$token %||% ""
     )
     dataset <- bundle$dataset
+    config <- bundle$config %||% list()
+    status <- bundle$status %||% status
+    if (remote_config_is_geo(config) || remote_status_is_geo(status) || remote_result_is_geo(bundle$result)) {
+      return(load_remote_geo_job_locally(job_id, server, status = status, result = bundle$result))
+    }
+    activate_remote_server_for_job(server)
     if (!is.data.frame(dataset)) {
       stop("Remote job bundle did not include a data.frame dataset.", call. = FALSE)
     }
-    config <- bundle$config %||% list()
 
     dff <<- dataset
     df_pre <<- dataset
@@ -10697,6 +10793,10 @@ server <- function(input, output, session) {
       job_id = job_id,
       token = server$token %||% ""
     )
+    if (remote_result_is_geo(result)) {
+      load_remote_geo_job_locally(job_id, server, result = result)
+      return(invisible(result))
+    }
     apply_remote_ml_result(result, job_id)
     remote_job_status_text(paste("Remote result loaded locally:", job_id))
     if (isTRUE(switch_to_ml)) {

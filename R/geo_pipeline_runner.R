@@ -592,6 +592,7 @@ ugplot_geo_download_selected_files <- function(remote_files, cache_dir, source =
     if (!is.null(progress_callback)) {
       progress_callback(start_progress, paste0("Downloading ", file_i, "/", nrow(pending), ": ", remote_file$File[[1]]))
     }
+    last_progress_sent <- start_progress
     ugplot_geo_download_file(
       remote_file$URL[[1]],
       destination,
@@ -608,6 +609,10 @@ ugplot_geo_download_selected_files <- function(remote_files, cache_dir, source =
         } else {
           start_progress
         }
+        if (progress < 0.98 && progress < last_progress_sent + 0.01) {
+          return()
+        }
+        last_progress_sent <<- progress
         progress_callback(progress, paste0("Downloading ", remote_file$File[[1]]))
       }
     )
@@ -670,22 +675,39 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
     stage = "queued",
     updated_at = as.character(Sys.time())
   )
-  publish <- function(progress, message) {
+  last_publish_progress <- -Inf
+  last_publish_time <- Sys.time() - 60
+  last_partial_time <- Sys.time() - 60
+  publish <- function(progress, message, force = FALSE) {
     result$stage <<- message
     result$updated_at <<- as.character(Sys.time())
-    progress_callback(progress = progress, message = message)
-    if (!is.null(partial_callback)) {
+    now <- Sys.time()
+    progress_value <- suppressWarnings(as.numeric(progress))
+    progress_delta <- progress_value - last_publish_progress
+    publish_elapsed <- as.numeric(difftime(now, last_publish_time, units = "secs"))
+    should_publish <- isTRUE(force) ||
+      isTRUE(progress_delta >= 0.01) ||
+      isTRUE(publish_elapsed >= 10) ||
+      isTRUE(is.finite(progress_value) && progress_value >= 1)
+    if (should_publish) {
+      progress_callback(progress = progress, message = message)
+      last_publish_progress <<- progress_value
+      last_publish_time <<- now
+    }
+    partial_elapsed <- as.numeric(difftime(now, last_partial_time, units = "secs"))
+    if (!is.null(partial_callback) && (isTRUE(force) || isTRUE(partial_elapsed >= 30) || isTRUE(is.finite(progress_value) && progress_value >= 1))) {
       partial_callback(result)
+      last_partial_time <<- now
     }
   }
 
-  publish(0.02, paste0("Inspecting GEO accession ", accession))
+  publish(0.02, paste0("Inspecting GEO accession ", accession), force = TRUE)
   remote_files <- ugplot_geo_remote_supp_files(accession)
   remote_files <- ugplot_geo_annotate_remote_files(remote_files, cache_dir)
   ugplot_geo_write_manifest(cache_dir, accession, remote_files)
   result$tables$remote_files <- remote_files
 
-  publish(0.08, "Fetching sample metadata")
+  publish(0.08, "Fetching sample metadata", force = TRUE)
   metadata <- ugplot_geo_fetch_sample_metadata(accession, cache_dir)
   result$tables$metadata_preview <- utils::head(metadata, 50)
   if (!nzchar(target_column)) {
@@ -694,7 +716,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
     result$target_column <- target_column
   }
 
-  publish(0.15, "Downloading selected GEO files on remote server")
+  publish(0.15, "Downloading selected GEO files on remote server", force = TRUE)
   remote_files <- ugplot_geo_download_selected_files(
     remote_files,
     cache_dir,
@@ -704,7 +726,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
   result$tables$remote_files <- remote_files
 
   if (identical(source, "raw_sesame")) {
-    publish(0.42, "Reprocessing raw IDAT files with sesame")
+    publish(0.42, "Reprocessing raw IDAT files with sesame", force = TRUE)
     sesame_result <- ugplot_geo_reprocess_idats_sesame(
       cache_dir = cache_dir,
       detection_p = as.numeric(config$idat_detection_p %||% 0.05),
@@ -719,7 +741,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
     result$paths$sesame_beta <- sesame_result$beta_path
     result$paths$sesame_qc <- sesame_result$qc_path
   } else {
-    publish(0.42, "Extracting processed matrix files")
+    publish(0.42, "Extracting processed matrix files", force = TRUE)
     remote_files <- ugplot_geo_extract_processed_files(
       remote_files,
       cache_dir,
@@ -735,7 +757,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
   result$paths$matrix_files <- matrix_files
 
   if (nzchar(target_column)) {
-    publish(0.63, paste0("Running CpG Spearman scan for ", target_column))
+    publish(0.63, paste0("Running CpG Spearman scan for ", target_column), force = TRUE)
     sample_map <- ugplot_geo_matrix_sample_map(matrix_files, metadata)
     target <- suppressWarnings(as.numeric(as.character(metadata[[target_column]])))
     matched_numeric <- if (is.data.frame(sample_map) && nrow(sample_map) > 0) {
@@ -760,7 +782,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
     result$paths$spearman_raw <- spearman_paths$raw
     result$tables$spearman_preview <- utils::head(spearman_results, 100)
 
-    publish(0.82, "Building/loading CpG annotation cache")
+    publish(0.82, "Building/loading CpG annotation cache", force = TRUE)
     annotation_map <- ugplot_geo_build_annotation_cache(ugplot_geo_detect_platform(metadata))
     annotated <- ugplot_geo_join_spearman_annotation(spearman_results, annotation_map)
     utils::write.csv(annotated, spearman_paths$annotated, row.names = FALSE)
@@ -781,7 +803,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
     if (!is.finite(min_transcript_samples)) {
       min_transcript_samples <- 80
     }
-    publish(0.86, paste0("Building transcript ML datasets for |rho| >= ", threshold))
+    publish(0.86, paste0("Building transcript ML datasets for |rho| >= ", threshold), force = TRUE)
     candidates <- ugplot_geo_transcript_candidates(spearman_results, annotation_map, threshold)
     candidates_path <- file.path(
       ugplot_geo_analysis_dir(cache_dir, source),
@@ -807,7 +829,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
       result$tables$transcript_groups <- group_result$summary
 
       if (is.data.frame(group_result$summary) && nrow(group_result$summary) > 0) {
-        publish(0.93, "Running remote transcript ML screening")
+        publish(0.93, "Running remote transcript ML screening", force = TRUE)
         screen_summary <- ugplot_geo_run_transcript_ml_remote(
           groups = group_result$summary,
           cache_dir = cache_dir,
@@ -819,7 +841,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
         result$tables$transcript_ml_screening <- screen_summary
 
         if (is.data.frame(screen_summary) && nrow(screen_summary) > 0) {
-          publish(0.97, "Running remote transcript ML stability")
+          publish(0.97, "Running remote transcript ML stability", force = TRUE)
           stability_summary <- ugplot_geo_run_transcript_stability_remote(
             screen_summary = screen_summary,
             cache_dir = cache_dir,
@@ -836,6 +858,6 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
 
   result$stage <- "finished"
   result$updated_at <- as.character(Sys.time())
-  publish(1, "Remote GEO pipeline finished")
+  publish(1, "Remote GEO pipeline finished", force = TRUE)
   result
 }
