@@ -943,6 +943,15 @@ ugplot_geo_prepare_sesame_data_cache <- function(data_titles = "idatSignature", 
   invisible(TRUE)
 }
 
+ugplot_geo_sesame_fallback_prep <- function(prep) {
+  prep <- as.character(prep %||% "")
+  fallback <- gsub("Q", "", prep, fixed = TRUE)
+  if (!nzchar(fallback)) {
+    fallback <- "CDPB"
+  }
+  fallback
+}
+
 ugplot_geo_reprocess_idats_sesame <- function(cache_dir, detection_p = 0.05,
                                              max_failed_probe_fraction = 0.05,
                                              prep = "QCDPB",
@@ -950,7 +959,7 @@ ugplot_geo_reprocess_idats_sesame <- function(cache_dir, detection_p = 0.05,
   if (!requireNamespace("sesame", quietly = TRUE)) {
     stop("Package 'sesame' is required for raw Red/Grn IDAT reprocessing.")
   }
-  prepared_sesame_titles <- c("idatSignature", "HM450.address", "KYCG.HM450.Mask.20240513")
+  prepared_sesame_titles <- c("idatSignature", "HM450.address")
   ugplot_geo_prepare_sesame_data_cache(prepared_sesame_titles, progress_callback = progress_callback)
   ugplot_geo_extract_raw_archives(cache_dir, progress_callback = function(done, total, file) {
     if (!is.null(progress_callback)) {
@@ -1000,14 +1009,16 @@ ugplot_geo_reprocess_idats_sesame <- function(cache_dir, detection_p = 0.05,
     )
     sample_error <- ""
     beta_values <- numeric(0)
+    sample_prep <- prep
+    used_prep_fallback <- FALSE
     for (attempt_i in seq_len(8L)) {
       sample_error <- ""
       beta_values <- tryCatch({
         sset <- read_pair(prefix)
         if (!is.null(progress_callback)) {
-          progress_callback(pair_i - 0.75, nrow(pairs), paste0("Preprocessing ", sample_id, " with ", prep))
+          progress_callback(pair_i - 0.75, nrow(pairs), paste0("Preprocessing ", sample_id, " with ", sample_prep))
         }
-        sset <- prep_sesame(sset, prep = prep)
+        sset <- prep_sesame(sset, prep = sample_prep)
         beta_raw <- get_betas(sset)
         betas <- suppressWarnings(as.numeric(beta_raw))
         names(betas) <- names(beta_raw)
@@ -1047,9 +1058,32 @@ ugplot_geo_reprocess_idats_sesame <- function(cache_dir, detection_p = 0.05,
           nzchar(sample_error) &&
           !is.na(missing_title) &&
           !missing_title %in% prepared_sesame_titles) {
-        ugplot_geo_prepare_sesame_data_cache(missing_title, progress_callback = progress_callback)
-        prepared_sesame_titles <- c(prepared_sesame_titles, missing_title)
-        next
+        prepared <- tryCatch({
+          ugplot_geo_prepare_sesame_data_cache(missing_title, progress_callback = progress_callback)
+          TRUE
+        }, error = function(e) {
+          sample_error <<- conditionMessage(e)
+          FALSE
+        })
+        if (isTRUE(prepared)) {
+          prepared_sesame_titles <- c(prepared_sesame_titles, missing_title)
+          next
+        }
+        fallback_prep <- ugplot_geo_sesame_fallback_prep(sample_prep)
+        if (!used_prep_fallback &&
+            grepl("^KYCG\\..*\\.Mask\\.", missing_title) &&
+            !identical(fallback_prep, sample_prep)) {
+          used_prep_fallback <- TRUE
+          sample_prep <- fallback_prep
+          if (!is.null(progress_callback)) {
+            progress_callback(
+              pair_i - 0.7,
+              nrow(pairs),
+              paste0("Retrying ", sample_id, " with sesame prep ", sample_prep, " because ", missing_title, " is unavailable")
+            )
+          }
+          next
+        }
       }
       break
     }
