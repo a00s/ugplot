@@ -2534,6 +2534,7 @@ server <- function(input, output, session) {
     title = "Inspect a GEO accession",
     message = "Enter a GEO accession and inspect the available supplementary files."
   ))
+  geo_run_target_state <- reactiveVal("local")
   geo_remote_pipeline_job_id <- reactiveVal("")
   geo_remote_pipeline_status <- reactiveVal("")
   geo_download_progress <- reactiveVal(list(
@@ -2664,7 +2665,8 @@ server <- function(input, output, session) {
 	    idat_progress <- geo_idat_qc_progress()
 	    idat_qc <- geo_idat_qc_report()
 	    preview <- geo_preview_data()
-	    run_remote <- identical(input$geo_run_target %||% "local", "remote")
+	    current_geo_run_target <- geo_run_target_state()
+	    run_remote <- identical(current_geo_run_target, "remote")
 
     metadata_done <- is.data.frame(metadata) && nrow(metadata) > 0
     files_seen <- (is.data.frame(remote_files) && nrow(remote_files) > 0) || (is.data.frame(local_files) && nrow(local_files) > 0)
@@ -2715,7 +2717,7 @@ server <- function(input, output, session) {
 	          "geo_run_target",
 	          "GEO processing location:",
 	          choices = c("Local" = "local", "Remote server" = "remote"),
-	          selected = isolate(input$geo_run_target %||% "local"),
+	          selected = current_geo_run_target,
 	          inline = TRUE
 	        ),
 	        conditionalPanel(
@@ -7388,8 +7390,12 @@ server <- function(input, output, session) {
 	    }
 	  }, once = TRUE)
 
+	  observeEvent(input$geo_run_target, {
+	    geo_run_target_state(input$geo_run_target %||% "local")
+	  }, ignoreInit = TRUE)
+
 	  geo_remote_mode_active <- function() {
-	    identical(input$geo_run_target %||% "local", "remote")
+	    identical(geo_run_target_state(), "remote")
 	  }
 
 	  block_local_geo_step_when_remote <- function(step_title = "GEO step") {
@@ -10200,6 +10206,7 @@ server <- function(input, output, session) {
 	    job_id <- started$id %||% ""
 	    geo_remote_pipeline_job_id(job_id)
 	    updateTextInput(session, "remote_job_id", value = job_id)
+	    geo_run_target_state("remote")
 	    updateRadioButtons(session, "geo_run_target", selected = "remote")
 	    refresh_geo_remote_server_inputs(selected = server$name[[1]])
 	    geo_remote_pipeline_status(paste("Remote GEO pipeline submitted:", job_id))
@@ -10318,6 +10325,7 @@ server <- function(input, output, session) {
 
   activate_geo_remote_server_for_job <- function(server) {
     server_name <- as.character(server$name[[1]])
+    geo_run_target_state("remote")
     updateRadioButtons(session, "geo_run_target", selected = "remote")
     refresh_geo_remote_server_inputs(selected = server_name)
     updateSelectInput(session, "geo_remote_server_name", selected = server_name)
