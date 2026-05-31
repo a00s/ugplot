@@ -2667,6 +2667,14 @@ server <- function(input, output, session) {
 	    preview <- geo_preview_data()
 	    current_geo_run_target <- geo_run_target_state()
 	    run_remote <- identical(current_geo_run_target, "remote")
+	    remote_geo_result <- remote_job_preview_result()
+	    remote_geo_loaded <- run_remote && is.list(remote_geo_result) && identical(remote_geo_result$kind %||% "", "geo_pipeline")
+	    remote_matrix_files <- if (remote_geo_loaded && identical(remote_geo_result$matrix_source %||% source_value, source_value)) {
+	      as.character(unlist(remote_geo_result$paths$matrix_files %||% character(0), use.names = FALSE))
+	    } else {
+	      character(0)
+	    }
+	    remote_matrix_files <- remote_matrix_files[nzchar(remote_matrix_files)]
 
     metadata_done <- is.data.frame(metadata) && nrow(metadata) > 0
     files_seen <- (is.data.frame(remote_files) && nrow(remote_files) > 0) || (is.data.frame(local_files) && nrow(local_files) > 0)
@@ -2682,7 +2690,7 @@ server <- function(input, output, session) {
       needs_extract <- any(processed_files$LocalStatus == "downloaded" & grepl("\\.gz$", processed_files$File, ignore.case = TRUE))
     }
     matrix_files <- if (nzchar(trimws(accession_value))) ugplot_geo_matrix_files(ugplot_geo_cache_dir(trimws(accession_value)), source = source_value) else character(0)
-    extract_done <- length(matrix_files) > 0
+    extract_done <- length(matrix_files) > 0 || length(remote_matrix_files) > 0
     annotation_done <- is.data.frame(annotation_map) && nrow(annotation_map) > 0
     if (!annotation_done && metadata_done) {
       platform_info <- ugplot_geo_platform_annotation_package(ugplot_geo_detect_platform(metadata))
@@ -2690,7 +2698,7 @@ server <- function(input, output, session) {
         annotation_done <- file.exists(ugplot_geo_annotation_cache_path(platform_info$platform, "rds"))
       }
     }
-    spearman_done <- is.data.frame(spearman_results) && nrow(spearman_results) > 0 && length(matrix_files) > 0
+    spearman_done <- is.data.frame(spearman_results) && nrow(spearman_results) > 0 && (length(matrix_files) > 0 || length(remote_matrix_files) > 0)
     transcript_needs_rebuild <- identical(transcript_progress$phase %||% "", "needs rebuild")
     transcript_groups_loaded <- is.data.frame(transcript_groups) && nrow(transcript_groups) > 0
     transcript_done <- !transcript_needs_rebuild && (
@@ -2707,8 +2715,8 @@ server <- function(input, output, session) {
       nrow(transcript_ml_results) > 0 &&
       "Phase" %in% names(transcript_ml_results) &&
       any(as.character(transcript_ml_results$Phase) == "stability")
-    idat_done <- (idat_progress$phase %||% "") %in% c("complete", "loaded from cache") ||
-      (is.data.frame(idat_qc) && nrow(idat_qc) > 0 && nzchar(idat_progress$beta_path %||% "") && file.exists(idat_progress$beta_path %||% ""))
+    idat_done <- (idat_progress$phase %||% "") %in% c("complete", "loaded from cache", "loaded from remote") ||
+      (is.data.frame(idat_qc) && nrow(idat_qc) > 0 && nzchar(idat_progress$beta_path %||% "") && (file.exists(idat_progress$beta_path %||% "") || remote_geo_loaded))
 	    preview_done <- is.data.frame(preview) && nrow(preview) > 0
 
 	    tagList(
@@ -3013,8 +3021,15 @@ server <- function(input, output, session) {
     cache_dir <- ugplot_geo_cache_dir(accession)
     target_column <- input$geo_target_column %||% ""
     source <- input$geo_matrix_source %||% "processed"
+    remote_result <- remote_job_preview_result()
+    remote_loaded <- geo_remote_mode_active() && is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")
+    remote_paths <- if (remote_loaded) remote_result$paths else list()
+    remote_matrix_files <- as.character(unlist(remote_paths$matrix_files %||% character(0), use.names = FALSE))
+    remote_matrix_files <- remote_matrix_files[nzchar(remote_matrix_files)]
+    remote_source <- remote_result$matrix_source %||% source
     source_rows <- lapply(c("processed", "raw_sesame"), function(source_i) {
       matrix_files <- ugplot_geo_matrix_files(cache_dir, source = source_i)
+      remote_matrix_count <- if (remote_loaded && identical(remote_source, source_i)) length(remote_matrix_files) else 0L
       spearman_done <- FALSE
       transcript_done <- FALSE
       cache_path <- ""
@@ -3029,7 +3044,9 @@ server <- function(input, output, session) {
       }
       status <- paste0(
         geo_matrix_source_label(source_i), ": ",
-        length(matrix_files), " matrix file(s); ",
+        length(matrix_files), " local matrix file(s)",
+        if (remote_matrix_count > 0) paste0("; ", remote_matrix_count, " remote matrix file(s)") else "",
+        "; ",
         if (spearman_done) "Spearman ready" else "Spearman pending",
         "; ",
         if (transcript_done) "transcripts ready" else "transcripts pending"
@@ -3042,7 +3059,19 @@ server <- function(input, output, session) {
     })
     tags$div(class = "geo-status-card",
       tags$p(style = "margin: 0 0 5px 0;", tags$strong("Active path: "), geo_matrix_source_label(source)),
-      source_rows
+      source_rows,
+      if (remote_loaded) {
+        tags$div(
+          style = "margin-top: 8px;",
+          tags$p(style = "margin: 0 0 3px 0;", tags$strong("Remote cache: "), remote_result$cache_dir %||% ""),
+          if (length(remote_matrix_files) > 0) {
+            tags$p(style = "margin: 0 0 3px 0;", paste0("Remote matrix file: ", paste(basename(remote_matrix_files), collapse = ", ")))
+          } else {
+            tags$p(style = "margin: 0 0 3px 0;", "No remote matrix file is recorded in the loaded remote result.")
+          },
+          tags$p(style = "margin: 0;", paste0("Remote stage: ", remote_result$stage %||% "unknown"))
+        )
+      } else NULL
     )
   })
 
@@ -10252,6 +10281,17 @@ server <- function(input, output, session) {
 	    }
 	    if (is.data.frame(result$tables$idat_qc)) {
 	      geo_idat_qc_report(result$tables$idat_qc)
+	    }
+	    if (nzchar(result$paths$sesame_beta %||% "") || nzchar(result$paths$sesame_qc %||% "")) {
+	      geo_idat_qc_progress(list(
+	        phase = "loaded from remote",
+	        message = "Loaded remote sesame paths from the selected GEO job.",
+	        processed = if (is.data.frame(result$tables$idat_qc)) nrow(result$tables$idat_qc) else 0L,
+	        total = if (is.data.frame(result$tables$idat_qc)) nrow(result$tables$idat_qc) else 0L,
+	        current = "",
+	        beta_path = result$paths$sesame_beta %||% "",
+	        qc_path = result$paths$sesame_qc %||% ""
+	      ))
 	    }
 	    accession <- result$accession %||% ""
 	    if (nzchar(accession)) {
