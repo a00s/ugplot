@@ -700,6 +700,12 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
   source <- as.character(config$matrix_source %||% "processed")
   source <- if (identical(source, "raw_sesame")) "raw_sesame" else "processed"
   target_column <- as.character(config$target_column %||% "")
+  if (!nzchar(target_column) &&
+      is.list(config$resume_result) &&
+      identical(config$resume_result$kind %||% "", "geo_pipeline") &&
+      nzchar(as.character(config$resume_result$target_column %||% ""))) {
+    target_column <- as.character(config$resume_result$target_column)
+  }
   cache_dir <- ugplot_geo_cache_dir(accession)
   dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
 

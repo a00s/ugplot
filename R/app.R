@@ -10348,11 +10348,13 @@ server <- function(input, output, session) {
 	    invisible(result)
 	  }
 
-	  refresh_remote_geo_pipeline_status <- function(job_id = geo_remote_pipeline_job_id()) {
+	  refresh_remote_geo_pipeline_status <- function(job_id = geo_remote_pipeline_job_id(), server_name = NULL) {
 	    if (!nzchar(job_id %||% "")) {
 	      stop("No remote GEO job id is selected.", call. = FALSE)
 	    }
-	    server <- selected_geo_remote_server()
+	    server <- remote_server_by_name(server_name %||% remote_server_name_for_job(job_id))
+	    remember_remote_job_server(job_id, as.character(server$name[[1]]))
+	    activate_geo_remote_server_for_job(server)
 	    status <- ugplot_remote_job_status(
 	      server_url = server$url,
 	      job_id = job_id,
@@ -10792,7 +10794,7 @@ server <- function(input, output, session) {
 	  observeEvent(input$geo_refresh_remote_pipeline, {
 	    tryCatch({
 	      job_id <- geo_remote_pipeline_job_id() %||% input$remote_job_id %||% ""
-	      refresh_remote_geo_pipeline_status(job_id)
+	      refresh_remote_geo_pipeline_status(job_id, server_name = remote_server_name_for_job(job_id))
 	      refresh_remote_jobs()
 	    }, error = function(e) {
 	      geo_remote_pipeline_status(paste("Remote GEO status failed:", conditionMessage(e)))
@@ -10806,14 +10808,16 @@ server <- function(input, output, session) {
 	      if (!nzchar(job_id)) {
 	        stop("No remote GEO job id is selected.", call. = FALSE)
 	      }
-	      server <- selected_geo_remote_server()
+	      server <- remote_server_by_name(remote_server_name_for_job(job_id))
+	      remember_remote_job_server(job_id, as.character(server$name[[1]]))
+	      activate_geo_remote_server_for_job(server)
 	      result <- ugplot_remote_get_result(
 	        server_url = server$url,
 	        job_id = job_id,
 	        token = server$token %||% ""
 	      )
 	      apply_remote_geo_result(result, job_id)
-	      refresh_remote_geo_pipeline_status(job_id)
+	      refresh_remote_geo_pipeline_status(job_id, server_name = as.character(server$name[[1]]))
 	    }, error = function(e) {
 	      geo_remote_pipeline_status(paste("Remote GEO result load failed:", conditionMessage(e)))
 	      remote_job_status_text(geo_remote_pipeline_status())
