@@ -10133,10 +10133,92 @@ server <- function(input, output, session) {
 	    )
 	  }
 
+	  reset_geo_remote_loaded_state <- function(clear_files = TRUE) {
+	    if (isTRUE(clear_files)) {
+	      geo_files(data.frame())
+	      geo_remote_files(data.frame())
+	    }
+	    geo_sample_metadata(data.frame())
+	    geo_cpg_annotation(data.frame())
+	    geo_spearman_raw_results(data.frame())
+	    geo_spearman_results(data.frame())
+	    geo_transcript_candidates(data.frame())
+	    geo_transcript_groups(data.frame())
+	    geo_transcript_group_details(data.frame())
+	    geo_transcript_ml_results(data.frame())
+	    geo_idat_qc_report(data.frame())
+	    geo_preview_data(data.frame())
+	    update_geo_transcript_build_progress(
+	      phase = "idle",
+	      message = "Remote GEO job selected. Load a remote result or refresh local GEO status for local cache details.",
+	      processed = 0L,
+	      total = 0L,
+	      compatible = 0L,
+	      excluded = 0L,
+	      current = "",
+	      cache = ""
+	    )
+	    update_geo_transcript_ml_progress(
+	      phase = "idle",
+	      message = "Remote GEO job selected. Transcript ML outputs remain on the remote server until a result is loaded.",
+	      processed = 0L,
+	      total = 0L,
+	      current = "",
+	      cache = ""
+	    )
+	    geo_idat_qc_progress(list(
+	      phase = "idle",
+	      message = "Remote GEO job selected. IDAT/sesame status is remote unless local status is refreshed.",
+	      processed = 0L,
+	      total = 0L,
+	      current = "",
+	      beta_path = "",
+	      qc_path = ""
+	    ))
+	  }
+
+	  apply_remote_geo_config <- function(config, job_id = "", server = NULL, status = NULL) {
+	    if (!remote_config_is_geo(config)) {
+	      return(invisible(FALSE))
+	    }
+	    reset_geo_remote_loaded_state(clear_files = TRUE)
+	    accession <- trimws(as.character(config$accession %||% ""))
+	    matrix_source <- as.character(config$matrix_source %||% "")
+	    target_column <- as.character(config$target_column %||% "")
+	    if (nzchar(accession)) {
+	      updateTextInput(session, "geo_accession", value = accession)
+	    }
+	    if (nzchar(matrix_source)) {
+	      updateSelectInput(session, "geo_matrix_source", selected = matrix_source)
+	    }
+	    if (nzchar(target_column)) {
+	      updateSelectInput(session, "geo_target_column", selected = target_column)
+	    }
+	    geo_remote_pipeline_job_id(job_id %||% geo_remote_pipeline_job_id())
+	    status_text <- remote_status_summary_text(status)
+	    if (!nzchar(status_text)) {
+	      status_text <- paste("Remote GEO job selected:", job_id)
+	    }
+	    server_label <- if (is.data.frame(server) && nrow(server) > 0) paste0(" on ", server$name[[1]]) else ""
+	    geo_remote_pipeline_status(status_text)
+	    geo_stage(list(
+	      step = "Remote GEO",
+	      title = "Remote pipeline selected",
+	      message = paste0(
+	        "Selected remote GEO job",
+	        if (nzchar(job_id %||% "")) paste0(" ", job_id) else "",
+	        server_label,
+	        ". Accession/source/target were loaded from the saved remote config; files and pipeline outputs remain on the remote server unless you refresh local GEO status."
+	      )
+	    ))
+	    invisible(TRUE)
+	  }
+
 	  apply_remote_geo_result <- function(result, job_id = "") {
 	    if (!is.list(result) || !identical(result$kind %||% "", "geo_pipeline")) {
 	      stop("Remote job result is not a GEO pipeline result.", call. = FALSE)
 	    }
+	    reset_geo_remote_loaded_state(clear_files = TRUE)
 	    if (is.data.frame(result$tables$remote_files)) {
 	      geo_remote_files(result$tables$remote_files)
 	    }
@@ -10350,7 +10432,7 @@ server <- function(input, output, session) {
     invisible(server)
   }
 
-  load_remote_geo_job_locally <- function(job_id, server, status = NULL, result = NULL) {
+  load_remote_geo_job_locally <- function(job_id, server, status = NULL, result = NULL, config = NULL) {
     activate_geo_remote_server_for_job(server)
     if (!is.list(status)) {
       status <- tryCatch(
@@ -10365,6 +10447,9 @@ server <- function(input, output, session) {
     remote_job_preview_status(status)
     geo_remote_pipeline_job_id(job_id)
     updateTextInput(session, "remote_job_id", value = job_id)
+    if (remote_config_is_geo(config)) {
+      apply_remote_geo_config(config, job_id = job_id, server = server, status = status)
+    }
     if (!remote_result_is_geo(result) && remote_status_has_result(status)) {
       result <- tryCatch(
         ugplot_remote_get_result(
@@ -10384,6 +10469,9 @@ server <- function(input, output, session) {
       status_text <- remote_status_summary_text(status)
       if (!nzchar(status_text)) {
         status_text <- paste("Remote GEO job selected:", job_id)
+      }
+      if (!remote_config_is_geo(config)) {
+        reset_geo_remote_loaded_state(clear_files = TRUE)
       }
       geo_remote_pipeline_status(status_text)
       remote_job_status_text(status_text)
@@ -10503,7 +10591,7 @@ server <- function(input, output, session) {
     config <- bundle$config %||% list()
     status <- bundle$status %||% status
     if (remote_config_is_geo(config) || remote_status_is_geo(status) || remote_result_is_geo(bundle$result)) {
-      return(load_remote_geo_job_locally(job_id, server, status = status, result = bundle$result))
+      return(load_remote_geo_job_locally(job_id, server, status = status, result = bundle$result, config = config))
     }
     activate_remote_server_for_job(server)
     if (!is.data.frame(dataset)) {
