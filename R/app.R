@@ -2466,6 +2466,7 @@ server <- function(input, output, session) {
   remote_job_log_text <- reactiveVal("")
   remote_job_preview_status <- reactiveVal(NULL)
   remote_job_preview_result <- reactiveVal(NULL)
+  remote_selected_job <- reactiveVal(list(id = "", server = ""))
   remote_server_capabilities <- reactiveVal(list())
   remote_server_connection_state <- reactiveVal(data.frame())
   remote_result_cache <- reactiveVal(NULL)
@@ -10021,7 +10022,20 @@ server <- function(input, output, session) {
     list(server = "", job_id = value %||% "")
   }
 
+  remember_remote_job_server <- function(job_id, server_name) {
+    if (nzchar(job_id %||% "") && nzchar(server_name %||% "")) {
+      remote_selected_job(list(id = as.character(job_id), server = as.character(server_name)))
+    }
+    invisible(remote_selected_job())
+  }
+
   remote_server_name_for_job <- function(job_id) {
+    selected_job <- remote_selected_job()
+    if (is.list(selected_job) &&
+        identical(as.character(selected_job$id %||% ""), as.character(job_id %||% "")) &&
+        nzchar(selected_job$server %||% "")) {
+      return(as.character(selected_job$server))
+    }
     jobs <- remote_jobs()
     if (!is.data.frame(jobs) || nrow(jobs) == 0 || !"id" %in% names(jobs) || !"server" %in% names(jobs)) {
       return(selected_remote_server()$name[[1]])
@@ -10484,11 +10498,14 @@ server <- function(input, output, session) {
     geo_run_target_state("remote")
     updateRadioButtons(session, "geo_run_target", selected = "remote")
     refresh_geo_remote_server_inputs(selected = server_name)
+    refresh_remote_server_inputs(selected = server_name)
     updateSelectInput(session, "geo_remote_server_name", selected = server_name)
+    updateSelectInput(session, "remote_server_name", selected = server_name)
     invisible(server)
   }
 
   load_remote_geo_job_locally <- function(job_id, server, status = NULL, result = NULL, config = NULL) {
+    remember_remote_job_server(job_id, as.character(server$name[[1]]))
     activate_geo_remote_server_for_job(server)
     if (!is.list(status)) {
       status <- tryCatch(
@@ -10930,6 +10947,7 @@ server <- function(input, output, session) {
       job_id <- jobs$id[[selected]]
       server_name <- if ("server" %in% names(jobs)) jobs$server[[selected]] else NULL
       if (!is.null(server_name) && nzchar(server_name %||% "")) {
+        remember_remote_job_server(job_id, server_name)
         server <- remote_server_by_name(server_name)
         updateRadioButtons(session, "ml_run_target", selected = "remote")
         refresh_remote_server_inputs(selected = as.character(server$name[[1]]))
@@ -10948,8 +10966,14 @@ server <- function(input, output, session) {
     if (!nzchar(input$remote_job_id %||% "")) {
       return()
     }
+    selected_job <- remote_selected_job()
+    server_name <- if (is.list(selected_job) && identical(as.character(selected_job$id %||% ""), as.character(input$remote_job_id %||% ""))) {
+      selected_job$server %||% NULL
+    } else {
+      NULL
+    }
     tryCatch({
-      refresh_remote_job_preview(input$remote_job_id, switch_to_ml = FALSE)
+      refresh_remote_job_preview(input$remote_job_id, switch_to_ml = FALSE, server_name = server_name)
     }, error = function(e) {
       remote_job_status_text(paste("Remote status failed:", conditionMessage(e)))
     })
@@ -10978,6 +11002,7 @@ server <- function(input, output, session) {
   observeEvent(input$remote_load_result_row, {
     tryCatch({
       action <- parse_remote_job_action_key(input$remote_load_result_row)
+      remember_remote_job_server(action$job_id, action$server)
       updateTextInput(session, "remote_job_id", value = action$job_id)
       load_remote_job_bundle_locally(action$job_id, server_name = action$server)
     }, error = function(e) {
