@@ -6387,7 +6387,6 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
 	  observeEvent(input$geo_inspect_files, {
-	    if (block_local_geo_step_when_remote("GEO inspection")) return()
 	    accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
       geo_status("Please enter a GEO accession, for example GSE87571.")
@@ -6496,7 +6495,6 @@ server <- function(input, output, session) {
   })
 
 	  observeEvent(input$geo_fetch_metadata, {
-	    if (block_local_geo_step_when_remote("Sample metadata fetch")) return()
 	    accession <- trimws(input$geo_accession %||% "")
     if (!nzchar(accession)) {
       geo_stage(list(step = "Step 2", title = "Missing accession", message = "Enter and inspect a GEO accession before fetching sample metadata."))
