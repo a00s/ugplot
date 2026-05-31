@@ -653,7 +653,7 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
   border: 1px solid #e3e8ef;
   border-radius: 8px;
   padding: 12px 14px;
-  margin-bottom: 14px;
+  margin-bottom: 0;
   background: #f8fafc;
 }
 

@@ -2721,30 +2721,6 @@ server <- function(input, output, session) {
 	    preview_done <- is.data.frame(preview) && nrow(preview) > 0
 
 	    tagList(
-	      tags$div(class = "geo-run-target-panel",
-	        radioButtons(
-	          "geo_run_target",
-	          "GEO processing location:",
-	          choices = c("Local" = "local", "Remote server" = "remote"),
-	          selected = current_geo_run_target,
-	          inline = TRUE
-	        ),
-	        conditionalPanel(
-	          condition = "input.geo_run_target == 'remote'",
-	          selectInput(
-	            "geo_remote_server_name",
-	            "Remote server:",
-	            choices = remote_server_choices(),
-	            selected = isolate(input$geo_remote_server_name %||% input$remote_server_name)
-	          ),
-	          tags$div(class = "remote-server-toolbar",
-	            actionButton("geo_start_remote_pipeline", "Start remote GEO pipeline", icon = icon("play")),
-	            actionButton("geo_refresh_remote_pipeline", "Refresh status", icon = icon("refresh")),
-	            actionButton("geo_load_remote_pipeline_result", "Load remote result", icon = icon("download"))
-	          )
-	        ),
-	        uiOutput("geo_remote_execution_status")
-	      ),
 	      tags$div(class = "geo-workflow geo-workflow-top",
 	        render_geo_step_card(1, "Inspect GEO accession", files_seen || metadata_done,
 	          tags$div(
@@ -2758,6 +2734,30 @@ server <- function(input, output, session) {
             uiOutput("geo_metadata_summary"),
 	            if (!metadata_done) actionButton("geo_fetch_metadata", "Fetch sample metadata") else NULL
           )
+        ),
+        tags$div(class = "geo-run-target-panel",
+          radioButtons(
+            "geo_run_target",
+            "GEO processing location:",
+            choices = c("Local" = "local", "Remote server" = "remote"),
+            selected = current_geo_run_target,
+            inline = TRUE
+          ),
+          conditionalPanel(
+            condition = "input.geo_run_target == 'remote'",
+            selectInput(
+              "geo_remote_server_name",
+              "Remote server:",
+              choices = remote_server_choices(),
+              selected = isolate(input$geo_remote_server_name %||% input$remote_server_name)
+            ),
+            tags$div(class = "remote-server-toolbar",
+              actionButton("geo_start_remote_pipeline", "Start remote GEO pipeline", icon = icon("play")),
+              actionButton("geo_refresh_remote_pipeline", "Refresh status", icon = icon("refresh")),
+              actionButton("geo_load_remote_pipeline_result", "Load remote result", icon = icon("download"))
+            )
+          ),
+          uiOutput("geo_remote_execution_status")
         ),
         render_geo_step_card(3, "Matrix files", selected_download_done,
           tags$div(
