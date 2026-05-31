@@ -2740,14 +2740,14 @@ server <- function(input, output, session) {
 	        render_geo_step_card(1, "Inspect GEO accession", files_seen || metadata_done,
 	          tags$div(
             textInput("geo_accession", "GEO accession:", value = accession_value, placeholder = "GSE87571"),
-	            if (!run_remote) actionButton("geo_inspect_files", if (files_seen || metadata_done) "Refresh GEO status" else "Inspect files")
+	            actionButton("geo_inspect_files", if (files_seen || metadata_done) "Refresh GEO status" else "Inspect files")
           )
         ),
         render_geo_step_card(2, "Sample metadata", metadata_done,
           tags$div(
             tags$p(class = "geo-step-note", "Sample metadata contains age, sex, tissue, disease, treatment, response, and other phenotype fields when GEO provides them."),
             uiOutput("geo_metadata_summary"),
-	            if (!run_remote && !metadata_done) actionButton("geo_fetch_metadata", "Fetch sample metadata") else NULL
+	            if (!metadata_done) actionButton("geo_fetch_metadata", "Fetch sample metadata") else NULL
           )
         ),
         render_geo_step_card(3, "Matrix files", selected_download_done,
@@ -3312,8 +3312,10 @@ server <- function(input, output, session) {
     if (length(candidates) == 0) {
       return(tags$p("No usable metadata field was detected. Inspect the sample metadata table."))
     }
-    selected <- if ("age" %in% candidates) "age" else candidates[[1]]
-    selectInput("geo_target_column", "Metadata field to predict/correlate:", choices = candidates, selected = selected)
+    current <- input$geo_target_column %||% ""
+    selected <- if (nzchar(current) && current %in% candidates) current else ""
+    choices <- c("Choose metadata field" = "", stats::setNames(candidates, candidates))
+    selectInput("geo_target_column", "Metadata field to predict/correlate:", choices = choices, selected = selected)
   })
 
   output$geo_annotation_summary <- renderUI({
@@ -3970,6 +3972,7 @@ server <- function(input, output, session) {
   }
 
   geo_ml_pipeline_config <- function(models, screen_seeds, seed_end, timeout, best_only_model = NULL) {
+    cpu_limit <- configured_cpu_limit()
     list(
       target = "target",
       models = if (is.null(best_only_model)) models else best_only_model,
@@ -3985,10 +3988,11 @@ server <- function(input, output, session) {
       missing_threshold_rows = 100,
       complete_case_min_samples = 0,
       imputation_scope = "split_separate",
-      parallel_enabled = FALSE,
+      cpu_limit = cpu_limit,
+      parallel_enabled = isTRUE(input$config_parallel_cubist_models) && cpu_limit > 1L,
       use_callr_timeout = TRUE,
-      restart_parallel_each_model = TRUE,
-      retry_parallel_connection_errors = TRUE,
+      restart_parallel_each_model = isTRUE(input$config_restart_parallel_each_model),
+      retry_parallel_connection_errors = isTRUE(input$config_retry_parallel_connection_errors),
       screen_seeds = screen_seeds
     )
   }
@@ -10086,13 +10090,23 @@ server <- function(input, output, session) {
 	    if (!nzchar(accession)) {
 	      stop("Enter a GEO accession before starting a remote GEO pipeline.", call. = FALSE)
 	    }
+	    metadata <- geo_sample_metadata()
+	    if (!is.data.frame(metadata) || nrow(metadata) == 0) {
+	      stop("Fetch sample metadata locally before starting a remote GEO pipeline.", call. = FALSE)
+	    }
+	    candidates <- ugplot_geo_target_candidates(metadata)
+	    target_column <- trimws(input$geo_target_column %||% "")
+	    if (!nzchar(target_column) || !(target_column %in% candidates)) {
+	      stop("Choose a metadata field locally before starting a remote GEO pipeline.", call. = FALSE)
+	    }
+	    server <- selected_geo_remote_server()
 	    list(
 	      runner = "ugplot_run_geo_pipeline_job",
 	      type = "geo",
 	      job_name = paste("GEO", accession, input$geo_matrix_source %||% "processed"),
 	      accession = accession,
 	      matrix_source = input$geo_matrix_source %||% "processed",
-	      target_column = input$geo_target_column %||% "",
+	      target_column = target_column,
 	      spearman_max_cpgs = input$geo_spearman_max_cpgs %||% 0,
 	      spearman_min_samples_pct = input$geo_spearman_min_samples %||% 80,
 	      transcript_absrho_threshold = input$geo_transcript_absrho_threshold %||% 0.8,
@@ -10111,6 +10125,10 @@ server <- function(input, output, session) {
 	      geo_ml_stability_tolerance = input$geo_ml_stability_tolerance %||% 0.01,
 	      geo_ml_stability_group_column = input$geo_ml_stability_group_column %||% "",
 	      models = input$ml_checkbox_group %||% character(0),
+	      cpu_limit = selected_remote_cpu_limit(server),
+	      parallel_enabled = isTRUE(input$config_parallel_cubist_models),
+	      restart_parallel_each_model = isTRUE(input$config_restart_parallel_each_model),
+	      retry_parallel_connection_errors = isTRUE(input$config_retry_parallel_connection_errors),
 	      timeout = 0
 	    )
 	  }

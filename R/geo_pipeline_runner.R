@@ -312,7 +312,14 @@ ugplot_geo_ml_rank_summary <- function(summary) {
   summary
 }
 
-ugplot_geo_ml_pipeline_config <- function(models, seed_end, timeout, best_only_model = NULL) {
+ugplot_geo_ml_pipeline_config <- function(models, seed_end, timeout, best_only_model = NULL,
+                                          cpu_limit = 1L, parallel_enabled = FALSE,
+                                          restart_parallel_each_model = TRUE,
+                                          retry_parallel_connection_errors = TRUE) {
+  cpu_limit <- suppressWarnings(as.integer(cpu_limit %||% 1L))
+  if (is.na(cpu_limit) || cpu_limit < 1L) {
+    cpu_limit <- 1L
+  }
   list(
     target = "target",
     models = if (is.null(best_only_model)) models else best_only_model,
@@ -328,10 +335,11 @@ ugplot_geo_ml_pipeline_config <- function(models, seed_end, timeout, best_only_m
     missing_threshold_rows = 100,
     complete_case_min_samples = 0,
     imputation_scope = "split_separate",
-    parallel_enabled = FALSE,
+    cpu_limit = cpu_limit,
+    parallel_enabled = isTRUE(parallel_enabled) && cpu_limit > 1L,
     use_callr_timeout = TRUE,
-    restart_parallel_each_model = TRUE,
-    retry_parallel_connection_errors = TRUE
+    restart_parallel_each_model = isTRUE(restart_parallel_each_model),
+    retry_parallel_connection_errors = isTRUE(retry_parallel_connection_errors)
   )
 }
 
@@ -400,6 +408,13 @@ ugplot_geo_run_transcript_ml_remote <- function(groups, cache_dir, source = "pro
   }
   screen_seeds <- max(1L, as.integer(config$geo_ml_screen_seeds %||% 3))
   timeout <- max(1, as.numeric(config$geo_ml_timeout %||% 1200))
+  cpu_limit <- suppressWarnings(as.integer(config$cpu_limit %||% 1L))
+  if (is.na(cpu_limit) || cpu_limit < 1L) {
+    cpu_limit <- 1L
+  }
+  parallel_enabled <- isTRUE(config$parallel_enabled)
+  restart_parallel_each_model <- isTRUE(config$restart_parallel_each_model %||% TRUE)
+  retry_parallel_connection_errors <- isTRUE(config$retry_parallel_connection_errors %||% TRUE)
   pipeline_dir <- ugplot_geo_transcript_ml_dir(cache_dir, source)
   summary_path <- file.path(pipeline_dir, "screening_summary.csv")
   summaries <- if (file.exists(summary_path)) {
@@ -417,7 +432,15 @@ ugplot_geo_run_transcript_ml_remote <- function(groups, cache_dir, source = "pro
     dataset_info <- ugplot_geo_ml_group_dataset(group)
     group_dir <- ugplot_geo_transcript_ml_group_dir(cache_dir, source, group_id)
     screen_path <- file.path(group_dir, "screen_result.rds")
-    screen_config <- ugplot_geo_ml_pipeline_config(models, screen_seeds, timeout)
+    screen_config <- ugplot_geo_ml_pipeline_config(
+      models,
+      screen_seeds,
+      timeout,
+      cpu_limit = cpu_limit,
+      parallel_enabled = parallel_enabled,
+      restart_parallel_each_model = restart_parallel_each_model,
+      retry_parallel_connection_errors = retry_parallel_connection_errors
+    )
     screen_config$resume_result_path <- screen_path
     screen_config$model_log_dir <- file.path(group_dir, "logs", "screen")
     if (!is.null(progress_callback)) {
@@ -491,6 +514,13 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
   window <- min(max_seeds, max(2L, as.integer(config$geo_ml_stability_window %||% 30)))
   tolerance <- max(0, as.numeric(config$geo_ml_stability_tolerance %||% 0.01))
   timeout <- max(1, as.numeric(config$geo_ml_timeout %||% 1200))
+  cpu_limit <- suppressWarnings(as.integer(config$cpu_limit %||% 1L))
+  if (is.na(cpu_limit) || cpu_limit < 1L) {
+    cpu_limit <- 1L
+  }
+  parallel_enabled <- isTRUE(config$parallel_enabled)
+  restart_parallel_each_model <- isTRUE(config$restart_parallel_each_model %||% TRUE)
+  retry_parallel_connection_errors <- isTRUE(config$retry_parallel_connection_errors %||% TRUE)
   pipeline_dir <- ugplot_geo_transcript_ml_dir(cache_dir, source)
   summary_path <- file.path(pipeline_dir, "summary.csv")
   summaries <- if (file.exists(summary_path)) {
@@ -523,7 +553,16 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
     repeat {
       existing_n <- length(ugplot_geo_ml_metric_values(stability_result))
       current_end <- max(current_end, min(max_seeds, existing_n + window))
-      stability_config <- ugplot_geo_ml_pipeline_config(best_model, current_end, timeout, best_only_model = best_model)
+      stability_config <- ugplot_geo_ml_pipeline_config(
+        best_model,
+        current_end,
+        timeout,
+        best_only_model = best_model,
+        cpu_limit = cpu_limit,
+        parallel_enabled = parallel_enabled,
+        restart_parallel_each_model = restart_parallel_each_model,
+        retry_parallel_connection_errors = retry_parallel_connection_errors
+      )
       stability_config$resume_result_path <- stability_path
       stability_config$model_log_dir <- file.path(group_dir, "logs", "stability")
       if (!is.null(progress_callback)) {
@@ -711,9 +750,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
   metadata <- ugplot_geo_fetch_sample_metadata(accession, cache_dir)
   result$tables$metadata_preview <- utils::head(metadata, 50)
   if (!nzchar(target_column)) {
-    candidates <- ugplot_geo_target_candidates(metadata)
-    target_column <- if ("age" %in% candidates) "age" else if (length(candidates) > 0) candidates[[1]] else ""
-    result$target_column <- target_column
+    stop("Remote GEO pipeline requires a target metadata field selected by the client.", call. = FALSE)
   }
 
   publish(0.15, "Downloading selected GEO files on remote server", force = TRUE)
