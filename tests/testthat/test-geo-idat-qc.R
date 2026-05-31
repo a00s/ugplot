@@ -54,6 +54,31 @@ test_that("sesame beta matrix GSM columns match GEO sample metadata", {
   expect_equal(sample_map$SampleID, c("GSM1", "GSM2"))
 })
 
+test_that("GEO processed matrices with ID probe column are recognized and mapped", {
+  cache_dir <- tempfile("geo_processed_id_")
+  dir.create(cache_dir)
+  matrix_path <- file.path(cache_dir, "matrix.tsv")
+  matrix_df <- data.frame(
+    ID = c("cg00000001", "cg00000002"),
+    GSM1 = c(0.1, 0.2),
+    GSM2 = c(0.3, 0.4),
+    check.names = FALSE
+  )
+  utils::write.table(matrix_df, matrix_path, sep = "\t", quote = FALSE, row.names = FALSE)
+  metadata <- data.frame(
+    sample_id = c("GSM1", "GSM2"),
+    age = c(10, 20),
+    stringsAsFactors = FALSE
+  )
+
+  matrix_files <- ugplot_geo_matrix_files(cache_dir, source = "processed")
+  sample_map <- ugplot_geo_matrix_sample_map(matrix_files, metadata)
+
+  expect_equal(matrix_files, matrix_path)
+  expect_equal(sample_map$ColumnIndex, c(2L, 3L))
+  expect_equal(sample_map$MatrixSample, c("GSM1", "GSM2"))
+})
+
 test_that("sesame IDAT QC defaults to sesame pOOBAH cutoff", {
   expect_equal(formals(ugplot_geo_reprocess_idats_sesame)$detection_p, 0.05)
 })

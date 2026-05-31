@@ -778,7 +778,11 @@ ugplot_geo_matrix_files <- function(cache_dir, source = c("processed", "raw_sesa
   files <- files[file.info(files)$size > 0]
   files[vapply(files, function(path) {
     header <- tryCatch(readLines(path, n = 1, warn = FALSE), error = function(e) character(0))
-    length(header) == 1 && grepl("^ID_REF\\t", header)
+    if (length(header) != 1 || !grepl("\t", header, fixed = TRUE)) {
+      return(FALSE)
+    }
+    fields <- strsplit(header, "\t", fixed = TRUE)[[1]]
+    length(fields) > 1 && fields[[1]] %in% c("ID_REF", "ID")
   }, logical(1))]
 }
 
@@ -1156,7 +1160,8 @@ ugplot_geo_matrix_sample_map <- function(matrix_files, metadata) {
   metadata_lookup <- stats::setNames(lookup_values[keep_first], lookup_keys[keep_first])
   do.call(rbind, lapply(matrix_files, function(path) {
     header <- strsplit(readLines(path, n = 1, warn = FALSE), "\t", fixed = TRUE)[[1]]
-    value_cols <- which(header != "ID_REF" & !grepl("\\.1$", header))
+    value_cols <- setdiff(seq_along(header), 1L)
+    value_cols <- value_cols[!grepl("\\.1$", header[value_cols])]
     matrix_ids <- header[value_cols]
     metadata_idx <- unname(metadata_lookup[matrix_ids])
     matched <- !is.na(metadata_idx)
