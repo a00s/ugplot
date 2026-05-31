@@ -6308,6 +6308,22 @@ server <- function(input, output, session) {
 
   observeEvent(input$geo_matrix_source, {
     source <- geo_matrix_source_value(input$geo_matrix_source %||% "processed")
+    remote_result <- remote_job_preview_result()
+    if (geo_remote_mode_active() &&
+        is.list(remote_result) &&
+        identical(remote_result$kind %||% "", "geo_pipeline") &&
+        identical(remote_result$matrix_source %||% source, source)) {
+      geo_stage(list(
+        step = "Remote GEO",
+        title = "Remote matrix source loaded",
+        message = paste0(
+          "Using ", geo_matrix_source_label(source),
+          " from the loaded remote GEO result. Remote cache: ",
+          remote_result$cache_dir %||% ""
+        )
+      ))
+      return()
+    }
     geo_spearman_results(data.frame())
     geo_spearman_raw_results(data.frame())
     geo_transcript_candidates(data.frame())
