@@ -2,6 +2,17 @@ ugplot_server_r_packages <- function() {
   c("callr", "httr", "jsonlite", "plumber")
 }
 
+ugplot_server_geo_r_packages <- function() {
+  c(
+    "GEOquery",
+    "minfi",
+    "IlluminaHumanMethylation450kanno.ilmn12.hg19",
+    "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+    "sesame",
+    "sesameData"
+  )
+}
+
 ugplot_installed_r_packages <- function() {
   rownames(utils::installed.packages())
 }
@@ -220,9 +231,13 @@ ugplot_assert_server_system_deps <- function() {
 #' @param install_model_deps Whether to install packages required by missing
 #'   caret models too. Defaults to \code{FALSE} because this can install many
 #'   packages.
+#' @param install_geo_deps Whether to install optional Bioconductor packages
+#'   required for GEO methylation annotation and raw IDAT/sesame workflows.
 #' @return Invisibly returns a list with system and R dependency status.
 #' @export
-ugPlotInstallServerDeps <- function(install = TRUE, dependencies = TRUE, install_model_deps = FALSE) {
+ugPlotInstallServerDeps <- function(install = TRUE, dependencies = TRUE,
+                                    install_model_deps = FALSE,
+                                    install_geo_deps = TRUE) {
   system_missing <- ugplot_missing_server_system_deps()
   if (length(system_missing) > 0) {
     commands <- paste0("  ", ugplot_server_system_dependency_commands(), collapse = "\n")
@@ -235,9 +250,19 @@ ugPlotInstallServerDeps <- function(install = TRUE, dependencies = TRUE, install
   }
 
   r_packages <- ugplot_server_r_packages()
+  if (isTRUE(install_geo_deps)) {
+    r_packages <- unique(c(r_packages, ugplot_server_geo_r_packages()))
+  }
   r_missing <- r_packages[!vapply(r_packages, requireNamespace, logical(1), quietly = TRUE)]
   if (install && length(r_missing) > 0) {
-    utils::install.packages(r_missing, dependencies = dependencies)
+    if (isTRUE(install_geo_deps)) {
+      if (!requireNamespace("BiocManager", quietly = TRUE)) {
+        utils::install.packages("BiocManager", dependencies = dependencies)
+      }
+      BiocManager::install(r_missing, ask = FALSE, update = FALSE, dependencies = dependencies)
+    } else {
+      utils::install.packages(r_missing, dependencies = dependencies)
+    }
     r_missing <- r_packages[!vapply(r_packages, requireNamespace, logical(1), quietly = TRUE)]
   }
 

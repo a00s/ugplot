@@ -15,7 +15,7 @@ COPY . .
 # Instala dependências e tenta instalar o pacote local.
 # Se a instalação do pacote falhar, o container ainda sobe via source() (fallback no CMD).
 RUN Rscript -e "install.packages(c('remotes','BiocManager'), repos='https://cloud.r-project.org')" && \
-    Rscript -e "BiocManager::install(c('ConsensusClusterPlus','methyLImp2'), ask = FALSE, update = FALSE)" && \
+    Rscript -e "BiocManager::install(c('ConsensusClusterPlus','methyLImp2','GEOquery','minfi','IlluminaHumanMethylation450kanno.ilmn12.hg19','IlluminaHumanMethylationEPICanno.ilm10b4.hg19','sesame','sesameData'), ask = FALSE, update = FALSE)" && \
     Rscript -e "remotes::install_deps('/srv/shiny-server/ugplot', dependencies = TRUE, repos = BiocManager::repositories())" && \
     Rscript -e "try(remotes::install_local('/srv/shiny-server/ugplot', dependencies = FALSE, upgrade = 'never', repos = BiocManager::repositories()), silent = TRUE)"
 

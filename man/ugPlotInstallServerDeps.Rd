@@ -5,7 +5,8 @@
 ugPlotInstallServerDeps(
   install = TRUE,
   dependencies = TRUE,
-  install_model_deps = FALSE
+  install_model_deps = FALSE,
+  install_geo_deps = TRUE
 )
 }
 \arguments{
@@ -16,6 +17,9 @@ ugPlotInstallServerDeps(
 \item{install_model_deps}{Whether to install packages required by missing
 caret models too. Defaults to \code{FALSE} because this can install many
 packages.}
+
+\item{install_geo_deps}{Whether to install optional Bioconductor packages
+required for GEO methylation annotation and raw IDAT/sesame workflows.}
 }
 \value{
 Invisibly returns a list with system and R dependency status.
