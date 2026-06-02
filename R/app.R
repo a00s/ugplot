@@ -2645,7 +2645,16 @@ server <- function(input, output, session) {
 
   output$geo_workflow_ui <- renderUI({
     accession_value <- isolate(input$geo_accession %||% "")
-    source_value <- input$geo_matrix_source %||% "processed"
+    current_geo_run_target <- geo_run_target_state()
+    run_remote <- identical(current_geo_run_target, "remote")
+    remote_geo_result <- remote_job_preview_result()
+    remote_geo_loaded <- run_remote && is.list(remote_geo_result) && identical(remote_geo_result$kind %||% "", "geo_pipeline")
+    source_value <- if (remote_geo_loaded && nzchar(remote_geo_result$matrix_source %||% "")) {
+      remote_geo_result$matrix_source
+    } else {
+      input$geo_matrix_source %||% "processed"
+    }
+    source_value <- geo_matrix_source_value(source_value)
     threshold_value <- isolate(input$geo_transcript_absrho_threshold %||% 0.8)
     threshold_value <- suppressWarnings(as.numeric(threshold_value))
     if (!is.finite(threshold_value)) {
@@ -2666,10 +2675,6 @@ server <- function(input, output, session) {
 	    idat_progress <- geo_idat_qc_progress()
 	    idat_qc <- geo_idat_qc_report()
 	    preview <- geo_preview_data()
-	    current_geo_run_target <- geo_run_target_state()
-	    run_remote <- identical(current_geo_run_target, "remote")
-	    remote_geo_result <- remote_job_preview_result()
-	    remote_geo_loaded <- run_remote && is.list(remote_geo_result) && identical(remote_geo_result$kind %||% "", "geo_pipeline")
 	    remote_matrix_files <- if (remote_geo_loaded && identical(remote_geo_result$matrix_source %||% source_value, source_value)) {
 	      as.character(unlist(remote_geo_result$paths$matrix_files %||% character(0), use.names = FALSE))
 	    } else {
@@ -10275,6 +10280,7 @@ server <- function(input, output, session) {
 	    if (!is.list(result) || !identical(result$kind %||% "", "geo_pipeline")) {
 	      stop("Remote job result is not a GEO pipeline result.", call. = FALSE)
 	    }
+	    remote_job_preview_result(result)
 	    reset_geo_remote_loaded_state(clear_files = TRUE)
 	    if (is.data.frame(result$tables$remote_files)) {
 	      geo_remote_files(result$tables$remote_files)
