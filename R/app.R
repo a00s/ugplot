@@ -10371,7 +10371,7 @@ server <- function(input, output, session) {
 	    invisible(TRUE)
 	  }
 
-	  apply_remote_geo_result <- function(result, job_id = "") {
+	  apply_remote_geo_result <- function(result, job_id = "", clear_existing = TRUE) {
 	    if (!is.list(result) || !identical(result$kind %||% "", "geo_pipeline")) {
 	      stop("Remote job result is not a GEO pipeline result.", call. = FALSE)
 	    }
@@ -10382,7 +10382,9 @@ server <- function(input, output, session) {
 	      }, once = TRUE)
 	    }, once = TRUE)
 	    remote_job_preview_result(result)
-	    reset_geo_remote_loaded_state(clear_files = TRUE)
+	    if (isTRUE(clear_existing)) {
+	      reset_geo_remote_loaded_state(clear_files = TRUE)
+	    }
 	    if (is.data.frame(result$tables$remote_files)) {
 	      geo_remote_files(result$tables$remote_files)
 	    }
@@ -10675,7 +10677,11 @@ server <- function(input, output, session) {
     }
     if (remote_result_is_geo(result)) {
       remote_job_preview_result(result)
-      apply_remote_geo_result(result, job_id)
+      apply_remote_geo_result(
+        result,
+        job_id,
+        clear_existing = identical(status$state %||% "finished", "finished")
+      )
       remote_job_status_text(paste("Remote GEO result loaded:", job_id, "- large artifacts remain on", server$name[[1]]))
     } else {
       remote_job_preview_result(NULL)
@@ -11159,18 +11165,10 @@ server <- function(input, output, session) {
       remote_job_loading(TRUE)
       remember_remote_job_server(action$job_id, action$server)
       loaded <- load_remote_job_bundle_locally(action$job_id, server_name = action$server)
+      if (!remote_result_is_geo(loaded)) {
+        updateTextInput(session, "remote_job_id", value = action$job_id)
+      }
       session$onFlushed(function() {
-        if (remote_result_is_geo(loaded)) {
-          tryCatch(
-            {
-              apply_remote_geo_result(loaded, action$job_id)
-              remote_job_status_text(paste("Remote GEO result loaded:", action$job_id))
-            },
-            error = function(e) remote_job_status_text(paste("Remote GEO second load failed:", conditionMessage(e)))
-          )
-        } else {
-          updateTextInput(session, "remote_job_id", value = action$job_id)
-        }
         remote_job_loading(FALSE)
       }, once = TRUE)
     }, error = function(e) {
