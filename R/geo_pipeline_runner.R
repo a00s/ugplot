@@ -846,16 +846,20 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
     if (!is.finite(min_transcript_samples)) {
       min_transcript_samples <- 80
     }
+    result$settings <- c(result$settings %||% list(), list(
+      transcript_absrho_threshold = threshold,
+      transcript_min_samples = min_transcript_samples
+    ))
     publish(0.86, paste0("Building transcript ML datasets for |rho| >= ", threshold), force = TRUE)
     candidates <- ugplot_geo_transcript_candidates(spearman_results, annotation_map, threshold)
     candidates_path <- file.path(
       ugplot_geo_analysis_dir(cache_dir, source),
       paste0("ugplot_geo_transcript_candidates_", ugplot_geo_safe_token(target_column), "_absrho_", ugplot_geo_safe_token(threshold), ".csv")
     )
+    result$tables$transcript_candidates_preview <- utils::head(candidates, 100)
     if (is.data.frame(candidates) && nrow(candidates) > 0) {
       utils::write.csv(candidates, candidates_path, row.names = FALSE)
       result$paths$transcript_candidates <- candidates_path
-      result$tables$transcript_candidates_preview <- utils::head(candidates, 100)
       group_result <- ugplot_geo_build_transcript_groups_remote(
         candidates = candidates,
         matrix_files = matrix_files,
@@ -870,6 +874,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
       result$paths$transcript_group_summary <- group_result$paths$summary
       result$paths$transcript_group_details <- group_result$paths$details
       result$tables$transcript_groups <- group_result$summary
+      result$tables$transcript_group_details <- group_result$details
 
       if (is.data.frame(group_result$summary) && nrow(group_result$summary) > 0) {
         publish(0.93, "Running remote transcript ML screening", force = TRUE)
@@ -896,6 +901,10 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
           result$tables$transcript_ml_summary <- stability_summary
         }
       }
+    } else {
+      result$tables$transcript_groups <- data.frame()
+      result$tables$transcript_group_details <- data.frame()
+      publish(0.92, paste0("No transcript candidates found for |rho| >= ", threshold), force = TRUE)
     }
   }
 

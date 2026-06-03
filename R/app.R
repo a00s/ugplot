@@ -2466,6 +2466,8 @@ server <- function(input, output, session) {
   remote_job_log_text <- reactiveVal("")
   remote_job_preview_status <- reactiveVal(NULL)
   remote_job_preview_result <- reactiveVal(NULL)
+  remote_job_loading <- reactiveVal(FALSE)
+  remote_geo_result_applying <- reactiveVal(FALSE)
   remote_selected_job <- reactiveVal(list(id = "", server = ""))
   remote_server_capabilities <- reactiveVal(list())
   remote_server_connection_state <- reactiveVal(data.frame())
@@ -2697,6 +2699,11 @@ server <- function(input, output, session) {
     }
     matrix_files <- if (nzchar(trimws(accession_value))) ugplot_geo_matrix_files(ugplot_geo_cache_dir(trimws(accession_value)), source = source_value) else character(0)
     extract_done <- length(matrix_files) > 0 || length(remote_matrix_files) > 0
+    if (remote_geo_loaded && length(remote_matrix_files) > 0) {
+      selected_download_done <- TRUE
+      files_done <- TRUE
+      needs_extract <- FALSE
+    }
     annotation_done <- is.data.frame(annotation_map) && nrow(annotation_map) > 0
     if (!annotation_done && metadata_done) {
       platform_info <- ugplot_geo_platform_annotation_package(ugplot_geo_detect_platform(metadata))
@@ -2704,16 +2711,17 @@ server <- function(input, output, session) {
         annotation_done <- file.exists(ugplot_geo_annotation_cache_path(platform_info$platform, "rds"))
       }
     }
-    spearman_done <- is.data.frame(spearman_results) && nrow(spearman_results) > 0 && (length(matrix_files) > 0 || length(remote_matrix_files) > 0)
+    spearman_done <- is.data.frame(spearman_results) && nrow(spearman_results) > 0 &&
+      (length(matrix_files) > 0 || length(remote_matrix_files) > 0 || remote_geo_loaded)
     transcript_needs_rebuild <- identical(transcript_progress$phase %||% "", "needs rebuild")
     transcript_groups_loaded <- is.data.frame(transcript_groups) && nrow(transcript_groups) > 0
     transcript_done <- !transcript_needs_rebuild && (
-      (transcript_progress$phase %||% "") %in% c("complete", "loaded from cache") ||
+      (transcript_progress$phase %||% "") %in% c("complete", "loaded from cache", "loaded from remote") ||
         transcript_groups_loaded
     ) && spearman_done
     transcript_ml_ready <- transcript_done && transcript_groups_loaded
     transcript_ml_done <- transcript_ml_ready && (
-      (transcript_ml_progress$phase %||% "") %in% c("complete", "loaded from cache", "already complete") ||
+      (transcript_ml_progress$phase %||% "") %in% c("complete", "loaded from cache", "loaded from remote", "already complete") ||
         (is.data.frame(transcript_ml_results) && nrow(transcript_ml_results) > 0)
     )
     transcript_ml_stability_done <- transcript_ml_ready &&
@@ -3194,6 +3202,7 @@ server <- function(input, output, session) {
     min_neg_text <- if (is.finite(min_neg)) signif(min_neg, 4) else "NA"
     annotation_map <- geo_cpg_annotation()
     annotation_line <- NULL
+    annotated <- data.frame()
     if (is.data.frame(annotation_map) && nrow(annotation_map) > 0 && nrow(trigger_rows) > 0) {
       annotated <- annotation_map[
         annotation_map$CpG %in% unique(trigger_rows$CpG) &
@@ -3210,11 +3219,63 @@ server <- function(input, output, session) {
     } else if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
       annotation_line <- tags$p("At current threshold: 0 annotated CpGs/transcripts.")
     }
+    run_remote <- identical(geo_run_target_state(), "remote")
+    continue_action <- NULL
+    transcript_candidate_count <- if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
+      length(unique(as.character(annotated$Transcript %||% character(0))))
+    } else {
+      nrow(trigger_rows)
+    }
+    if (isTRUE(run_remote) && transcript_candidate_count > 0) {
+      continue_action <- tags$div(
+        style = paste0(
+          "margin: 10px 0; padding: 10px 12px; border-left: 5px solid #2e9d4d;",
+          "background: #e8f7eb; color: #1f6f37; border-radius: 4px;"
+        ),
+        tags$p(style = "margin: 0 0 8px 0; font-weight: 700;", "Ready to continue transcript pipeline"),
+        tags$p(style = "margin: 0 0 8px 0;",
+          paste0(
+            "Current threshold |rho| >= ", threshold,
+            " keeps ", format(transcript_candidate_count, big.mark = ","),
+            " transcript candidate(s). Continue will reuse the remote GEO cache where available."
+          )
+        ),
+        actionButton("geo_continue_remote_pipeline", "Continue remote pipeline", class = "btn-success btn-sm")
+      )
+    }
+    threshold_warning <- NULL
+    if (nrow(filtered) > 0 && transcript_candidate_count == 0) {
+      no_candidate_message <- if (nrow(trigger_rows) == 0) {
+        paste0(
+          "Current threshold |rho| >= ", threshold,
+          " is above the observed range. Max |rho| is ", max_text,
+          ", so no transcript candidates can be built."
+        )
+      } else {
+        paste0(
+          "Current threshold |rho| >= ", threshold,
+          " keeps CpGs, but none map to an annotated transcript candidate."
+        )
+      }
+      threshold_warning <- tags$div(
+        style = paste0(
+          "margin: 10px 0; padding: 10px 12px; border-left: 5px solid #d9534f;",
+          "background: #fdecec; color: #7f1d1d; border-radius: 4px;"
+        ),
+        tags$p(style = "margin: 0 0 6px 0; font-weight: 700;", "Transcript pipeline stopped at Step 6"),
+        tags$p(style = "margin: 0 0 8px 0;", no_candidate_message),
+        tags$p(style = "margin: 0 0 8px 0;",
+          paste0("Lower the threshold. The continue button appears when the current value produces transcript candidates.")
+        )
+      )
+    }
     tags$div(class = "geo-step-status",
       tags$p(tags$strong("Spearman totals: "), paste0(
         format(nrow(results), big.mark = ","), " CpG(s) scanned; ",
         format(nrow(filtered), big.mark = ","), " pass the sample filter; max |rho| ", max_text, "."
       )),
+      threshold_warning,
+      continue_action,
       tags$p(paste0(
         "|rho| >= ", threshold, ": ",
         format(nrow(trigger_rows), big.mark = ","), " CpG(s)."
@@ -3348,7 +3409,19 @@ server <- function(input, output, session) {
       return(tags$p("No usable metadata field was detected. Inspect the sample metadata table."))
     }
     current <- input$geo_target_column %||% ""
-    selected <- if (nzchar(current) && current %in% candidates) current else ""
+    remote_result <- remote_job_preview_result()
+    remote_target <- if (is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")) {
+      as.character(remote_result$target_column %||% "")
+    } else {
+      ""
+    }
+    selected <- if (nzchar(current) && current %in% candidates) {
+      current
+    } else if (nzchar(remote_target) && remote_target %in% candidates) {
+      remote_target
+    } else {
+      ""
+    }
     choices <- c("Choose metadata field" = "", stats::setNames(candidates, candidates))
     selectInput("geo_target_column", "Metadata field to predict/correlate:", choices = choices, selected = selected)
   })
@@ -6315,10 +6388,23 @@ server <- function(input, output, session) {
   observeEvent(input$geo_matrix_source, {
     source <- geo_matrix_source_value(input$geo_matrix_source %||% "processed")
     remote_result <- remote_job_preview_result()
+    if (isTRUE(remote_geo_result_applying())) {
+      return()
+    }
     if (geo_remote_mode_active() &&
         is.list(remote_result) &&
         identical(remote_result$kind %||% "", "geo_pipeline") &&
         identical(remote_result$matrix_source %||% source, source)) {
+      if (!is.data.frame(geo_sample_metadata()) || nrow(geo_sample_metadata()) == 0 ||
+          !is.data.frame(geo_spearman_raw_results()) || nrow(geo_spearman_raw_results()) == 0) {
+        remote_geo_result_applying(TRUE)
+        try(apply_remote_geo_result(remote_result, geo_remote_pipeline_job_id()), silent = TRUE)
+        session$onFlushed(function() {
+          session$onFlushed(function() {
+            remote_geo_result_applying(FALSE)
+          }, once = TRUE)
+        }, once = TRUE)
+      }
       geo_stage(list(
         step = "Remote GEO",
         title = "Remote matrix source loaded",
@@ -10158,16 +10244,25 @@ server <- function(input, output, session) {
 	    }
 	    candidates <- ugplot_geo_target_candidates(metadata)
 	    target_column <- trimws(input$geo_target_column %||% "")
+	    remote_result <- remote_job_preview_result()
+	    if ((!nzchar(target_column) || !(target_column %in% candidates)) &&
+	        is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")) {
+	      remote_target <- trimws(as.character(remote_result$target_column %||% ""))
+	      if (nzchar(remote_target) && remote_target %in% candidates) {
+	        target_column <- remote_target
+	      }
+	    }
 	    if (!nzchar(target_column) || !(target_column %in% candidates)) {
 	      stop("Choose a metadata field locally before starting a remote GEO pipeline.", call. = FALSE)
 	    }
 	    server <- selected_geo_remote_server()
+	    matrix_source <- geo_matrix_source_value(input$geo_matrix_source %||% "processed")
 	    list(
 	      runner = "ugplot_run_geo_pipeline_job",
 	      type = "geo",
-	      job_name = paste("GEO", accession, input$geo_matrix_source %||% "processed"),
+	      job_name = paste("GEO", accession, matrix_source),
 	      accession = accession,
-	      matrix_source = input$geo_matrix_source %||% "processed",
+	      matrix_source = matrix_source,
 	      target_column = target_column,
 	      spearman_max_cpgs = input$geo_spearman_max_cpgs %||% 0,
 	      spearman_min_samples_pct = input$geo_spearman_min_samples %||% 80,
@@ -10280,6 +10375,12 @@ server <- function(input, output, session) {
 	    if (!is.list(result) || !identical(result$kind %||% "", "geo_pipeline")) {
 	      stop("Remote job result is not a GEO pipeline result.", call. = FALSE)
 	    }
+	    remote_geo_result_applying(TRUE)
+	    session$onFlushed(function() {
+	      session$onFlushed(function() {
+	        remote_geo_result_applying(FALSE)
+	      }, once = TRUE)
+	    }, once = TRUE)
 	    remote_job_preview_result(result)
 	    reset_geo_remote_loaded_state(clear_files = TRUE)
 	    if (is.data.frame(result$tables$remote_files)) {
@@ -10295,8 +10396,39 @@ server <- function(input, output, session) {
 	    if (is.data.frame(result$tables$transcript_groups)) {
 	      geo_transcript_groups(result$tables$transcript_groups)
 	    }
+	    if (is.data.frame(result$tables$transcript_group_details)) {
+	      geo_transcript_group_details(result$tables$transcript_group_details)
+	    }
 	    if (is.data.frame(result$tables$transcript_candidates_preview)) {
 	      geo_transcript_candidates(result$tables$transcript_candidates_preview)
+	    }
+	    if (is.data.frame(result$tables$transcript_groups) && nrow(result$tables$transcript_groups) > 0) {
+	      detail_rows <- if (is.data.frame(result$tables$transcript_group_details)) nrow(result$tables$transcript_group_details) else 0L
+	      update_geo_transcript_build_progress(
+	        phase = "loaded from remote",
+	        message = paste0("Loaded remote transcript ML groups: ", nrow(result$tables$transcript_groups), " group(s). Large artifacts remain on the remote server."),
+	        processed = nrow(result$tables$transcript_groups),
+	        total = nrow(result$tables$transcript_groups),
+	        compatible = nrow(result$tables$transcript_groups),
+	        excluded = 0L,
+	        current = "",
+	        cache = result$paths$transcript_group_summary %||% "",
+	        detail = if (detail_rows > 0) paste0(detail_rows, " transcript detail row(s) loaded from remote.") else NULL
+	      )
+	    }
+	    if ((!is.data.frame(result$tables$transcript_groups) || nrow(result$tables$transcript_groups) == 0) &&
+	        (is.data.frame(result$tables$spearman_preview) && nrow(result$tables$spearman_preview) > 0)) {
+	      threshold_label <- result$settings$transcript_absrho_threshold %||% "selected threshold"
+	      update_geo_transcript_build_progress(
+	        phase = "no candidates",
+	        message = paste0("No transcript candidates were found for |rho| >= ", threshold_label, ". Lower the transcript CpG threshold and rerun the remote GEO pipeline to run steps 8-10."),
+	        processed = 0L,
+	        total = 0L,
+	        compatible = 0L,
+	        excluded = 0L,
+	        current = "",
+	        cache = result$paths$spearman_by_transcript %||% ""
+	      )
 	    }
 	    ml_summary <- result$tables$transcript_ml_summary
 	    if (!is.data.frame(ml_summary) || nrow(ml_summary) == 0) {
@@ -10336,6 +10468,9 @@ server <- function(input, output, session) {
 	    }
 	    if (nzchar(result$target_column %||% "")) {
 	      updateSelectInput(session, "geo_target_column", selected = result$target_column)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$transcript_absrho_threshold)) {
+	      updateNumericInput(session, "geo_transcript_absrho_threshold", value = result$settings$transcript_absrho_threshold)
 	    }
 	    geo_remote_pipeline_job_id(job_id %||% geo_remote_pipeline_job_id())
 	    geo_remote_pipeline_status(paste0(
@@ -10525,7 +10660,6 @@ server <- function(input, output, session) {
     }
     remote_job_preview_status(status)
     geo_remote_pipeline_job_id(job_id)
-    updateTextInput(session, "remote_job_id", value = job_id)
     if (remote_config_is_geo(config)) {
       apply_remote_geo_config(config, job_id = job_id, server = server, status = status)
     }
@@ -10795,6 +10929,15 @@ server <- function(input, output, session) {
 	    })
 	  })
 
+	  observeEvent(input$geo_continue_remote_pipeline, {
+	    tryCatch({
+	      submit_remote_geo_pipeline()
+	    }, error = function(e) {
+	      geo_remote_pipeline_status(paste("Remote GEO continue failed:", conditionMessage(e)))
+	      remote_job_status_text(geo_remote_pipeline_status())
+	    })
+	  })
+
 	  observeEvent(input$geo_refresh_remote_pipeline, {
 	    tryCatch({
 	      job_id <- geo_remote_pipeline_job_id() %||% input$remote_job_id %||% ""
@@ -10971,6 +11114,9 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$remote_job_id, {
+    if (isTRUE(remote_job_loading())) {
+      return()
+    }
     if (!nzchar(input$remote_job_id %||% "")) {
       return()
     }
@@ -11010,10 +11156,25 @@ server <- function(input, output, session) {
   observeEvent(input$remote_load_result_row, {
     tryCatch({
       action <- parse_remote_job_action_key(input$remote_load_result_row)
+      remote_job_loading(TRUE)
       remember_remote_job_server(action$job_id, action$server)
-      updateTextInput(session, "remote_job_id", value = action$job_id)
-      load_remote_job_bundle_locally(action$job_id, server_name = action$server)
+      loaded <- load_remote_job_bundle_locally(action$job_id, server_name = action$server)
+      session$onFlushed(function() {
+        if (remote_result_is_geo(loaded)) {
+          tryCatch(
+            {
+              apply_remote_geo_result(loaded, action$job_id)
+              remote_job_status_text(paste("Remote GEO result loaded:", action$job_id))
+            },
+            error = function(e) remote_job_status_text(paste("Remote GEO second load failed:", conditionMessage(e)))
+          )
+        } else {
+          updateTextInput(session, "remote_job_id", value = action$job_id)
+        }
+        remote_job_loading(FALSE)
+      }, once = TRUE)
     }, error = function(e) {
+      remote_job_loading(FALSE)
       remote_job_status_text(paste("Remote result load failed:", conditionMessage(e)))
     })
   })
