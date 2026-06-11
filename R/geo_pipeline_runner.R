@@ -718,7 +718,24 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
     paths = list(),
     tables = list(),
     stage = "queued",
-    updated_at = as.character(Sys.time())
+    updated_at = as.character(Sys.time()),
+    settings = list(
+      spearman_max_cpgs = config$spearman_max_cpgs %||% 0,
+      spearman_min_samples_pct = config$spearman_min_samples_pct %||% 80,
+      transcript_absrho_threshold = config$transcript_absrho_threshold %||% 0.8,
+      transcript_min_samples = config$transcript_min_samples %||% 80,
+      idat_detection_p = config$idat_detection_p %||% 0.05,
+      idat_max_failed_fraction = config$idat_max_failed_fraction %||% 0.05,
+      idat_sesame_prep = config$idat_sesame_prep %||% "QCDPB",
+      geo_ml_min_absrho = config$geo_ml_min_absrho %||% 0.7,
+      geo_ml_rank_limit = config$geo_ml_rank_limit %||% NA_integer_,
+      geo_ml_screen_seeds = config$geo_ml_screen_seeds %||% 3,
+      geo_ml_timeout = config$geo_ml_timeout %||% 1200,
+      geo_ml_min_stability_seeds = config$geo_ml_min_stability_seeds %||% 30,
+      geo_ml_max_stability_seeds = config$geo_ml_max_stability_seeds %||% 4000,
+      geo_ml_stability_window = config$geo_ml_stability_window %||% 30,
+      geo_ml_stability_tolerance = config$geo_ml_stability_tolerance %||% 0.01
+    )
   )
   last_publish_progress <- -Inf
   last_publish_time <- Sys.time() - 60

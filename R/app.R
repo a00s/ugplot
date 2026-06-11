@@ -2657,13 +2657,14 @@ server <- function(input, output, session) {
       input$geo_matrix_source %||% "processed"
     }
     source_value <- geo_matrix_source_value(source_value)
-    threshold_value <- isolate(input$geo_transcript_absrho_threshold %||% 0.8)
+    remote_settings <- if (remote_geo_loaded && is.list(remote_geo_result$settings)) remote_geo_result$settings else list()
+    threshold_value <- isolate(input$geo_transcript_absrho_threshold %||% remote_settings$transcript_absrho_threshold %||% 0.8)
     threshold_value <- suppressWarnings(as.numeric(threshold_value))
     if (!is.finite(threshold_value)) {
       threshold_value <- 0.8
     }
-    max_cpgs_value <- isolate(input$geo_spearman_max_cpgs %||% 0)
-    min_spearman_samples_value <- isolate(input$geo_spearman_min_samples %||% 80)
+    max_cpgs_value <- isolate(input$geo_spearman_max_cpgs %||% remote_settings$spearman_max_cpgs %||% 0)
+    min_spearman_samples_value <- isolate(input$geo_spearman_min_samples %||% remote_settings$spearman_min_samples_pct %||% 80)
     metadata <- geo_sample_metadata()
     remote_files <- geo_remote_files()
     local_files <- geo_files()
@@ -2843,7 +2844,7 @@ server <- function(input, output, session) {
         render_geo_step_card(8, "Build transcript ML datasets", transcript_done,
           tags$div(
             tags$p(class = "geo-step-note", "Build complete-case transcript CSVs and group transcripts that produce identical ML datasets."),
-            numericInput("geo_transcript_min_samples", "Transcript complete-case minimum samples (%):", value = 80, min = 0, max = 100, step = 1),
+            numericInput("geo_transcript_min_samples", "Transcript complete-case minimum samples (%):", value = isolate(input$geo_transcript_min_samples %||% remote_settings$transcript_min_samples %||% 80), min = 0, max = 100, step = 1),
             tags$p(class = "geo-step-note", "Transcript complete-case treats empty strings, NA/na text, true NA, and zero as missing."),
             if (spearman_done && annotation_done) {
 	              if (!run_remote) actionButton("geo_build_transcript_groups", "Build/continue transcript CSVs") else NULL
@@ -10342,6 +10343,12 @@ server <- function(input, output, session) {
 	    accession <- trimws(as.character(config$accession %||% ""))
 	    matrix_source <- as.character(config$matrix_source %||% "")
 	    target_column <- as.character(config$target_column %||% "")
+	    update_geo_numeric_input <- function(input_id, value) {
+	      numeric_value <- suppressWarnings(as.numeric(value))
+	      if (length(numeric_value) > 0 && is.finite(numeric_value[[1]])) {
+	        updateNumericInput(session, input_id, value = numeric_value[[1]])
+	      }
+	    }
 	    if (nzchar(accession)) {
 	      updateTextInput(session, "geo_accession", value = accession)
 	    }
@@ -10351,6 +10358,26 @@ server <- function(input, output, session) {
 	    if (nzchar(target_column)) {
 	      updateSelectInput(session, "geo_target_column", selected = target_column)
 	    }
+	    update_geo_numeric_input("geo_spearman_max_cpgs", config$spearman_max_cpgs)
+	    update_geo_numeric_input("geo_spearman_min_samples", config$spearman_min_samples_pct)
+	    update_geo_numeric_input("geo_transcript_absrho_threshold", config$transcript_absrho_threshold)
+	    update_geo_numeric_input("geo_transcript_min_samples", config$transcript_min_samples)
+	    update_geo_numeric_input("geo_idat_detection_p", config$idat_detection_p)
+	    update_geo_numeric_input("geo_idat_max_failed_fraction", config$idat_max_failed_fraction)
+	    if (!is.null(config$idat_sesame_prep)) {
+	      prep <- as.character(config$idat_sesame_prep %||% "")
+	      if (nzchar(prep)) {
+	        updateTextInput(session, "geo_idat_sesame_prep", value = prep)
+	      }
+	    }
+	    update_geo_numeric_input("geo_ml_min_absrho", config$geo_ml_min_absrho)
+	    update_geo_numeric_input("geo_ml_rank_limit", config$geo_ml_rank_limit)
+	    update_geo_numeric_input("geo_ml_screen_seeds", config$geo_ml_screen_seeds)
+	    update_geo_numeric_input("geo_ml_timeout", config$geo_ml_timeout)
+	    update_geo_numeric_input("geo_ml_min_stability_seeds", config$geo_ml_min_stability_seeds)
+	    update_geo_numeric_input("geo_ml_max_stability_seeds", config$geo_ml_max_stability_seeds)
+	    update_geo_numeric_input("geo_ml_stability_window", config$geo_ml_stability_window)
+	    update_geo_numeric_input("geo_ml_stability_tolerance", config$geo_ml_stability_tolerance)
 	    geo_remote_pipeline_job_id(job_id %||% geo_remote_pipeline_job_id())
 	    status_text <- remote_status_summary_text(status)
 	    if (!nzchar(status_text)) {
@@ -10473,6 +10500,15 @@ server <- function(input, output, session) {
 	    }
 	    if (is.list(result$settings) && !is.null(result$settings$transcript_absrho_threshold)) {
 	      updateNumericInput(session, "geo_transcript_absrho_threshold", value = result$settings$transcript_absrho_threshold)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$transcript_min_samples)) {
+	      updateNumericInput(session, "geo_transcript_min_samples", value = result$settings$transcript_min_samples)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$spearman_max_cpgs)) {
+	      updateNumericInput(session, "geo_spearman_max_cpgs", value = result$settings$spearman_max_cpgs)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$spearman_min_samples_pct)) {
+	      updateNumericInput(session, "geo_spearman_min_samples", value = result$settings$spearman_min_samples_pct)
 	    }
 	    geo_remote_pipeline_job_id(job_id %||% geo_remote_pipeline_job_id())
 	    geo_remote_pipeline_status(paste0(
@@ -10717,7 +10753,23 @@ server <- function(input, output, session) {
       geo_remote_pipeline_status(status_text)
     }
 
-    if (remote_status_has_result(status)) {
+    if (remote_status_is_geo(status) && remote_status_has_result(status)) {
+      result <- tryCatch(
+        ugplot_remote_get_result(
+          server_url = server$url,
+          job_id = job_id,
+          token = server$token %||% ""
+        ),
+        error = function(e) NULL
+      )
+      if (remote_result_is_geo(result)) {
+        load_remote_geo_job_locally(job_id, server, status = status, result = result)
+        status_text <- paste(status_text, "| GEO result loaded")
+      } else {
+        remote_job_preview_result(NULL)
+        status_text <- paste(status_text, "| GEO result unavailable")
+      }
+    } else if (remote_status_has_result(status)) {
       if (isTRUE(switch_to_ml)) {
         result <- ugplot_remote_get_result(
           server_url = server$url,
