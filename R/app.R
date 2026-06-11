@@ -4584,16 +4584,47 @@ server <- function(input, output, session) {
   })
 
   output$geo_transcript_ml_table_title <- renderUI({
-    results <- geo_transcript_ml_results()
+    results <- geo_transcript_ml_results_current()
     if (!is.data.frame(results) || nrow(results) == 0) {
       return(tags$p(class = "geo-step-note", "No transcript ML results loaded yet."))
     }
     render_geo_table_title("Transcript ML results", "Per-source transcript/group ranking from the local resumable ML pipeline.")
   })
 
+  geo_transcript_ml_results_current <- function() {
+    results <- geo_transcript_ml_results()
+    if (is.data.frame(results) && nrow(results) > 0) {
+      return(results)
+    }
+    remote_result <- remote_job_preview_result()
+    if (geo_remote_mode_active() && is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")) {
+      remote_summary <- remote_result$tables$transcript_ml_summary
+      if (!is.data.frame(remote_summary) || nrow(remote_summary) == 0) {
+        remote_summary <- remote_result$tables$transcript_ml_screening
+      }
+      if (is.data.frame(remote_summary) && nrow(remote_summary) > 0) {
+        return(remote_summary)
+      }
+    }
+    data.frame()
+  }
+
+  geo_transcript_group_details_current <- function() {
+    details <- geo_transcript_group_details()
+    if (is.data.frame(details) && nrow(details) > 0) {
+      return(details)
+    }
+    remote_result <- remote_job_preview_result()
+    if (geo_remote_mode_active() && is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline") &&
+        is.data.frame(remote_result$tables$transcript_group_details)) {
+      return(remote_result$tables$transcript_group_details)
+    }
+    data.frame()
+  }
+
   geo_transcript_ml_class_rank_rows_for <- function(rank_mode = c("r2", "spearman", "combined")) {
     rank_mode <- match.arg(rank_mode)
-    results <- geo_transcript_ml_results()
+    results <- geo_transcript_ml_results_current()
     required <- c("StratumColumn", "StratumValue", "GroupID", "PrincipalTranscript", "Gene")
     if (!is.data.frame(results) || nrow(results) == 0 || !all(required %in% names(results))) {
       return(data.frame())
@@ -4728,7 +4759,7 @@ server <- function(input, output, session) {
   })
 
   output$geo_transcript_ml_class_order_control <- renderUI({
-    results <- geo_transcript_ml_results()
+    results <- geo_transcript_ml_results_current()
     if (!is.data.frame(results) || nrow(results) == 0 ||
         !all(c("StratumColumn", "StratumValue") %in% names(results))) {
       return(NULL)
@@ -4969,7 +5000,7 @@ server <- function(input, output, session) {
   })
 
   output$geo_transcript_ml_table <- DT::renderDT({
-    results <- geo_transcript_ml_results()
+    results <- geo_transcript_ml_results_current()
     req(is.data.frame(results), nrow(results) > 0)
     display_cols <- intersect(
       c("Source", "Phase", "StratumColumn", "StratumValue", "StratumSamples", "GroupID", "PrincipalTranscript", "Gene", "CombinedRank", "ModelRank", "RhoRank", "TriggerMaxAbsRho", "TriggerBestCpG", "TriggerBestRho", "BestModel", "ModelsRun", "ModelsOK", "MetricName", "BestMetric", "MedianMetric", "MeanMetric", "MetricSE", "SeedsRun", "Stable", "StabilityDetail"),
@@ -4991,7 +5022,7 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$geo_transcript_ml_table_rows_selected, {
-    results <- geo_transcript_ml_results()
+    results <- geo_transcript_ml_results_current()
     selected <- input$geo_transcript_ml_table_rows_selected
     if (is.data.frame(results) && nrow(results) > 0 && length(selected) > 0 &&
         selected[[1]] <= nrow(results) && "GroupID" %in% names(results)) {
@@ -5000,8 +5031,8 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   geo_transcript_ml_selected_data <- reactive({
-    results <- geo_transcript_ml_results()
-    details <- geo_transcript_group_details()
+    results <- geo_transcript_ml_results_current()
+    details <- geo_transcript_group_details_current()
     selected <- input$geo_transcript_ml_table_rows_selected
     if (!is.data.frame(results) || nrow(results) == 0 ||
         !is.data.frame(details) || nrow(details) == 0) {
@@ -5027,7 +5058,7 @@ server <- function(input, output, session) {
     }
     group_id <- as.character(ml_row$GroupID[[1]] %||% "")
     track <- details[as.character(details$GroupID) == group_id, , drop = FALSE]
-    if (!is.data.frame(track) || nrow(track) == 0) {
+    if (!is.data.frame(track) || nrow(track) == 0 || !"CpG" %in% names(track)) {
       return(list(row = ml_row, track = data.frame()))
     }
     importance <- data.frame()
@@ -5150,7 +5181,7 @@ server <- function(input, output, session) {
     if (length(class_order) == 0) {
       return(data.frame())
     }
-    ml_results <- geo_transcript_ml_results()
+    ml_results <- geo_transcript_ml_results_current()
     group_id <- as.character(row$GroupID[[1]] %||% "")
     group_rows <- if (is.data.frame(ml_results) && nrow(ml_results) > 0 && "GroupID" %in% names(ml_results)) {
       ml_results[as.character(ml_results$GroupID) == group_id, , drop = FALSE]
@@ -6068,6 +6099,9 @@ server <- function(input, output, session) {
     group_id <- groups$GroupID[[selected[[1]]]]
     track <- details[details$GroupID == group_id, , drop = FALSE]
     req(nrow(track) > 0)
+    if (!"CpG" %in% names(track)) {
+      shiny::validate(shiny::need(FALSE, "CpG-level detail is not included in this remote result. The transcript group summary is available above."))
+    }
     detail_selected <- input$geo_transcript_group_details_table_rows_selected
     selected_cpg <- character(0)
     if (length(detail_selected) > 0) {
@@ -6076,7 +6110,7 @@ server <- function(input, output, session) {
         selected_cpg <- as.character(detail_rows$CpG[[detail_selected[[1]]]])
       }
     }
-    ml_summary <- geo_transcript_ml_results()
+    ml_summary <- geo_transcript_ml_results_current()
     if ((!is.data.frame(ml_summary) || nrow(ml_summary) == 0) && nzchar(input$geo_accession %||% "")) {
       ml_summary_path <- file.path(
         geo_transcript_ml_dir(ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO")), geo_matrix_source_value()),
@@ -8610,6 +8644,18 @@ server <- function(input, output, session) {
     }
     dataset_path <- group$DatasetPath[[1]]
     if (!nzchar(dataset_path) || !file.exists(dataset_path)) {
+      if (geo_remote_mode_active() && nzchar(dataset_path)) {
+        geo_stage(list(
+          step = "Step 6",
+          title = "Remote grouped dataset",
+          message = paste0(
+            "This transcript group dataset is stored on the remote server and is not available as a local CSV in this Shiny session: ",
+            dataset_path,
+            ". Load the remote GEO result to inspect summaries, or rebuild/download the transcript dataset locally before loading it into TABLE."
+          )
+        ))
+        return(invisible(FALSE))
+      }
       geo_stage(list(step = "Step 6", title = "Missing grouped dataset", message = "The cached complete-case CSV for this transcript group was not found. Re-run the transcript group build."))
       return(invisible(FALSE))
     }
