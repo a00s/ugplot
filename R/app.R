@@ -6071,8 +6071,26 @@ server <- function(input, output, session) {
     groups <- geo_transcript_groups()
     details <- geo_transcript_group_details()
     selected <- input$geo_transcript_groups_table_rows_selected
-    req(is.data.frame(groups), nrow(groups) > 0, is.data.frame(details), nrow(details) > 0, length(selected) > 0)
-    group_id <- groups$GroupID[[selected[[1]]]]
+    req(is.data.frame(groups), nrow(groups) > 0, length(selected) > 0)
+    group <- groups[selected[[1]], , drop = FALSE]
+    group_id <- group$GroupID[[1]]
+    if (!is.data.frame(details) || nrow(details) == 0 || !"CpG" %in% names(details)) {
+      cpgs <- if ("CpGs" %in% names(group)) {
+        unlist(strsplit(as.character(group$CpGs[[1]] %||% ""), ";", fixed = TRUE), use.names = FALSE)
+      } else {
+        character(0)
+      }
+      cpgs <- cpgs[nzchar(cpgs)]
+      display <- data.frame(
+        GroupID = group_id,
+        PrincipalTranscript = as.character(group$PrincipalTranscript[[1]] %||% ""),
+        Gene = as.character(group$Gene[[1]] %||% ""),
+        CpG = cpgs,
+        stringsAsFactors = FALSE
+      )
+      req(nrow(display) > 0)
+      return(DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single"))
+    }
     display <- details[details$GroupID == group_id, , drop = FALSE]
     display_cols <- intersect(
       c("Transcript", "Gene", "CpG", "CpGKeptForML", "GeneRegion", "Chr", "Position", "Strand", "CpGIslandRelation", "RegulatoryFeature", "ProbeType", "SpearmanRho", "AbsRho", "PValue"),
