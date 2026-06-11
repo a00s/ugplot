@@ -2684,6 +2684,24 @@ server <- function(input, output, session) {
 	      character(0)
 	    }
 	    remote_matrix_files <- remote_matrix_files[nzchar(remote_matrix_files)]
+	    if (remote_geo_loaded) {
+	      if ((!is.data.frame(transcript_table) || nrow(transcript_table) == 0) &&
+	          is.data.frame(remote_geo_result$tables$transcript_candidates_preview)) {
+	        transcript_table <- remote_geo_result$tables$transcript_candidates_preview
+	      }
+	      if ((!is.data.frame(transcript_groups) || nrow(transcript_groups) == 0) &&
+	          is.data.frame(remote_geo_result$tables$transcript_groups)) {
+	        transcript_groups <- remote_geo_result$tables$transcript_groups
+	      }
+	      remote_ml_summary <- remote_geo_result$tables$transcript_ml_summary
+	      if (!is.data.frame(remote_ml_summary) || nrow(remote_ml_summary) == 0) {
+	        remote_ml_summary <- remote_geo_result$tables$transcript_ml_screening
+	      }
+	      if ((!is.data.frame(transcript_ml_results) || nrow(transcript_ml_results) == 0) &&
+	          is.data.frame(remote_ml_summary)) {
+	        transcript_ml_results <- remote_ml_summary
+	      }
+	    }
 
     metadata_done <- is.data.frame(metadata) && nrow(metadata) > 0
     files_seen <- (is.data.frame(remote_files) && nrow(remote_files) > 0) || (is.data.frame(local_files) && nrow(local_files) > 0)
@@ -2730,7 +2748,10 @@ server <- function(input, output, session) {
       nrow(transcript_ml_results) > 0 &&
       "Phase" %in% names(transcript_ml_results) &&
       any(as.character(transcript_ml_results$Phase) == "stability")
-    idat_done <- (idat_progress$phase %||% "") %in% c("complete", "loaded from cache", "loaded from remote") ||
+    remote_idat_done <- remote_geo_loaded &&
+      (nzchar(remote_geo_result$paths$sesame_beta %||% "") || nzchar(remote_geo_result$paths$sesame_qc %||% ""))
+    idat_done <- remote_idat_done ||
+      (idat_progress$phase %||% "") %in% c("complete", "loaded from cache", "loaded from remote") ||
       (is.data.frame(idat_qc) && nrow(idat_qc) > 0 && nzchar(idat_progress$beta_path %||% "") && (file.exists(idat_progress$beta_path %||% "") || remote_geo_loaded))
 	    preview_done <- is.data.frame(preview) && nrow(preview) > 0
 
@@ -3307,6 +3328,17 @@ server <- function(input, output, session) {
 
   output$geo_idat_qc_summary <- renderUI({
     accession <- trimws(input$geo_accession %||% "")
+    remote_result <- remote_job_preview_result()
+    remote_loaded <- geo_remote_mode_active() && is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")
+    if (remote_loaded && (nzchar(remote_result$paths$sesame_beta %||% "") || nzchar(remote_result$paths$sesame_qc %||% ""))) {
+      qc_n <- if (is.data.frame(remote_result$tables$idat_qc)) nrow(remote_result$tables$idat_qc) else 0L
+      return(tags$div(
+        tags$p(tags$strong("Sesame IDAT status: "), "loaded from remote"),
+        tags$p(paste0("Remote sesame beta matrix is available for Spearman", if (qc_n > 0) paste0("; QC rows: ", qc_n) else "", ".")),
+        tags$p(class = "geo-step-note", paste0("Remote beta: ", remote_result$paths$sesame_beta %||% "")),
+        tags$p(class = "geo-step-note", paste0("Remote QC: ", remote_result$paths$sesame_qc %||% ""))
+      ))
+    }
     if (!nzchar(accession)) {
       return(tags$p(class = "geo-step-note", "Inspect a GEO accession before scanning raw IDAT availability."))
     }
@@ -3343,6 +3375,21 @@ server <- function(input, output, session) {
 
   output$geo_idat_qc_progress_ui <- renderUI({
     progress <- geo_idat_qc_progress()
+    remote_result <- remote_job_preview_result()
+    remote_loaded <- geo_remote_mode_active() && is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")
+    if (remote_loaded && (nzchar(remote_result$paths$sesame_beta %||% "") || nzchar(remote_result$paths$sesame_qc %||% "")) &&
+        !((progress$phase %||% "") %in% c("complete", "loaded from cache", "loaded from remote"))) {
+      qc_n <- if (is.data.frame(remote_result$tables$idat_qc)) nrow(remote_result$tables$idat_qc) else 0L
+      progress <- list(
+        phase = "loaded from remote",
+        message = "Loaded remote sesame paths from the selected GEO job.",
+        processed = qc_n,
+        total = qc_n,
+        current = "",
+        beta_path = remote_result$paths$sesame_beta %||% "",
+        qc_path = remote_result$paths$sesame_qc %||% ""
+      )
+    }
     tags$div(class = "geo-status-card",
       tags$p(tags$strong("Sesame IDAT status: "), progress$phase %||% "idle"),
       tags$p(progress$message %||% ""),
@@ -3727,6 +3774,23 @@ server <- function(input, output, session) {
 
   output$geo_transcript_build_progress_ui <- renderUI({
     progress <- geo_transcript_build_progress()
+    remote_result <- remote_job_preview_result()
+    remote_loaded <- geo_remote_mode_active() && is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")
+    if (remote_loaded && is.data.frame(remote_result$tables$transcript_groups) && nrow(remote_result$tables$transcript_groups) > 0 &&
+        !((progress$phase %||% "") %in% c("complete", "loaded from cache", "loaded from remote"))) {
+      detail_rows <- if (is.data.frame(remote_result$tables$transcript_group_details)) nrow(remote_result$tables$transcript_group_details) else 0L
+      progress <- list(
+        phase = "loaded from remote",
+        message = paste0("Loaded remote transcript ML groups: ", nrow(remote_result$tables$transcript_groups), " group(s). Large artifacts remain on the remote server."),
+        processed = nrow(remote_result$tables$transcript_groups),
+        total = nrow(remote_result$tables$transcript_groups),
+        compatible = nrow(remote_result$tables$transcript_groups),
+        excluded = 0L,
+        current = "",
+        cache = remote_result$paths$transcript_group_summary %||% "",
+        detail = if (detail_rows > 0) paste0(detail_rows, " transcript detail row(s) loaded from remote.") else NULL
+      )
+    }
     total <- suppressWarnings(as.integer(progress$total %||% 0L))
     processed <- suppressWarnings(as.integer(progress$processed %||% 0L))
     compatible <- suppressWarnings(as.integer(progress$compatible %||% 0L))
@@ -4486,6 +4550,23 @@ server <- function(input, output, session) {
 
   output$geo_transcript_ml_progress_ui <- renderUI({
     progress <- geo_transcript_ml_progress()
+    remote_result <- remote_job_preview_result()
+    remote_loaded <- geo_remote_mode_active() && is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")
+    remote_ml_summary <- if (remote_loaded) remote_result$tables$transcript_ml_summary else data.frame()
+    if (!is.data.frame(remote_ml_summary) || nrow(remote_ml_summary) == 0) {
+      remote_ml_summary <- if (remote_loaded) remote_result$tables$transcript_ml_screening else data.frame()
+    }
+    if (remote_loaded && is.data.frame(remote_ml_summary) && nrow(remote_ml_summary) > 0 &&
+        !((progress$phase %||% "") %in% c("complete", "loaded from cache", "loaded from remote", "already complete"))) {
+      progress <- list(
+        phase = "loaded from remote",
+        message = paste0("Loaded remote transcript ML summary: ", nrow(remote_ml_summary), " row(s). Large artifacts remain on the remote server."),
+        processed = nrow(remote_ml_summary),
+        total = nrow(remote_ml_summary),
+        current = "",
+        cache = remote_result$paths$transcript_ml_summary %||% remote_result$paths$transcript_ml_screening_summary %||% ""
+      )
+    }
     total <- suppressWarnings(as.integer(progress$total %||% 0L))
     processed <- suppressWarnings(as.integer(progress$processed %||% 0L))
     percent <- if (is.finite(total) && total > 0) round(100 * processed / total, 1) else 0
@@ -8402,6 +8483,25 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$geo_transcript_absrho_threshold, {
+    remote_result <- remote_job_preview_result()
+    if (geo_remote_mode_active() &&
+        is.list(remote_result) &&
+        identical(remote_result$kind %||% "", "geo_pipeline")) {
+      remote_threshold <- suppressWarnings(as.numeric(remote_result$settings$transcript_absrho_threshold %||% NA_real_))
+      current_threshold <- suppressWarnings(as.numeric(input$geo_transcript_absrho_threshold %||% NA_real_))
+      if (is.finite(remote_threshold) && is.finite(current_threshold) &&
+          isTRUE(all.equal(remote_threshold, current_threshold, tolerance = 1e-8))) {
+        if ((!is.data.frame(geo_transcript_groups()) || nrow(geo_transcript_groups()) == 0) &&
+            is.data.frame(remote_result$tables$transcript_groups)) {
+          geo_transcript_groups(remote_result$tables$transcript_groups)
+        }
+        if ((!is.data.frame(geo_transcript_group_details()) || nrow(geo_transcript_group_details()) == 0) &&
+            is.data.frame(remote_result$tables$transcript_group_details)) {
+          geo_transcript_group_details(remote_result$tables$transcript_group_details)
+        }
+        return()
+      }
+    }
     if (is.data.frame(geo_spearman_raw_results()) && nrow(geo_spearman_raw_results()) > 0) {
       geo_transcript_candidates(data.frame())
       geo_transcript_groups(data.frame())
