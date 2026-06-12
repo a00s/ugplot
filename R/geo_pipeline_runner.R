@@ -102,7 +102,7 @@ ugplot_geo_bind_rows <- function(rows) {
   result
 }
 
-ugplot_geo_build_group_tables_remote <- function(progress_rows) {
+ugplot_geo_build_group_tables_remote <- function(progress_rows, candidates = NULL) {
   compatible <- progress_rows[progress_rows$Status == "compatible", , drop = FALSE]
   if (!is.data.frame(compatible) || nrow(compatible) == 0) {
     return(list(summary = data.frame(), details = data.frame()))
@@ -135,16 +135,30 @@ ugplot_geo_build_group_tables_remote <- function(progress_rows) {
   summary$GroupID <- paste0("TG", seq_len(nrow(summary)))
   detail_rows <- lapply(seq_len(nrow(compatible)), function(i) {
     row <- compatible[i, , drop = FALSE]
-    data.frame(
-      GroupID = summary$GroupID[match(row$GroupKey[[1]], summary$GroupKey)],
-      Transcript = row$Transcript[[1]],
-      Gene = row$Gene[[1]],
-      KeptCpGs = row$KeptCpGs[[1]],
-      DatasetPath = row$DatasetPath[[1]],
-      stringsAsFactors = FALSE
+    group_id <- summary$GroupID[match(row$GroupKey[[1]], summary$GroupKey)]
+    transcript_id <- as.character(row$Transcript[[1]])
+    kept_cpgs <- unlist(strsplit(as.character(row$KeptCpGs[[1]] %||% ""), ";", fixed = TRUE), use.names = FALSE)
+    kept_cpgs <- kept_cpgs[nzchar(kept_cpgs)]
+    candidate_rows <- data.frame()
+    if (is.data.frame(candidates) && nrow(candidates) > 0 && all(c("Transcript", "CpG") %in% names(candidates))) {
+      candidate_rows <- candidates[as.character(candidates$Transcript) == transcript_id, , drop = FALSE]
+    }
+    if (!is.data.frame(candidate_rows) || nrow(candidate_rows) == 0) {
+      candidate_rows <- data.frame(CpG = kept_cpgs, stringsAsFactors = FALSE)
+    }
+    if (!"Transcript" %in% names(candidate_rows)) candidate_rows$Transcript <- transcript_id
+    if (!"Gene" %in% names(candidate_rows)) candidate_rows$Gene <- row$Gene[[1]]
+    candidate_rows$GroupID <- group_id
+    candidate_rows$DatasetPath <- row$DatasetPath[[1]]
+    candidate_rows$CpGKeptForML <- as.character(candidate_rows$CpG) %in% kept_cpgs
+    candidate_rows$KeptCpGs <- row$KeptCpGs[[1]]
+    leading <- intersect(
+      c("GroupID", "Transcript", "CpG", "Gene", "GeneRegion", "Chr", "Position", "SpearmanRho", "AbsRho", "PValue", "N", "CpGKeptForML", "DatasetPath", "KeptCpGs"),
+      names(candidate_rows)
     )
+    candidate_rows[, c(leading, setdiff(names(candidate_rows), leading)), drop = FALSE]
   })
-  details <- do.call(rbind, detail_rows)
+  details <- ugplot_geo_bind_rows(detail_rows)
   rownames(summary) <- NULL
   rownames(details) <- NULL
   list(summary = summary, details = details)
@@ -267,7 +281,7 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
       stringsAsFactors = FALSE
     )
     progress_rows <- ugplot_geo_bind_rows(list(progress_rows, progress_row))
-    tables <- ugplot_geo_build_group_tables_remote(progress_rows)
+    tables <- ugplot_geo_build_group_tables_remote(progress_rows, candidates = candidates)
     utils::write.csv(tables$summary, paths$summary, row.names = FALSE)
     utils::write.csv(tables$details, paths$details, row.names = FALSE)
     saveRDS(progress_rows, paths$progress)
@@ -278,7 +292,7 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
       )
     }
   }
-  tables <- ugplot_geo_build_group_tables_remote(progress_rows)
+  tables <- ugplot_geo_build_group_tables_remote(progress_rows, candidates = candidates)
   utils::write.csv(tables$summary, paths$summary, row.names = FALSE)
   utils::write.csv(tables$details, paths$details, row.names = FALSE)
   list(summary = tables$summary, details = tables$details, paths = paths, progress = progress_rows)
@@ -298,6 +312,113 @@ ugplot_geo_ml_metric_values <- function(result) {
   }
   values <- suppressWarnings(as.numeric(rows[[metric_col]]))
   values[is.finite(values)]
+}
+
+ugplot_geo_ml_model_run_counts <- function(result) {
+  results_table <- result$results_table
+  if (!is.data.frame(results_table) || nrow(results_table) == 0 || !"Model" %in% names(results_table)) {
+    return(c(ModelsRun = NA_integer_, ModelsOK = NA_integer_))
+  }
+  models_run <- length(unique(as.character(results_table$Model[nzchar(as.character(results_table$Model))])))
+  models_ok <- if ("Status" %in% names(results_table)) {
+    status_ok <- !is.na(results_table$Status) & as.character(results_table$Status) == "OK"
+    length(unique(as.character(results_table$Model[status_ok])))
+  } else {
+    NA_integer_
+  }
+  c(ModelsRun = models_run, ModelsOK = models_ok)
+}
+
+ugplot_geo_ml_importance_table <- function(model, group, source, phase) {
+  if (is.null(model)) {
+    return(data.frame())
+  }
+  importance <- tryCatch(caret::varImp(model), error = function(e) NULL)
+  if (is.null(importance) || !is.data.frame(importance$importance) || nrow(importance$importance) == 0) {
+    return(data.frame())
+  }
+  imp <- importance$importance
+  imp$CpG <- rownames(imp)
+  score_cols <- setdiff(names(imp), "CpG")
+  imp$Importance <- if (length(score_cols) == 1) {
+    suppressWarnings(as.numeric(imp[[score_cols[[1]]]]))
+  } else {
+    apply(imp[, score_cols, drop = FALSE], 1, function(x) max(suppressWarnings(as.numeric(x)), na.rm = TRUE))
+  }
+  imp <- imp[, c("CpG", "Importance"), drop = FALSE]
+  imp <- imp[is.finite(imp$Importance), , drop = FALSE]
+  if (nrow(imp) == 0) {
+    return(data.frame())
+  }
+  imp$ImportanceRank <- rank(-imp$Importance, ties.method = "first")
+  imp$GroupID <- group$GroupID[[1]]
+  imp$PrincipalTranscript <- group$PrincipalTranscript[[1]]
+  imp$Source <- source
+  imp$Phase <- phase
+  imp[order(imp$ImportanceRank), c("Source", "GroupID", "PrincipalTranscript", "Phase", "CpG", "Importance", "ImportanceRank"), drop = FALSE]
+}
+
+ugplot_geo_enrich_ml_summary_remote <- function(summary, source, phase = c("screening", "stability")) {
+  phase <- match.arg(phase)
+  if (!is.data.frame(summary) || nrow(summary) == 0) {
+    return(summary)
+  }
+  if (!"ModelsRun" %in% names(summary)) summary$ModelsRun <- NA_integer_
+  if (!"ModelsOK" %in% names(summary)) summary$ModelsOK <- NA_integer_
+  if (!"ImportancePath" %in% names(summary)) summary$ImportancePath <- ""
+  result_column <- if (identical(phase, "stability")) "StabilityResultPath" else "ScreenResultPath"
+  for (row_i in seq_len(nrow(summary))) {
+    result_path <- if (result_column %in% names(summary)) as.character(summary[[result_column]][[row_i]] %||% "") else ""
+    if (is.na(result_path) || !nzchar(result_path) || !file.exists(result_path)) {
+      next
+    }
+    result <- tryCatch(readRDS(result_path), error = function(e) NULL)
+    if (!is.list(result)) {
+      next
+    }
+    counts <- ugplot_geo_ml_model_run_counts(result)
+    if (is.na(summary$ModelsRun[[row_i]])) summary$ModelsRun[[row_i]] <- counts[["ModelsRun"]]
+    if (is.na(summary$ModelsOK[[row_i]])) summary$ModelsOK[[row_i]] <- counts[["ModelsOK"]]
+    importance_path <- as.character(summary$ImportancePath[[row_i]] %||% "")
+    if (is.na(importance_path) || !nzchar(importance_path) || !file.exists(importance_path)) {
+      group_dir <- dirname(result_path)
+      importance_path <- file.path(group_dir, if (identical(phase, "stability")) "importance.csv" else "screen_importance.csv")
+      model <- result$best_model
+      importance <- ugplot_geo_ml_importance_table(model, summary[row_i, , drop = FALSE], source, phase)
+      if (is.data.frame(importance) && nrow(importance) > 0) {
+        utils::write.csv(importance, importance_path, row.names = FALSE)
+        summary$ImportancePath[[row_i]] <- importance_path
+      }
+    }
+  }
+  summary
+}
+
+ugplot_geo_collect_ml_importance_remote <- function(summary) {
+  if (!is.data.frame(summary) || nrow(summary) == 0 || !"ImportancePath" %in% names(summary)) {
+    return(data.frame())
+  }
+  rows <- lapply(seq_len(nrow(summary)), function(row_i) {
+    path <- as.character(summary$ImportancePath[[row_i]] %||% "")
+    if (is.na(path) || !nzchar(path) || !file.exists(path)) {
+      return(data.frame())
+    }
+    importance <- tryCatch(utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    if (!is.data.frame(importance) || nrow(importance) == 0) {
+      return(data.frame())
+    }
+    if (!"GroupID" %in% names(importance) && "GroupID" %in% names(summary)) {
+      importance$GroupID <- summary$GroupID[[row_i]]
+    }
+    if (!"Phase" %in% names(importance) && "Phase" %in% names(summary)) {
+      importance$Phase <- summary$Phase[[row_i]]
+    }
+    if (!"Source" %in% names(importance) && "Source" %in% names(summary)) {
+      importance$Source <- summary$Source[[row_i]]
+    }
+    importance
+  })
+  ugplot_geo_bind_rows(rows)
 }
 
 ugplot_geo_ml_rank_summary <- function(summary) {
@@ -459,6 +580,12 @@ ugplot_geo_run_transcript_ml_remote <- function(groups, cache_dir, source = "pro
     )
     saveRDS(screen_result, screen_path)
     metric_values <- ugplot_geo_ml_metric_values(screen_result)
+    model_counts <- ugplot_geo_ml_model_run_counts(screen_result)
+    importance_path <- file.path(group_dir, "screen_importance.csv")
+    importance <- ugplot_geo_ml_importance_table(screen_result$best_model, group, source, "screening")
+    if (is.data.frame(importance) && nrow(importance) > 0) {
+      utils::write.csv(importance, importance_path, row.names = FALSE)
+    }
     summary_row <- data.frame(
       Source = source,
       Phase = "screening",
@@ -474,8 +601,11 @@ ugplot_geo_run_transcript_ml_remote <- function(groups, cache_dir, source = "pro
       MedianMetric = if (length(metric_values) > 0) stats::median(metric_values) else NA_real_,
       MeanMetric = if (length(metric_values) > 0) mean(metric_values) else NA_real_,
       SeedsRun = length(metric_values),
+      ModelsRun = model_counts[["ModelsRun"]],
+      ModelsOK = model_counts[["ModelsOK"]],
       DatasetPath = dataset_info$dataset_path,
       ScreenResultPath = screen_path,
+      ImportancePath = if (file.exists(importance_path)) importance_path else "",
       stringsAsFactors = FALSE
     )
     summaries <- ugplot_geo_bind_rows(list(summaries[as.character(summaries$GroupID) != group_id, , drop = FALSE], summary_row))
@@ -483,7 +613,12 @@ ugplot_geo_run_transcript_ml_remote <- function(groups, cache_dir, source = "pro
     utils::write.csv(summaries, summary_path, row.names = FALSE)
     processed_groups <- union(processed_groups, group_id)
   }
-  ugplot_geo_ml_rank_summary(summaries)
+  summaries <- ugplot_geo_enrich_ml_summary_remote(summaries, source = source, phase = "screening")
+  summaries <- ugplot_geo_ml_rank_summary(summaries)
+  if (is.data.frame(summaries) && nrow(summaries) > 0) {
+    utils::write.csv(summaries, summary_path, row.names = FALSE)
+  }
+  summaries
 }
 
 ugplot_geo_stability_state <- function(values, min_seeds, window, tolerance) {
@@ -588,6 +723,11 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
       current_end <- min(max_seeds, length(metric_values) + window)
     }
     metric_values <- ugplot_geo_ml_metric_values(stability_result)
+    importance_path <- file.path(group_dir, "importance.csv")
+    importance <- ugplot_geo_ml_importance_table(stability_result$best_model, row, source, "stability")
+    if (is.data.frame(importance) && nrow(importance) > 0) {
+      utils::write.csv(importance, importance_path, row.names = FALSE)
+    }
     summary_row <- row
     summary_row$Phase <- "stability"
     summary_row$BestMetric <- suppressWarnings(as.numeric(stability_result$final_summary$metric_value %||% NA_real_))
@@ -598,12 +738,18 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
     summary_row$Stable <- isTRUE(stable_state$stable)
     summary_row$StabilityDetail <- stable_state$reason
     summary_row$StabilityResultPath <- stability_path
+    summary_row$ImportancePath <- if (file.exists(importance_path)) importance_path else ""
     summaries <- ugplot_geo_bind_rows(list(summaries[as.character(summaries$GroupID) != group_id, , drop = FALSE], summary_row))
     summaries <- ugplot_geo_ml_rank_summary(summaries)
     utils::write.csv(summaries, summary_path, row.names = FALSE)
     processed <- union(processed, group_id)
   }
-  ugplot_geo_ml_rank_summary(summaries)
+  summaries <- ugplot_geo_enrich_ml_summary_remote(summaries, source = source, phase = "stability")
+  summaries <- ugplot_geo_ml_rank_summary(summaries)
+  if (is.data.frame(summaries) && nrow(summaries) > 0) {
+    utils::write.csv(summaries, summary_path, row.names = FALSE)
+  }
+  summaries
 }
 
 ugplot_geo_download_selected_files <- function(remote_files, cache_dir, source = "processed", progress_callback = NULL) {
@@ -904,6 +1050,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
         )
         result$paths$transcript_ml_screening_summary <- file.path(ugplot_geo_transcript_ml_dir(cache_dir, source), "screening_summary.csv")
         result$tables$transcript_ml_screening <- screen_summary
+        result$tables$transcript_ml_importance <- ugplot_geo_collect_ml_importance_remote(screen_summary)
 
         if (is.data.frame(screen_summary) && nrow(screen_summary) > 0) {
           publish(0.97, "Running remote transcript ML stability", force = TRUE)
@@ -916,6 +1063,10 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
           )
           result$paths$transcript_ml_summary <- file.path(ugplot_geo_transcript_ml_dir(cache_dir, source), "summary.csv")
           result$tables$transcript_ml_summary <- stability_summary
+          stability_importance <- ugplot_geo_collect_ml_importance_remote(stability_summary)
+          if (is.data.frame(stability_importance) && nrow(stability_importance) > 0) {
+            result$tables$transcript_ml_importance <- stability_importance
+          }
         }
       }
     } else {

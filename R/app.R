@@ -4622,6 +4622,15 @@ server <- function(input, output, session) {
     data.frame()
   }
 
+  geo_transcript_ml_importance_current <- function() {
+    remote_result <- remote_job_preview_result()
+    if (geo_remote_mode_active() && is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline") &&
+        is.data.frame(remote_result$tables$transcript_ml_importance)) {
+      return(remote_result$tables$transcript_ml_importance)
+    }
+    data.frame()
+  }
+
   geo_transcript_ml_class_rank_rows_for <- function(rank_mode = c("r2", "spearman", "combined")) {
     rank_mode <- match.arg(rank_mode)
     results <- geo_transcript_ml_results_current()
@@ -4647,7 +4656,7 @@ server <- function(input, output, session) {
       rows$TriggerBestRho <- NA_real_
     }
     missing_cpg <- !nzchar(as.character(rows$TriggerBestCpG %||% "")) | is.na(rows$TriggerBestCpG)
-    details <- geo_transcript_group_details()
+    details <- geo_transcript_group_details_current()
     if (any(missing_cpg) && is.data.frame(details) && nrow(details) > 0 && all(c("GroupID", "CpG", "AbsRho") %in% names(details))) {
       detail_absrho <- suppressWarnings(as.numeric(details$AbsRho))
       detail_rows <- details[is.finite(detail_absrho), , drop = FALSE]
@@ -5063,22 +5072,36 @@ server <- function(input, output, session) {
     }
     importance <- data.frame()
     importance_path <- if ("ImportancePath" %in% names(ml_row)) as.character(ml_row$ImportancePath[[1]] %||% "") else ""
-    if (nzchar(importance_path) && file.exists(importance_path)) {
+    if (!is.na(importance_path) && nzchar(importance_path) && file.exists(importance_path)) {
       importance <- tryCatch(utils::read.csv(importance_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
     }
     if ((!is.data.frame(importance) || nrow(importance) == 0) && "ScreenResultPath" %in% names(ml_row)) {
       result_path <- as.character(ml_row$ScreenResultPath[[1]] %||% "")
-      if (nzchar(result_path) && file.exists(result_path)) {
+      if (!is.na(result_path) && nzchar(result_path) && file.exists(result_path)) {
         result <- tryCatch(readRDS(result_path), error = function(e) NULL)
         source_value <- if ("Source" %in% names(ml_row)) as.character(ml_row$Source[[1]] %||% "") else ""
         importance <- geo_ml_importance_table(result$best_model, ml_row, source_value, "screening")
       }
     }
+    if (!is.data.frame(importance) || nrow(importance) == 0) {
+      remote_importance <- geo_transcript_ml_importance_current()
+      if (is.data.frame(remote_importance) && nrow(remote_importance) > 0 &&
+          all(c("GroupID", "CpG", "Importance") %in% names(remote_importance))) {
+        remote_importance <- remote_importance[as.character(remote_importance$GroupID) == group_id, , drop = FALSE]
+        if ("Phase" %in% names(remote_importance) && any(as.character(remote_importance$Phase) == "stability")) {
+          remote_importance <- remote_importance[as.character(remote_importance$Phase) == "stability", , drop = FALSE]
+        }
+        importance <- remote_importance
+      }
+    }
     if (is.data.frame(importance) && nrow(importance) > 0 && all(c("CpG", "Importance") %in% names(importance))) {
       importance <- importance[, intersect(c("CpG", "Importance", "ImportanceRank"), names(importance)), drop = FALSE]
       track <- merge(track, importance, by = "CpG", all.x = TRUE, sort = FALSE)
-    } else {
+    }
+    if (!"Importance" %in% names(track)) {
       track$Importance <- NA_real_
+    }
+    if (!"ImportanceRank" %in% names(track)) {
       track$ImportanceRank <- NA_real_
     }
     track$Importance <- suppressWarnings(as.numeric(track$Importance))
@@ -6069,7 +6092,7 @@ server <- function(input, output, session) {
 
   output$geo_transcript_group_details_table <- DT::renderDT({
     groups <- geo_transcript_groups()
-    details <- geo_transcript_group_details()
+    details <- geo_transcript_group_details_current()
     selected <- input$geo_transcript_groups_table_rows_selected
     req(is.data.frame(groups), nrow(groups) > 0, length(selected) > 0)
     group <- groups[selected[[1]], , drop = FALSE]
@@ -6111,7 +6134,7 @@ server <- function(input, output, session) {
 
   output$geo_transcript_group_track <- renderPlotly({
     groups <- geo_transcript_groups()
-    details <- geo_transcript_group_details()
+    details <- geo_transcript_group_details_current()
     selected <- input$geo_transcript_groups_table_rows_selected
     req(is.data.frame(groups), nrow(groups) > 0, is.data.frame(details), nrow(details) > 0, length(selected) > 0)
     group_id <- groups$GroupID[[selected[[1]]]]
@@ -6149,7 +6172,7 @@ server <- function(input, output, session) {
     importance <- data.frame()
     if (is.data.frame(ml_row) && nrow(ml_row) > 0 && "ImportancePath" %in% names(ml_row)) {
       importance_path <- as.character(ml_row$ImportancePath[[1]])
-      if (nzchar(importance_path) && file.exists(importance_path)) {
+      if (!is.na(importance_path) && nzchar(importance_path) && file.exists(importance_path)) {
         importance <- tryCatch(utils::read.csv(importance_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
       }
     }
@@ -6157,7 +6180,26 @@ server <- function(input, output, session) {
       importance <- importance[, intersect(c("CpG", "Importance", "ImportanceRank"), names(importance)), drop = FALSE]
       track <- merge(track, importance, by = "CpG", all.x = TRUE, sort = FALSE)
     } else {
+      remote_importance <- geo_transcript_ml_importance_current()
+      if (is.data.frame(remote_importance) && nrow(remote_importance) > 0 &&
+          all(c("GroupID", "CpG", "Importance") %in% names(remote_importance))) {
+        remote_importance <- remote_importance[as.character(remote_importance$GroupID) == as.character(group_id), , drop = FALSE]
+        if (is.data.frame(remote_importance) && nrow(remote_importance) > 0) {
+          remote_importance <- remote_importance[, intersect(c("CpG", "Importance", "ImportanceRank"), names(remote_importance)), drop = FALSE]
+          track <- merge(track, remote_importance, by = "CpG", all.x = TRUE, sort = FALSE)
+        } else {
+          track$Importance <- NA_real_
+          track$ImportanceRank <- NA_real_
+        }
+      } else {
+        track$Importance <- NA_real_
+        track$ImportanceRank <- NA_real_
+      }
+    }
+    if (!"Importance" %in% names(track)) {
       track$Importance <- NA_real_
+    }
+    if (!"ImportanceRank" %in% names(track)) {
       track$ImportanceRank <- NA_real_
     }
     track$Importance <- suppressWarnings(as.numeric(track$Importance))
