@@ -421,6 +421,25 @@ ugplot_geo_collect_ml_importance_remote <- function(summary) {
   ugplot_geo_bind_rows(rows)
 }
 
+ugplot_geo_collect_group_datasets_remote <- function(groups) {
+  if (!is.data.frame(groups) || nrow(groups) == 0 || !"DatasetPath" %in% names(groups) || !"GroupID" %in% names(groups)) {
+    return(list())
+  }
+  datasets <- list()
+  for (row_i in seq_len(nrow(groups))) {
+    group_id <- as.character(groups$GroupID[[row_i]] %||% "")
+    dataset_path <- as.character(groups$DatasetPath[[row_i]] %||% "")
+    if (is.na(group_id) || !nzchar(group_id) || is.na(dataset_path) || !nzchar(dataset_path) || !file.exists(dataset_path)) {
+      next
+    }
+    dataset <- tryCatch(utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    if (is.data.frame(dataset) && nrow(dataset) > 0) {
+      datasets[[group_id]] <- dataset
+    }
+  }
+  datasets
+}
+
 ugplot_geo_ml_rank_summary <- function(summary) {
   if (!is.data.frame(summary) || nrow(summary) == 0) {
     return(data.frame())
@@ -1038,6 +1057,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
       result$paths$transcript_group_details <- group_result$paths$details
       result$tables$transcript_groups <- group_result$summary
       result$tables$transcript_group_details <- group_result$details
+      result$tables$transcript_group_datasets <- ugplot_geo_collect_group_datasets_remote(group_result$summary)
 
       if (is.data.frame(group_result$summary) && nrow(group_result$summary) > 0) {
         publish(0.93, "Running remote transcript ML screening", force = TRUE)

@@ -4631,13 +4631,31 @@ server <- function(input, output, session) {
     data.frame()
   }
 
+  geo_transcript_group_dataset_remote <- function(group_id) {
+    group_id <- as.character(group_id %||% "")
+    remote_result <- remote_job_preview_result()
+    datasets <- if (geo_remote_mode_active() && is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")) {
+      remote_result$tables$transcript_group_datasets
+    } else {
+      NULL
+    }
+    if (!is.list(datasets) || !nzchar(group_id) || is.null(datasets[[group_id]])) {
+      return(data.frame())
+    }
+    dataset <- datasets[[group_id]]
+    if (is.data.frame(dataset)) dataset else data.frame()
+  }
+
   geo_transcript_ml_class_rank_rows_for <- function(rank_mode = c("r2", "spearman", "combined")) {
     rank_mode <- match.arg(rank_mode)
     results <- geo_transcript_ml_results_current()
-    required <- c("StratumColumn", "StratumValue", "GroupID", "PrincipalTranscript", "Gene")
+    required <- c("GroupID", "PrincipalTranscript", "Gene")
     if (!is.data.frame(results) || nrow(results) == 0 || !all(required %in% names(results))) {
       return(data.frame())
     }
+    if (!"StratumColumn" %in% names(results)) results$StratumColumn <- ""
+    if (!"StratumValue" %in% names(results)) results$StratumValue <- ""
+    if (!"StratumSamples" %in% names(results)) results$StratumSamples <- NA_integer_
     rows <- results[
       nzchar(as.character(results$StratumColumn %||% "")) &
         nzchar(as.character(results$StratumValue %||% "")) &
@@ -4647,7 +4665,9 @@ server <- function(input, output, session) {
       drop = FALSE
     ]
     if (!is.data.frame(rows) || nrow(rows) == 0) {
-      return(data.frame())
+      rows <- results
+      rows$StratumColumn <- ""
+      rows$StratumValue <- "All samples"
     }
     if (!"TriggerBestCpG" %in% names(rows)) {
       rows$TriggerBestCpG <- ""
@@ -8702,26 +8722,28 @@ server <- function(input, output, session) {
       geo_stage(list(step = "Step 6", title = "Select a transcript group", message = "Click Load beside a transcript group."))
       return(invisible(FALSE))
     }
-    dataset_path <- group$DatasetPath[[1]]
-    if (!nzchar(dataset_path) || !file.exists(dataset_path)) {
-      if (geo_remote_mode_active() && nzchar(dataset_path)) {
+    dataset_path <- as.character(group$DatasetPath[[1]] %||% "")
+    group_dataset <- data.frame()
+    if (!is.na(dataset_path) && nzchar(dataset_path) && file.exists(dataset_path)) {
+      group_dataset <- tryCatch(utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    } else if (geo_remote_mode_active()) {
+      group_dataset <- geo_transcript_group_dataset_remote(group$GroupID[[1]])
+    }
+    if (!is.data.frame(group_dataset) || nrow(group_dataset) == 0) {
+      if (geo_remote_mode_active() && !is.na(dataset_path) && nzchar(dataset_path)) {
         geo_stage(list(
           step = "Step 6",
-          title = "Remote grouped dataset",
+          title = "Remote grouped dataset unavailable",
           message = paste0(
-            "This transcript group dataset is stored on the remote server and is not available as a local CSV in this Shiny session: ",
-            dataset_path,
-            ". Load the remote GEO result to inspect summaries, or rebuild/download the transcript dataset locally before loading it into TABLE."
+            "This result was loaded from a remote job that did not include the complete-case TABLE dataset for ",
+            group$PrincipalTranscript[[1]],
+            ". Update ugPlotServer and rerun/resume the GEO pipeline so the remote payload includes transcript_group_datasets. Remote path: ",
+            dataset_path
           )
         ))
         return(invisible(FALSE))
       }
       geo_stage(list(step = "Step 6", title = "Missing grouped dataset", message = "The cached complete-case CSV for this transcript group was not found. Re-run the transcript group build."))
-      return(invisible(FALSE))
-    }
-    group_dataset <- tryCatch(utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
-    if (!is.data.frame(group_dataset) || nrow(group_dataset) == 0) {
-      geo_stage(list(step = "Step 6", title = "Grouped dataset failed", message = "Could not read the cached complete-case transcript group CSV."))
       return(invisible(FALSE))
     }
     accession <- trimws(input$geo_accession %||% "GEO")
@@ -8742,7 +8764,8 @@ server <- function(input, output, session) {
         group$TranscriptCount[[1]], "."
       )
     ))
-    geo_status(ugplot_geo_append_log(geo_status(), paste0("Loaded transcript group dataset: ", group$PrincipalTranscript[[1]], "; ", nrow(dff), " rows x ", ncol(dff), " columns. CSV: ", dataset_path)))
+    source_note <- if (!is.na(dataset_path) && nzchar(dataset_path) && file.exists(dataset_path)) paste0("CSV: ", dataset_path) else "remote result payload"
+    geo_status(ugplot_geo_append_log(geo_status(), paste0("Loaded transcript group dataset: ", group$PrincipalTranscript[[1]], "; ", nrow(dff), " rows x ", ncol(dff), " columns. Source: ", source_note)))
     invisible(TRUE)
   }
 
