@@ -10428,6 +10428,9 @@ server <- function(input, output, session) {
 	    update_geo_numeric_input("geo_ml_max_stability_seeds", config$geo_ml_max_stability_seeds)
 	    update_geo_numeric_input("geo_ml_stability_window", config$geo_ml_stability_window)
 	    update_geo_numeric_input("geo_ml_stability_tolerance", config$geo_ml_stability_tolerance)
+	    if (!is.null(config$geo_ml_stability_group_column)) {
+	      updateSelectInput(session, "geo_ml_stability_group_column", selected = as.character(config$geo_ml_stability_group_column %||% ""))
+	    }
 	    geo_remote_pipeline_job_id(job_id %||% geo_remote_pipeline_job_id())
 	    status_text <- remote_status_summary_text(status)
 	    if (!nzchar(status_text)) {
@@ -10559,6 +10562,33 @@ server <- function(input, output, session) {
 	    }
 	    if (is.list(result$settings) && !is.null(result$settings$spearman_min_samples_pct)) {
 	      updateNumericInput(session, "geo_spearman_min_samples", value = result$settings$spearman_min_samples_pct)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_min_absrho)) {
+	      updateNumericInput(session, "geo_ml_min_absrho", value = result$settings$geo_ml_min_absrho)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_rank_limit)) {
+	      updateNumericInput(session, "geo_ml_rank_limit", value = result$settings$geo_ml_rank_limit)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_screen_seeds)) {
+	      updateNumericInput(session, "geo_ml_screen_seeds", value = result$settings$geo_ml_screen_seeds)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_timeout)) {
+	      updateNumericInput(session, "geo_ml_timeout", value = result$settings$geo_ml_timeout)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_min_stability_seeds)) {
+	      updateNumericInput(session, "geo_ml_min_stability_seeds", value = result$settings$geo_ml_min_stability_seeds)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_max_stability_seeds)) {
+	      updateNumericInput(session, "geo_ml_max_stability_seeds", value = result$settings$geo_ml_max_stability_seeds)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_stability_window)) {
+	      updateNumericInput(session, "geo_ml_stability_window", value = result$settings$geo_ml_stability_window)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_stability_tolerance)) {
+	      updateNumericInput(session, "geo_ml_stability_tolerance", value = result$settings$geo_ml_stability_tolerance)
+	    }
+	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_stability_group_column)) {
+	      updateSelectInput(session, "geo_ml_stability_group_column", selected = as.character(result$settings$geo_ml_stability_group_column %||% ""))
 	    }
 	    geo_remote_pipeline_job_id(job_id %||% geo_remote_pipeline_job_id())
 	    geo_remote_pipeline_status(paste0(
