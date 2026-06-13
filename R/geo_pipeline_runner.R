@@ -442,14 +442,18 @@ ugplot_geo_collect_group_datasets_remote <- function(groups) {
 
 ugplot_geo_ml_rank_summary <- function(summary) {
   if (!is.data.frame(summary) || nrow(summary) == 0) {
-    return(data.frame())
+    return(summary)
   }
   rank_one <- function(df) {
     metric <- suppressWarnings(as.numeric(df$MedianMetric %||% df$BestMetric))
-    trigger <- suppressWarnings(as.numeric(df$TriggerMaxAbsRho %||% NA_real_))
-    df <- df[order(-metric, -trigger, df$GroupID, na.last = TRUE), , drop = FALSE]
-    df$Rank <- seq_len(nrow(df))
-    df
+    rho <- suppressWarnings(as.numeric(df$TriggerMaxAbsRho))
+    metric_rank <- rank(-metric, ties.method = "min", na.last = "keep")
+    rho_rank <- rank(-rho, ties.method = "min", na.last = "keep")
+    combined <- metric_rank + rho_rank
+    df$ModelRank <- metric_rank
+    df$RhoRank <- rho_rank
+    df$CombinedRank <- rank(combined, ties.method = "min", na.last = "keep")
+    df[order(df$CombinedRank, df$ModelRank, df$RhoRank, df$PrincipalTranscript), , drop = FALSE]
   }
   has_strata <- all(c("StratumColumn", "StratumValue") %in% names(summary)) &&
     any(nzchar(as.character(summary$StratumColumn %||% "")) | nzchar(as.character(summary$StratumValue %||% "")))
@@ -458,7 +462,7 @@ ugplot_geo_ml_rank_summary <- function(summary) {
     summary$StratumValue[is.na(summary$StratumValue)] <- ""
     ranked <- lapply(split(summary, paste(summary$StratumColumn, summary$StratumValue, sep = "\f"), drop = TRUE), rank_one)
     summary <- ugplot_geo_bind_rows(ranked)
-    summary <- summary[order(summary$StratumColumn, summary$StratumValue, summary$Rank, summary$GroupID), , drop = FALSE]
+    summary <- summary[order(summary$StratumColumn, summary$StratumValue, summary$CombinedRank, summary$PrincipalTranscript), , drop = FALSE]
   } else {
     summary <- rank_one(summary)
   }
@@ -537,12 +541,19 @@ ugplot_geo_ml_pipeline_config <- function(models, seed_end, timeout, best_only_m
   )
 }
 
-ugplot_geo_ml_group_dataset <- function(group, sample_ids = NULL) {
-  dataset_path <- as.character(group$DatasetPath[[1]])
-  if (!nzchar(dataset_path) || !file.exists(dataset_path)) {
+ugplot_geo_ml_group_dataset <- function(group, sample_ids = NULL, keep_sample_id = FALSE) {
+  dataset_path_value <- group$DatasetPath %||% ""
+  dataset_path <- as.character(dataset_path_value[[1]] %||% "")
+  dataset <- data.frame()
+  if (is.data.frame(group$dataset)) {
+    dataset <- group$dataset
+  } else if (is.data.frame(group$matrix)) {
+    dataset <- group$matrix
+  } else if (!is.na(dataset_path) && nzchar(dataset_path) && file.exists(dataset_path)) {
+    dataset <- utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE)
+  } else {
     stop("Transcript group dataset file is missing: ", dataset_path, call. = FALSE)
   }
-  dataset <- utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE)
   if (!is.null(sample_ids)) {
     sample_ids <- unique(as.character(sample_ids))
     sample_ids <- sample_ids[nzchar(sample_ids) & !is.na(sample_ids)]
@@ -563,7 +574,9 @@ ugplot_geo_ml_group_dataset <- function(group, sample_ids = NULL) {
     names(dataset)[names(dataset) == target_name] <- "target"
   }
   sample_count <- nrow(dataset)
-  dataset <- dataset[, setdiff(names(dataset), "sample_id"), drop = FALSE]
+  if (!isTRUE(keep_sample_id)) {
+    dataset <- dataset[, setdiff(names(dataset), "sample_id"), drop = FALSE]
+  }
   list(dataset = dataset, dataset_path = dataset_path, sample_count = sample_count)
 }
 
@@ -571,10 +584,10 @@ ugplot_geo_ml_quick_models <- function(available) {
   available <- unique(as.character(available))
   available <- available[nzchar(available)]
   families <- list(
-    linear = c("glmnet", "lm", "ridge", "lasso"),
-    tree = c("rpart", "rf", "ranger"),
-    boosting = c("xgbTree", "gbm"),
-    neural = c("nnet", "avNNet")
+    linear = c("glmnet", "lm", "ridge", "lasso", "bayesglm", "leapSeq"),
+    tree = c("rpart", "rf", "ranger", "treebag", "ctree"),
+    boosting = c("xgbTree", "gbm", "blackboost", "ada", "bstTree"),
+    neural = c("nnet", "avNNet", "mlp", "brnn")
   )
   selected <- vapply(families, function(candidates) {
     hit <- intersect(candidates, available)
@@ -709,8 +722,11 @@ ugplot_geo_stability_state <- function(values, min_seeds, window, tolerance) {
   values <- suppressWarnings(as.numeric(values))
   values <- values[is.finite(values)]
   n <- length(values)
-  if (n < min_seeds || n < (2 * window)) {
-    return(list(stable = FALSE, reason = paste0("collecting seeds: ", n)))
+  if (n < min_seeds) {
+    return(list(stable = FALSE, reason = paste0("collecting minimum seeds: ", n, "/", min_seeds)))
+  }
+  if (n < (2 * window)) {
+    return(list(stable = FALSE, reason = paste0("collecting two stability windows: ", n, "/", 2 * window)))
   }
   recent <- utils::tail(values, window)
   previous <- utils::tail(utils::head(values, n - window), window)

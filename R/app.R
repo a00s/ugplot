@@ -3840,124 +3840,23 @@ server <- function(input, output, session) {
   }
 
   geo_ml_stability_state <- function(values, min_seeds, window, tolerance) {
-    values <- suppressWarnings(as.numeric(values))
-    values <- values[is.finite(values)]
-    n <- length(values)
-    if (n < min_seeds) {
-      return(list(stable = FALSE, reason = paste0("collecting minimum seeds: ", n, "/", min_seeds)))
-    }
-    if (n < (2 * window)) {
-      return(list(stable = FALSE, reason = paste0("collecting two stability windows: ", n, "/", 2 * window)))
-    }
-    recent <- utils::tail(values, window)
-    previous <- utils::tail(utils::head(values, n - window), window)
-    mean_shift <- abs(mean(recent) - mean(previous))
-    median_shift <- abs(stats::median(recent) - stats::median(previous))
-    se <- stats::sd(values) / sqrt(n)
-    stable <- is.finite(mean_shift) && is.finite(median_shift) &&
-      mean_shift <= tolerance && median_shift <= tolerance &&
-      (!is.finite(se) || se <= tolerance)
-    list(
-      stable = isTRUE(stable),
-      reason = paste0(
-        "n=", n,
-        "; delta mean=", signif(mean_shift, 4),
-        "; delta median=", signif(median_shift, 4),
-        "; SE=", signif(se, 4)
-      )
-    )
+    ugplot_geo_stability_state(values, min_seeds, window, tolerance)
   }
 
   geo_ml_importance_table <- function(model, group, source, phase) {
-    if (is.null(model)) {
-      return(data.frame())
-    }
-    importance <- tryCatch(caret::varImp(model), error = function(e) NULL)
-    if (is.null(importance) || !is.data.frame(importance$importance) || nrow(importance$importance) == 0) {
-      return(data.frame())
-    }
-    imp <- importance$importance
-    imp$CpG <- rownames(imp)
-    score_cols <- setdiff(names(imp), "CpG")
-    imp$Importance <- if (length(score_cols) == 1) {
-      suppressWarnings(as.numeric(imp[[score_cols[[1]]]]))
-    } else {
-      apply(imp[, score_cols, drop = FALSE], 1, function(x) max(suppressWarnings(as.numeric(x)), na.rm = TRUE))
-    }
-    imp <- imp[, c("CpG", "Importance"), drop = FALSE]
-    imp <- imp[is.finite(imp$Importance), , drop = FALSE]
-    if (nrow(imp) == 0) {
-      return(data.frame())
-    }
-    imp$ImportanceRank <- rank(-imp$Importance, ties.method = "first")
-    imp$GroupID <- group$GroupID[[1]]
-    imp$PrincipalTranscript <- group$PrincipalTranscript[[1]]
-    imp$Source <- source
-    imp$Phase <- phase
-    imp[order(imp$ImportanceRank), c("Source", "GroupID", "PrincipalTranscript", "Phase", "CpG", "Importance", "ImportanceRank"), drop = FALSE]
+    ugplot_geo_ml_importance_table(model, group, source, phase)
   }
 
   geo_ml_result_metric_values <- function(result) {
-    if (!is.list(result) || !is.data.frame(result$results_table) || nrow(result$results_table) == 0) {
-      return(numeric(0))
-    }
-    rows <- result$results_table
-    if ("Status" %in% names(rows)) {
-      rows <- rows[as.character(rows$Status) == "OK", , drop = FALSE]
-    }
-    metric_col <- if ("R2" %in% names(rows)) "R2" else if ("Accuracy" %in% names(rows)) "Accuracy" else ""
-    if (!nzchar(metric_col)) {
-      return(numeric(0))
-    }
-    values <- suppressWarnings(as.numeric(rows[[metric_col]]))
-    values[is.finite(values)]
+    ugplot_geo_ml_metric_values(result)
   }
 
   geo_ml_rank_summary <- function(summary) {
-    if (!is.data.frame(summary) || nrow(summary) == 0) {
-      return(summary)
-    }
-    rank_one <- function(df) {
-      metric <- suppressWarnings(as.numeric(df$MedianMetric %||% df$BestMetric))
-      rho <- suppressWarnings(as.numeric(df$TriggerMaxAbsRho))
-      metric_rank <- rank(-metric, ties.method = "min", na.last = "keep")
-      rho_rank <- rank(-rho, ties.method = "min", na.last = "keep")
-      combined <- metric_rank + rho_rank
-      df$ModelRank <- metric_rank
-      df$RhoRank <- rho_rank
-      df$CombinedRank <- rank(combined, ties.method = "min", na.last = "keep")
-      df[order(df$CombinedRank, df$ModelRank, df$RhoRank, df$PrincipalTranscript), , drop = FALSE]
-    }
-    has_strata <- all(c("StratumColumn", "StratumValue") %in% names(summary)) &&
-      any(nzchar(as.character(summary$StratumColumn %||% "")) | nzchar(as.character(summary$StratumValue %||% "")))
-    if (isTRUE(has_strata)) {
-      summary$StratumColumn[is.na(summary$StratumColumn)] <- ""
-      summary$StratumValue[is.na(summary$StratumValue)] <- ""
-      split_key <- paste(summary$StratumColumn, summary$StratumValue, sep = "\f")
-      ranked <- lapply(split(summary, split_key, drop = TRUE), rank_one)
-      summary <- bind_summary_rows(ranked)
-      summary <- summary[order(summary$StratumColumn, summary$StratumValue, summary$CombinedRank, summary$PrincipalTranscript), , drop = FALSE]
-    } else {
-      summary <- rank_one(summary)
-    }
-    rownames(summary) <- NULL
-    summary
+    ugplot_geo_ml_rank_summary(summary)
   }
 
   bind_summary_rows <- function(rows) {
-    rows <- rows[vapply(rows, function(x) is.data.frame(x) && nrow(x) > 0, logical(1))]
-    if (length(rows) == 0) {
-      return(data.frame())
-    }
-    all_cols <- unique(unlist(lapply(rows, names), use.names = FALSE))
-    rows <- lapply(rows, function(row) {
-      missing_cols <- setdiff(all_cols, names(row))
-      for (col in missing_cols) {
-        row[[col]] <- NA
-      }
-      row[, all_cols, drop = FALSE]
-    })
-    do.call(rbind, rows)
+    ugplot_geo_bind_rows(rows)
   }
 
   geo_ml_load_screening_summary <- function(pipeline_dir, write_back = TRUE) {
@@ -4014,46 +3913,15 @@ server <- function(input, output, session) {
   }
 
   geo_ml_model_run_counts <- function(result) {
-    results_table <- result$results_table
-    if (!is.data.frame(results_table) || nrow(results_table) == 0 || !"Model" %in% names(results_table)) {
-      return(c(ModelsRun = NA_integer_, ModelsOK = NA_integer_))
-    }
-    models_run <- length(unique(as.character(results_table$Model[nzchar(as.character(results_table$Model))])))
-    models_ok <- if ("Status" %in% names(results_table)) {
-      status_ok <- !is.na(results_table$Status) & as.character(results_table$Status) == "OK"
-      length(unique(as.character(results_table$Model[status_ok])))
-    } else {
-      NA_integer_
-    }
-    c(ModelsRun = models_run, ModelsOK = models_ok)
+    ugplot_geo_ml_model_run_counts(result)
   }
 
   geo_ml_quick_models <- function(available) {
-    available <- unique(as.character(available))
-    available <- available[nzchar(available)]
-    families <- list(
-      linear = c("glmnet", "lm", "ridge", "lasso", "bayesglm", "leapSeq"),
-      tree = c("rpart", "rf", "ranger", "treebag", "ctree"),
-      boosting = c("xgbTree", "gbm", "blackboost", "ada", "bstTree"),
-      neural = c("nnet", "avNNet", "mlp", "brnn")
-    )
-    selected <- vapply(families, function(candidates) {
-      hit <- intersect(candidates, available)
-      if (length(hit) > 0) hit[[1]] else NA_character_
-    }, character(1), USE.NAMES = FALSE)
-    selected <- stats::na.omit(selected)
-    if (length(selected) < 4) {
-      selected <- unique(c(selected, utils::head(setdiff(available, selected), 4 - length(selected))))
-    }
-    unique(as.character(selected))
+    ugplot_geo_ml_quick_models(available)
   }
 
   geo_ml_class_value <- function(values) {
-    values <- as.character(values)
-    values <- trimws(values)
-    missing <- is.na(values) | !nzchar(values) | tolower(values) %in% c("na", "n/a", "nan", "null")
-    values[missing] <- NA_character_
-    values
+    ugplot_geo_ml_class_value(values)
   }
 
   geo_ml_stability_group_candidates <- function(metadata) {
@@ -4072,35 +3940,11 @@ server <- function(input, output, session) {
   }
 
   geo_ml_stability_strata <- function(metadata, column) {
-    column <- as.character(column %||% "")
-    if (!is.data.frame(metadata) || nrow(metadata) == 0 || !nzchar(column) || !column %in% names(metadata) || !"sample_id" %in% names(metadata)) {
-      return(data.frame())
-    }
-    values <- geo_ml_class_value(metadata[[column]])
-    sample_ids <- as.character(metadata$sample_id)
-    keep <- !is.na(values) & nzchar(values) & !is.na(sample_ids) & nzchar(sample_ids)
-    values <- values[keep]
-    sample_ids <- sample_ids[keep]
-    if (length(values) == 0) {
-      return(data.frame())
-    }
-    value_levels <- names(sort(table(values), decreasing = TRUE))
-    rows <- lapply(value_levels, function(value) {
-      ids <- unique(sample_ids[values == value])
-      data.frame(
-        StratumColumn = column,
-        StratumValue = value,
-        StratumSamples = length(ids),
-        SampleIDs = paste(ids, collapse = "\r"),
-        stringsAsFactors = FALSE
-      )
-    })
-    strata <- do.call(rbind, rows)
-    strata[order(-strata$StratumSamples, strata$StratumValue), , drop = FALSE]
+    ugplot_geo_ml_stability_strata(metadata, column)
   }
 
   geo_ml_stability_task_key <- function(group_id, stratum_column = "", stratum_value = "") {
-    paste(as.character(group_id), as.character(stratum_column %||% ""), as.character(stratum_value %||% ""), sep = "\f")
+    ugplot_geo_ml_stability_task_key(group_id, stratum_column, stratum_value)
   }
 
   geo_ml_clean_runner_message <- function(message, model = "") {
@@ -4170,34 +4014,8 @@ server <- function(input, output, session) {
     )
   }
 
-  geo_ml_group_dataset <- function(group, sample_ids = NULL) {
-    dataset_path <- as.character(group$DatasetPath[[1]])
-    if (!nzchar(dataset_path) || !file.exists(dataset_path)) {
-      stop("Transcript group dataset file is missing: ", dataset_path)
-    }
-    dataset <- utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE)
-    if (!is.null(sample_ids)) {
-      sample_ids <- unique(as.character(sample_ids))
-      sample_ids <- sample_ids[nzchar(sample_ids) & !is.na(sample_ids)]
-      if (!"sample_id" %in% names(dataset)) {
-        stop("Transcript dataset has no sample_id column for class/group filtering.")
-      }
-      dataset <- dataset[as.character(dataset$sample_id) %in% sample_ids, , drop = FALSE]
-      if (nrow(dataset) == 0) {
-        stop("No transcript dataset samples matched the selected class/group.")
-      }
-    }
-    if (!"target" %in% names(dataset)) {
-      target_candidates <- setdiff(names(dataset), c("sample_id", grep("^cg", names(dataset), value = TRUE)))
-      target_name <- target_candidates[[1]] %||% ""
-      if (!nzchar(target_name)) {
-        stop("Could not identify target column in transcript dataset.")
-      }
-      names(dataset)[names(dataset) == target_name] <- "target"
-    }
-    sample_count <- nrow(dataset)
-    dataset <- dataset[, setdiff(names(dataset), "sample_id"), drop = FALSE]
-    list(dataset = dataset, dataset_path = dataset_path, sample_count = sample_count)
+  geo_ml_group_dataset <- function(group, sample_ids = NULL, keep_sample_id = FALSE) {
+    ugplot_geo_ml_group_dataset(group, sample_ids = sample_ids, keep_sample_id = keep_sample_id)
   }
 
   geo_ml_run_group_screen <- function(group, source, models, settings, progress_callback = NULL) {
@@ -8723,12 +8541,15 @@ server <- function(input, output, session) {
       return(invisible(FALSE))
     }
     dataset_path <- as.character(group$DatasetPath[[1]] %||% "")
-    group_dataset <- data.frame()
-    if (!is.na(dataset_path) && nzchar(dataset_path) && file.exists(dataset_path)) {
-      group_dataset <- tryCatch(utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
-    } else if (geo_remote_mode_active()) {
-      group_dataset <- geo_transcript_group_dataset_remote(group$GroupID[[1]])
+    group_payload <- as.list(group)
+    if (!(!is.na(dataset_path) && nzchar(dataset_path) && file.exists(dataset_path)) && geo_remote_mode_active()) {
+      group_payload$dataset <- geo_transcript_group_dataset_remote(group$GroupID[[1]])
     }
+    dataset_info <- tryCatch(
+      geo_ml_group_dataset(group_payload, keep_sample_id = TRUE),
+      error = function(e) list(error = conditionMessage(e), dataset = data.frame(), dataset_path = dataset_path, sample_count = 0L)
+    )
+    group_dataset <- dataset_info$dataset
     if (!is.data.frame(group_dataset) || nrow(group_dataset) == 0) {
       if (geo_remote_mode_active() && !is.na(dataset_path) && nzchar(dataset_path)) {
         geo_stage(list(
