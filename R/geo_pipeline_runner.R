@@ -999,6 +999,16 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
   }
   cache_dir <- ugplot_geo_cache_dir(accession)
   dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+  resume_result_path <- as.character(config$resume_result_path %||% "")
+  resume_mode <- nzchar(resume_result_path) ||
+    (is.list(config$resume_result) && identical(config$resume_result$kind %||% "", "geo_pipeline"))
+  read_cached_csv <- function(path) {
+    if (nzchar(path %||% "") && file.exists(path)) {
+      tryCatch(utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    } else {
+      data.frame()
+    }
+  }
 
   result <- list(
     kind = "geo_pipeline",
@@ -1078,20 +1088,29 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
   result$tables$remote_files <- remote_files
 
   if (identical(source, "raw_sesame")) {
-    publish(0.42, "Reprocessing raw IDAT files with sesame", force = TRUE)
-    sesame_result <- ugplot_geo_reprocess_idats_sesame(
-      cache_dir = cache_dir,
-      detection_p = as.numeric(config$idat_detection_p %||% 0.05),
-      max_failed_probe_fraction = as.numeric(config$idat_max_failed_fraction %||% 0.05),
-      prep = as.character(config$idat_sesame_prep %||% "QCDPB"),
-      progress_callback = function(done, total, detail) {
-        value <- if (is.finite(total) && total > 0) done / total else 0
-        publish(0.42 + 0.18 * min(1, max(0, value)), detail)
-      }
-    )
-    result$tables$idat_qc <- sesame_result$qc
-    result$paths$sesame_beta <- sesame_result$beta_path
-    result$paths$sesame_qc <- sesame_result$qc_path
+    beta_path <- ugplot_geo_sesame_beta_path(cache_dir)
+    qc_path <- ugplot_geo_sesame_qc_path(cache_dir)
+    if (isTRUE(resume_mode) && file.exists(beta_path) && file.exists(qc_path)) {
+      publish(0.42, "Using cached sesame IDAT reprocessing for resume", force = TRUE)
+      result$tables$idat_qc <- read_cached_csv(qc_path)
+      result$paths$sesame_beta <- beta_path
+      result$paths$sesame_qc <- qc_path
+    } else {
+      publish(0.42, "Reprocessing raw IDAT files with sesame", force = TRUE)
+      sesame_result <- ugplot_geo_reprocess_idats_sesame(
+        cache_dir = cache_dir,
+        detection_p = as.numeric(config$idat_detection_p %||% 0.05),
+        max_failed_probe_fraction = as.numeric(config$idat_max_failed_fraction %||% 0.05),
+        prep = as.character(config$idat_sesame_prep %||% "QCDPB"),
+        progress_callback = function(done, total, detail) {
+          value <- if (is.finite(total) && total > 0) done / total else 0
+          publish(0.42 + 0.18 * min(1, max(0, value)), detail)
+        }
+      )
+      result$tables$idat_qc <- sesame_result$qc
+      result$paths$sesame_beta <- sesame_result$beta_path
+      result$paths$sesame_qc <- sesame_result$qc_path
+    }
   } else {
     publish(0.42, "Extracting processed matrix files", force = TRUE)
     remote_files <- ugplot_geo_extract_processed_files(
@@ -1109,39 +1128,54 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
   result$paths$matrix_files <- matrix_files
 
   if (nzchar(target_column)) {
-    publish(0.63, paste0("Running CpG Spearman scan for ", target_column), force = TRUE)
-    sample_map <- ugplot_geo_matrix_sample_map(matrix_files, metadata)
-    target <- suppressWarnings(as.numeric(as.character(metadata[[target_column]])))
-    matched_numeric <- if (is.data.frame(sample_map) && nrow(sample_map) > 0) {
-      sum(!is.na(target[sample_map$MetadataRow]))
-    } else {
-      0L
-    }
-    min_pct <- suppressWarnings(as.numeric(config$spearman_min_samples_pct %||% 80))
-    min_matched <- max(3L, ceiling(matched_numeric * min_pct / 100))
-    spearman_results <- ugplot_geo_spearman_scan(
-      matrix_files,
-      metadata,
-      target_column,
-      max_cpgs = as.integer(config$spearman_max_cpgs %||% 0),
-      min_matched_samples = min_matched,
-      progress_callback = function(scanned) {
-        publish(0.63, paste0("Scanned ", format(scanned, big.mark = ","), " CpGs"))
-      }
-    )
     spearman_paths <- ugplot_geo_spearman_paths(cache_dir, target_column, source = source)
-    utils::write.csv(spearman_results, spearman_paths$raw, row.names = FALSE)
+    spearman_results <- if (isTRUE(resume_mode) && file.exists(spearman_paths$raw)) {
+      publish(0.63, paste0("Using cached CpG Spearman scan for resume: ", target_column), force = TRUE)
+      read_cached_csv(spearman_paths$raw)
+    } else {
+      publish(0.63, paste0("Running CpG Spearman scan for ", target_column), force = TRUE)
+      sample_map <- ugplot_geo_matrix_sample_map(matrix_files, metadata)
+      target <- suppressWarnings(as.numeric(as.character(metadata[[target_column]])))
+      matched_numeric <- if (is.data.frame(sample_map) && nrow(sample_map) > 0) {
+        sum(!is.na(target[sample_map$MetadataRow]))
+      } else {
+        0L
+      }
+      min_pct <- suppressWarnings(as.numeric(config$spearman_min_samples_pct %||% 80))
+      min_matched <- max(3L, ceiling(matched_numeric * min_pct / 100))
+      scanned_results <- ugplot_geo_spearman_scan(
+        matrix_files,
+        metadata,
+        target_column,
+        max_cpgs = as.integer(config$spearman_max_cpgs %||% 0),
+        min_matched_samples = min_matched,
+        progress_callback = function(scanned) {
+          publish(0.63, paste0("Scanned ", format(scanned, big.mark = ","), " CpGs"))
+        }
+      )
+      utils::write.csv(scanned_results, spearman_paths$raw, row.names = FALSE)
+      scanned_results
+    }
     result$paths$spearman_raw <- spearman_paths$raw
     result$tables$spearman_preview <- utils::head(spearman_results, 100)
 
     publish(0.82, "Building/loading CpG annotation cache", force = TRUE)
     annotation_map <- ugplot_geo_build_annotation_cache(ugplot_geo_detect_platform(metadata))
-    annotated <- ugplot_geo_join_spearman_annotation(spearman_results, annotation_map)
-    utils::write.csv(annotated, spearman_paths$annotated, row.names = FALSE)
-    transcript_summary <- ugplot_geo_group_spearman_annotation(annotated, "Transcript")
-    gene_summary <- ugplot_geo_group_spearman_annotation(annotated, "Gene")
-    utils::write.csv(transcript_summary, spearman_paths$by_transcript, row.names = FALSE)
-    utils::write.csv(gene_summary, spearman_paths$by_gene, row.names = FALSE)
+    if (isTRUE(resume_mode) &&
+        file.exists(spearman_paths$annotated) &&
+        file.exists(spearman_paths$by_transcript) &&
+        file.exists(spearman_paths$by_gene)) {
+      annotated <- read_cached_csv(spearman_paths$annotated)
+      transcript_summary <- read_cached_csv(spearman_paths$by_transcript)
+      gene_summary <- read_cached_csv(spearman_paths$by_gene)
+    } else {
+      annotated <- ugplot_geo_join_spearman_annotation(spearman_results, annotation_map)
+      utils::write.csv(annotated, spearman_paths$annotated, row.names = FALSE)
+      transcript_summary <- ugplot_geo_group_spearman_annotation(annotated, "Transcript")
+      gene_summary <- ugplot_geo_group_spearman_annotation(annotated, "Gene")
+      utils::write.csv(transcript_summary, spearman_paths$by_transcript, row.names = FALSE)
+      utils::write.csv(gene_summary, spearman_paths$by_gene, row.names = FALSE)
+    }
     result$paths$spearman_annotated <- spearman_paths$annotated
     result$paths$spearman_by_transcript <- spearman_paths$by_transcript
     result$paths$spearman_by_gene <- spearman_paths$by_gene
@@ -1160,26 +1194,40 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
       transcript_min_samples = min_transcript_samples
     ))
     publish(0.86, paste0("Building transcript ML datasets for |rho| >= ", threshold), force = TRUE)
-    candidates <- ugplot_geo_transcript_candidates(spearman_results, annotation_map, threshold)
     candidates_path <- file.path(
       ugplot_geo_analysis_dir(cache_dir, source),
       paste0("ugplot_geo_transcript_candidates_", ugplot_geo_safe_token(target_column), "_absrho_", ugplot_geo_safe_token(threshold), ".csv")
     )
+    candidates <- if (isTRUE(resume_mode) && file.exists(candidates_path)) {
+      read_cached_csv(candidates_path)
+    } else {
+      ugplot_geo_transcript_candidates(spearman_results, annotation_map, threshold)
+    }
     result$tables$transcript_candidates_preview <- utils::head(candidates, 100)
     if (is.data.frame(candidates) && nrow(candidates) > 0) {
       utils::write.csv(candidates, candidates_path, row.names = FALSE)
       result$paths$transcript_candidates <- candidates_path
-      group_result <- ugplot_geo_build_transcript_groups_remote(
-        candidates = candidates,
-        matrix_files = matrix_files,
-        metadata = metadata,
-        cache_dir = cache_dir,
-        target_column = target_column,
-        threshold = threshold,
-        min_samples_pct = min_transcript_samples,
-        source = source,
-        progress_callback = function(value, message) publish(0.86 + 0.06 * value, message)
-      )
+      group_paths <- ugplot_geo_transcript_group_paths(cache_dir, target_column, threshold, min_transcript_samples, source = source)
+      group_result <- if (isTRUE(resume_mode) && file.exists(group_paths$summary) && file.exists(group_paths$details)) {
+        publish(0.86, "Using cached transcript ML groups for resume", force = TRUE)
+        list(
+          summary = read_cached_csv(group_paths$summary),
+          details = read_cached_csv(group_paths$details),
+          paths = group_paths
+        )
+      } else {
+        ugplot_geo_build_transcript_groups_remote(
+          candidates = candidates,
+          matrix_files = matrix_files,
+          metadata = metadata,
+          cache_dir = cache_dir,
+          target_column = target_column,
+          threshold = threshold,
+          min_samples_pct = min_transcript_samples,
+          source = source,
+          progress_callback = function(value, message) publish(0.86 + 0.06 * value, message)
+        )
+      }
       result$paths$transcript_group_summary <- group_result$paths$summary
       result$paths$transcript_group_details <- group_result$paths$details
       result$tables$transcript_groups <- group_result$summary

@@ -204,6 +204,9 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
         nzchar(as.character(resume_result$target_column %||% ""))) {
       config$target_column <- as.character(resume_result$target_column)
     }
+    if (is.list(resume_result) && identical(resume_result$kind %||% "", "geo_pipeline")) {
+      config$resume_result <- resume_result
+    }
     if (is.list(resume_result) && is.data.frame(resume_result$results_table)) {
       config$resume_result <- ugplot_job_result_preview(resume_result)
     }
