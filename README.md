@@ -425,6 +425,143 @@ When 3D rendering is disabled or when reviewing static output, ugPlot shows a 2D
 
 ---
 
+## 9) GEO IMPORT — methylation pipeline tutorial
+
+Use **GEO IMPORT** when you want ugPlot to inspect a GEO methylation accession, prepare CpG matrices, find CpGs correlated with a phenotype, build transcript-level candidate datasets, and run transcript ML models.
+
+This page is organized as a numbered pipeline. Green **DONE** cards mean ugPlot found the required local or remote output for that step. Yellow **PENDING** means the step still needs to run, be loaded from a remote result, or be refreshed after changing a parameter.
+
+### 9.1 Choose local or remote processing
+
+The **GEO processing location** panel controls where the expensive work runs.
+
+- **Local** runs the GEO pipeline inside the current Shiny/R session.
+- **Remote server** sends the pipeline to a configured ugPlot server, keeps large artifacts on that server, and lets you load the lightweight result back into the interface.
+- **Start remote GEO pipeline** submits a new remote run using the current accession and settings.
+- **Refresh status** checks whether the selected remote job is still running, failed, or finished.
+- **Load remote result** imports the finished remote result into the GEO IMPORT tab.
+
+When a remote result is loaded, the blue status banner shows the active remote matrix source and remote cache path. This means downstream GEO tables and transcript ML summaries are being read from the loaded remote job metadata, while large matrices can remain on the server.
+
+### 9.2 Step 1 — Inspect GEO accession
+
+Enter a GEO accession, for example `GSE87571`, and click **Inspect files** or **Refresh GEO status**.
+
+This step checks the GEO record and supplementary files. If it succeeds, the accession card turns **DONE** and the app can plan which matrix or raw IDAT files are available.
+
+### 9.3 Step 2 — Review sample metadata
+
+The **Sample metadata** card summarizes the phenotype table extracted from GEO.
+
+Check:
+
+- total sample count,
+- number of metadata columns,
+- likely analysis fields such as `age`, `status`, `disease state:ch1`, `gender:ch1`, or `subject_status`,
+- the local cache folder used by ugPlot.
+
+These metadata fields are the candidates for the target/correlation variable used later in Step 6 and for class/group comparisons in Step 10.
+
+### 9.4 Step 3 — Choose matrix files
+
+In **Matrix files**, choose the matrix source:
+
+- **Use GEO processed matrix** when GEO already provides a usable beta/intensity table.
+- **Recalculate from raw IDAT with sesame** when you want ugPlot to use raw IDAT files and create a sesame beta matrix.
+
+The card reports how many files were found, how much disk space they use, which files are needed for the selected workflow, and the cache folder. If **Still needed** is `0 file(s)`, ugPlot already has the required files for the selected source.
+
+### 9.5 Step 4 — Download progress
+
+This card tracks GEO file acquisition.
+
+For remote jobs, downloads happen on the selected remote server. For local jobs, this card reports local download/extraction status. If it says the selected files are already local, you can continue without downloading again.
+
+### 9.6 Step 5 — Recalculate beta matrix
+
+When using raw IDAT files, Step 5 runs sesame QC/reprocessing and creates the beta matrix used by Spearman analysis.
+
+Key settings:
+
+- **Probe detection p-value cutoff**: default `0.05`.
+- **Maximum failed pOOBAH probe fraction per sample**: default `0.05`.
+- **Sesame prep code**: default `QCDPB`.
+
+When loaded from a remote run, this card shows the remote beta matrix path, QC report path, and number of processed QC rows. If the beta matrix is available, Step 6 can scan CpGs without rerunning sesame.
+
+### 9.7 Step 6 — Analyze CpGs
+
+Step 6 computes CpG-level Spearman correlations against the selected numeric metadata field.
+
+Key settings:
+
+- **Metadata field to predict/correlate**: the phenotype variable, such as `age`.
+- **Max CpGs to scan**: use `0` to scan all available CpGs.
+- **Minimum samples per CpG for Spearman (%)**: minimum complete samples required per CpG.
+- **Transcript CpG threshold |rho|**: minimum absolute Spearman correlation used to keep transcript candidates.
+
+The summary reports how many CpGs were scanned, how many passed the sample filter, and the observed maximum `|rho|`. If the current threshold keeps transcript candidates, the green **Ready to continue transcript pipeline** box appears. If no candidate passes the threshold, lower the threshold or change the target field before continuing.
+
+### 9.8 Step 7 — Load CpG annotation
+
+Step 7 loads or builds the CpG-to-gene/transcript annotation map for the GEO platform.
+
+The card shows the detected platform, for example `GPL21145`, and the annotation cache path. This annotation is required before ugPlot can group CpGs by transcript and build transcript ML datasets.
+
+### 9.9 Step 8 — Build transcript ML datasets
+
+Step 8 creates complete-case transcript datasets from the CpGs that passed Step 6 and the annotation from Step 7.
+
+Key setting:
+
+- **Transcript complete-case minimum samples (%)**: minimum sample retention required for a transcript dataset, default `80`.
+
+ugPlot treats empty strings, `NA`/`na` text, true `NA`, and zero as missing for this transcript complete-case step. Transcripts that produce identical final CpG/sample datasets are grouped together to avoid repeated ML runs.
+
+The status box reports processed groups, compatible groups, excluded groups, and the cached group summary path.
+
+### 9.10 Step 9 — Screen transcript ML models
+
+Step 9 screens installed caret models for each transcript candidate group.
+
+Key settings:
+
+- **Run transcript groups with trigger |rho| >=**: only runs groups whose strongest CpG correlation reaches this threshold.
+- **Limit to top Spearman-ranked groups**: optional cap for quick testing.
+- **Use one representative model from four ML families**: faster exploratory mode.
+- **Screening seeds per model**: number of seeds used while screening.
+- **Timeout per model/seed (s)**: maximum training time for each model/seed attempt.
+
+The model summary shows how many caret models are installed and will be screened. In remote mode, these jobs stay on the selected server until a result is loaded.
+
+### 9.11 Step 10 — Stabilize best transcript ML
+
+Step 10 takes the best screened model for each transcript group and reruns seed batches until the metric stabilizes.
+
+Key settings:
+
+- **Minimum stability seeds**: minimum number of seeds before stopping can be considered.
+- **Maximum stability seeds**: hard upper limit.
+- **Seeds compared for stability**: rolling window used to compare metric changes.
+- **Max metric change to stop**: tolerance for considering the metric stable.
+- **Optional class/group column for stability seeds**: runs class-aware stability summaries, useful for comparing transcript behavior across phenotype classes.
+
+When complete, the status box reports how many transcript ML summary rows were loaded and where the final summary CSV is cached. Use the transcript ML results tables below the pipeline cards to inspect class rankings, transcript changes between selected classes, CpG-level changes, and ML importance plots.
+
+### 9.12 Recommended GEO workflow
+
+1. Enter the GEO accession and refresh Step 1.
+2. Confirm sample metadata and choose the target field you want to analyze.
+3. Choose processed matrix or raw IDAT/sesame as the matrix source.
+4. Run locally only for small jobs; use a remote server for large IDAT/sesame and transcript ML runs.
+5. In Step 6, start with a practical `|rho|` threshold such as `0.7`, then lower it only if no transcript candidates appear.
+6. Build transcript ML datasets in Step 8.
+7. Screen models in Step 9.
+8. Stabilize the best models in Step 10, optionally using a disease/status class column.
+9. Open the transcript ML results section to compare transcript ranking changes across classes and inspect the CpGs driving those changes.
+
+---
+
 ## Suggested end-to-end workflow (quick checklist)
 
 1. Install with Podman image (recommended).
