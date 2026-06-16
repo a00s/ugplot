@@ -2954,6 +2954,7 @@ server <- function(input, output, session) {
           tagList(
             uiOutput("geo_transcript_ml_class_compare_title"),
             uiOutput("geo_transcript_ml_class_order_control"),
+            uiOutput("geo_transcript_ml_class_change_controls"),
             tabsetPanel(
               tabPanel(
                 "R2",
@@ -4716,7 +4717,7 @@ server <- function(input, output, session) {
     geo_transcript_ml_class_compare_for(geo_transcript_ml_class_rank_rows(), "r2")
   })
 
-  geo_transcript_ml_class_change_for <- function(ranked) {
+  geo_transcript_ml_class_change_for <- function(ranked, reference_class = NULL, comparison_class = NULL) {
     if (!is.data.frame(ranked) || nrow(ranked) == 0 || !"StratumValue" %in% names(ranked)) {
       return(data.frame())
     }
@@ -4725,8 +4726,17 @@ server <- function(input, output, session) {
     if (length(strata) < 2) {
       return(data.frame())
     }
-    reference_class <- strata[[1]]
-    comparison_class <- strata[[length(strata)]]
+    reference_class <- as.character(reference_class %||% "")
+    comparison_class <- as.character(comparison_class %||% "")
+    if (!nzchar(reference_class) || !reference_class %in% strata) {
+      reference_class <- strata[[1]]
+    }
+    if (!nzchar(comparison_class) || !comparison_class %in% strata) {
+      comparison_class <- strata[[length(strata)]]
+    }
+    if (identical(reference_class, comparison_class)) {
+      return(data.frame())
+    }
     ref_rows <- ranked[as.character(ranked$StratumValue) == reference_class, , drop = FALSE]
     cmp_rows <- ranked[as.character(ranked$StratumValue) == comparison_class, , drop = FALSE]
     if (!is.data.frame(ref_rows) || !is.data.frame(cmp_rows) || nrow(ref_rows) == 0 || nrow(cmp_rows) == 0 ||
@@ -4769,6 +4779,18 @@ server <- function(input, output, session) {
     changes$ReferenceAbsRho <- suppressWarnings(as.numeric(changes$SpearmanMetricReference))
     changes$ComparisonAbsRho <- suppressWarnings(as.numeric(changes$SpearmanMetricComparison))
     changes$DeltaAbsRho <- changes$ComparisonAbsRho - changes$ReferenceAbsRho
+    rank_mode <- as.character(ranked$RankMode[[1]] %||% "r2")
+    if (identical(rank_mode, "spearman")) {
+      changes$ReferenceValue <- changes$ReferenceAbsRho
+      changes$ComparisonValue <- changes$ComparisonAbsRho
+    } else if (identical(rank_mode, "combined")) {
+      changes$ReferenceValue <- suppressWarnings(as.numeric(changes$MetricReference))
+      changes$ComparisonValue <- suppressWarnings(as.numeric(changes$MetricComparison))
+    } else {
+      changes$ReferenceValue <- changes$ReferenceR2
+      changes$ComparisonValue <- changes$ComparisonR2
+    }
+    changes$Delta <- changes$ComparisonValue - changes$ReferenceValue
     changes$ReferenceBestCpG <- if ("TriggerBestCpGReference" %in% names(changes)) as.character(changes$TriggerBestCpGReference) else ""
     changes$ComparisonBestCpG <- if ("TriggerBestCpGComparison" %in% names(changes)) as.character(changes$TriggerBestCpGComparison) else ""
     changes$Direction <- ifelse(
@@ -4795,15 +4817,14 @@ server <- function(input, output, session) {
       ")"
     )
     changes <- changes[order(
+      -abs(changes$Delta),
       -changes$AbsOrderDelta,
-      -abs(changes$DeltaR2),
-      -abs(changes$DeltaAbsRho),
       changes$ComparisonOrder,
       changes$GroupID
     ), , drop = FALSE]
     display_cols <- c(
-      "GroupID", "PrincipalTranscript", "Gene", "ReferenceClass", "ComparisonClass",
-      "ReferenceOrder", "ComparisonOrder", "OrderDelta", "Direction",
+      "GroupID", "PrincipalTranscript", "Gene", "Delta", "ReferenceValue", "ComparisonValue",
+      "ReferenceClass", "ComparisonClass", "ReferenceOrder", "ComparisonOrder", "OrderDelta", "Direction",
       "ReferenceR2", "ComparisonR2", "DeltaR2",
       "ReferenceAbsRho", "ComparisonAbsRho", "DeltaAbsRho",
       "ReferenceBestCpG", "ComparisonBestCpG", "ChangeSummary"
@@ -4812,7 +4833,11 @@ server <- function(input, output, session) {
   }
 
   geo_transcript_ml_class_change <- reactive({
-    geo_transcript_ml_class_change_for(geo_transcript_ml_class_rank_rows_for("r2"))
+    geo_transcript_ml_class_change_for(
+      geo_transcript_ml_class_rank_rows_for("r2"),
+      input$geo_ml_class_change_reference,
+      input$geo_ml_class_change_comparison
+    )
   })
 
   geo_transcript_ml_render_change_title <- function(changes, metric_label) {
@@ -4824,8 +4849,8 @@ server <- function(input, output, session) {
       tags$p(
         class = "geo-step-note",
         paste0(
-          "Compares ", changes$ReferenceClass[[1]], " against ", changes$ComparisonClass[[1]],
-          " using the first and last tags in the selected class order. Positive OrderDelta means the transcript moved down in the comparison class; negative means it moved up."
+          "Showing ", changes$ReferenceClass[[1]], " -> ", changes$ComparisonClass[[1]],
+          ". Rows are sorted by absolute delta for the active metric."
         )
       )
     )
@@ -4833,12 +4858,45 @@ server <- function(input, output, session) {
 
   geo_transcript_ml_render_change_table <- function(changes) {
     req(is.data.frame(changes), nrow(changes) > 0)
-    display <- changes
-    for (metric_col in intersect(c("ReferenceR2", "ComparisonR2", "DeltaR2", "ReferenceAbsRho", "ComparisonAbsRho", "DeltaAbsRho"), names(display))) {
+    display <- changes[, intersect(c("PrincipalTranscript", "Gene", "Delta", "ReferenceValue", "ComparisonValue"), names(changes)), drop = FALSE]
+    names(display)[names(display) == "PrincipalTranscript"] <- "Transcript"
+    for (metric_col in intersect(c("Delta", "ReferenceValue", "ComparisonValue"), names(display))) {
       display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
     }
     DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single")
   }
+
+  output$geo_transcript_ml_class_change_controls <- renderUI({
+    ranked <- geo_transcript_ml_class_rank_rows_for("r2")
+    if (!is.data.frame(ranked) || nrow(ranked) == 0 || !"StratumValue" %in% names(ranked)) {
+      return(NULL)
+    }
+    strata <- levels(ranked$StratumValue)
+    strata <- strata[nzchar(as.character(strata))]
+    if (length(strata) < 2) {
+      return(NULL)
+    }
+    reference_selected <- input$geo_ml_class_change_reference %||% strata[[1]]
+    comparison_selected <- input$geo_ml_class_change_comparison %||% strata[[length(strata)]]
+    if (!reference_selected %in% strata) reference_selected <- strata[[1]]
+    if (!comparison_selected %in% strata) comparison_selected <- strata[[length(strata)]]
+    tags$div(
+      style = "display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin: 4px 0 14px 0;",
+      tags$div(
+        style = "width: 220px;",
+        selectInput("geo_ml_class_change_reference", "Reference class:", choices = strata, selected = reference_selected)
+      ),
+      tags$div(
+        style = "width: 220px;",
+        selectInput("geo_ml_class_change_comparison", "Comparison class:", choices = strata, selected = comparison_selected)
+      ),
+      tags$p(
+        class = "geo-step-note",
+        style = "margin: 0 0 15px 0;",
+        "Delta tables use these two classes. Defaults are the first and last selected class tags."
+      )
+    )
+  })
 
   output$geo_transcript_ml_class_compare_title <- renderUI({
     compare <- geo_transcript_ml_class_compare()
@@ -4982,13 +5040,21 @@ server <- function(input, output, session) {
 
   output$geo_transcript_ml_class_spearman_change_title <- renderUI({
     geo_transcript_ml_render_change_title(
-      geo_transcript_ml_class_change_for(geo_transcript_ml_class_rank_rows_for("spearman")),
+      geo_transcript_ml_class_change_for(
+        geo_transcript_ml_class_rank_rows_for("spearman"),
+        input$geo_ml_class_change_reference,
+        input$geo_ml_class_change_comparison
+      ),
       "Spearman"
     )
   })
 
   output$geo_transcript_ml_class_spearman_change_table <- DT::renderDT({
-    geo_transcript_ml_render_change_table(geo_transcript_ml_class_change_for(geo_transcript_ml_class_rank_rows_for("spearman")))
+    geo_transcript_ml_render_change_table(geo_transcript_ml_class_change_for(
+      geo_transcript_ml_class_rank_rows_for("spearman"),
+      input$geo_ml_class_change_reference,
+      input$geo_ml_class_change_comparison
+    ))
   })
 
   output$geo_transcript_ml_class_combined_table <- DT::renderDT({
@@ -5000,13 +5066,21 @@ server <- function(input, output, session) {
 
   output$geo_transcript_ml_class_combined_change_title <- renderUI({
     geo_transcript_ml_render_change_title(
-      geo_transcript_ml_class_change_for(geo_transcript_ml_class_rank_rows_for("combined")),
+      geo_transcript_ml_class_change_for(
+        geo_transcript_ml_class_rank_rows_for("combined"),
+        input$geo_ml_class_change_reference,
+        input$geo_ml_class_change_comparison
+      ),
       "combined rank"
     )
   })
 
   output$geo_transcript_ml_class_combined_change_table <- DT::renderDT({
-    geo_transcript_ml_render_change_table(geo_transcript_ml_class_change_for(geo_transcript_ml_class_rank_rows_for("combined")))
+    geo_transcript_ml_render_change_table(geo_transcript_ml_class_change_for(
+      geo_transcript_ml_class_rank_rows_for("combined"),
+      input$geo_ml_class_change_reference,
+      input$geo_ml_class_change_comparison
+    ))
   })
 
   output$geo_transcript_ml_table <- DT::renderDT({
@@ -5505,8 +5579,17 @@ server <- function(input, output, session) {
         !is.data.frame(dataset) || nrow(dataset) == 0 || length(cpg_cols) == 0 || length(class_order) < 2) {
       return(data.frame())
     }
-    reference_class <- class_order[[1]]
-    comparison_class <- class_order[[length(class_order)]]
+    reference_class <- as.character(input$geo_ml_class_change_reference %||% "")
+    comparison_class <- as.character(input$geo_ml_class_change_comparison %||% "")
+    if (!nzchar(reference_class) || !reference_class %in% class_order) {
+      reference_class <- class_order[[1]]
+    }
+    if (!nzchar(comparison_class) || !comparison_class %in% class_order) {
+      comparison_class <- class_order[[length(class_order)]]
+    }
+    if (identical(reference_class, comparison_class)) {
+      return(data.frame())
+    }
     ref_rows <- as.character(dataset$EpigeneticClass) == reference_class
     cmp_rows <- as.character(dataset$EpigeneticClass) == comparison_class
     if (!any(ref_rows) || !any(cmp_rows)) {
