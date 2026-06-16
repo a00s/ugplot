@@ -2521,6 +2521,7 @@ server <- function(input, output, session) {
   ))
   geo_transcript_ml_results <- reactiveVal(data.frame())
   geo_transcript_ml_focus_group <- reactiveVal("")
+  geo_transcript_ml_focus_stratum <- reactiveVal(list(column = "", value = ""))
   geo_idat_qc_report <- reactiveVal(data.frame())
   geo_idat_qc_progress <- reactiveVal(list(
     phase = "idle",
@@ -2957,22 +2958,30 @@ server <- function(input, output, session) {
               tabPanel(
                 "R2",
                 plotlyOutput("geo_transcript_ml_class_rank_plot", height = "420px"),
-                DT::DTOutput("geo_transcript_ml_class_compare_table")
+                DT::DTOutput("geo_transcript_ml_class_compare_table"),
+                uiOutput("geo_transcript_ml_class_change_title"),
+                DT::DTOutput("geo_transcript_ml_class_change_table")
               ),
               tabPanel(
                 "Spearman",
                 plotlyOutput("geo_transcript_ml_class_spearman_plot", height = "420px"),
-                DT::DTOutput("geo_transcript_ml_class_spearman_table")
+                DT::DTOutput("geo_transcript_ml_class_spearman_table"),
+                uiOutput("geo_transcript_ml_class_spearman_change_title"),
+                DT::DTOutput("geo_transcript_ml_class_spearman_change_table")
               ),
               tabPanel(
                 "Combined",
                 plotlyOutput("geo_transcript_ml_class_combined_plot", height = "420px"),
-                DT::DTOutput("geo_transcript_ml_class_combined_table")
+                DT::DTOutput("geo_transcript_ml_class_combined_table"),
+                uiOutput("geo_transcript_ml_class_combined_change_title"),
+                DT::DTOutput("geo_transcript_ml_class_combined_change_table")
               )
             ),
             uiOutput("geo_transcript_ml_epigenetic_story_title"),
             plotlyOutput("geo_transcript_ml_epigenetic_story_plot", height = "340px"),
             DT::DTOutput("geo_transcript_ml_epigenetic_story_table"),
+            uiOutput("geo_transcript_ml_epigenetic_cpg_change_title"),
+            DT::DTOutput("geo_transcript_ml_epigenetic_cpg_change_table"),
             DT::DTOutput("geo_transcript_ml_table"),
             uiOutput("geo_transcript_ml_selected_title"),
             plotlyOutput("geo_transcript_ml_importance_track", height = "420px"),
@@ -4707,6 +4716,130 @@ server <- function(input, output, session) {
     geo_transcript_ml_class_compare_for(geo_transcript_ml_class_rank_rows(), "r2")
   })
 
+  geo_transcript_ml_class_change_for <- function(ranked) {
+    if (!is.data.frame(ranked) || nrow(ranked) == 0 || !"StratumValue" %in% names(ranked)) {
+      return(data.frame())
+    }
+    strata <- levels(ranked$StratumValue)
+    strata <- strata[nzchar(as.character(strata))]
+    if (length(strata) < 2) {
+      return(data.frame())
+    }
+    reference_class <- strata[[1]]
+    comparison_class <- strata[[length(strata)]]
+    ref_rows <- ranked[as.character(ranked$StratumValue) == reference_class, , drop = FALSE]
+    cmp_rows <- ranked[as.character(ranked$StratumValue) == comparison_class, , drop = FALSE]
+    if (!is.data.frame(ref_rows) || !is.data.frame(cmp_rows) || nrow(ref_rows) == 0 || nrow(cmp_rows) == 0 ||
+        !"GroupID" %in% names(ref_rows) || !"GroupID" %in% names(cmp_rows)) {
+      return(data.frame())
+    }
+    keep_cols <- intersect(
+      c("GroupID", "PrincipalTranscript", "Gene", "Order", "ModelMetric", "SpearmanMetric", "TriggerBestCpG", "TriggerBestRho", "Metric"),
+      names(ranked)
+    )
+    ref_rows <- ref_rows[, keep_cols, drop = FALSE]
+    cmp_rows <- cmp_rows[, keep_cols, drop = FALSE]
+    names(ref_rows) <- paste0(names(ref_rows), "Reference")
+    names(cmp_rows) <- paste0(names(cmp_rows), "Comparison")
+    changes <- merge(
+      ref_rows,
+      cmp_rows,
+      by.x = "GroupIDReference",
+      by.y = "GroupIDComparison",
+      all = FALSE,
+      sort = FALSE
+    )
+    if (!is.data.frame(changes) || nrow(changes) == 0) {
+      return(data.frame())
+    }
+    changes$GroupID <- as.character(changes$GroupIDReference)
+    transcript <- if ("PrincipalTranscriptReference" %in% names(changes)) changes$PrincipalTranscriptReference else changes$PrincipalTranscriptComparison
+    gene <- if ("GeneReference" %in% names(changes)) changes$GeneReference else changes$GeneComparison
+    changes$PrincipalTranscript <- as.character(transcript)
+    changes$Gene <- as.character(gene)
+    changes$ReferenceClass <- reference_class
+    changes$ComparisonClass <- comparison_class
+    changes$ReferenceOrder <- suppressWarnings(as.integer(round(as.numeric(changes$OrderReference))))
+    changes$ComparisonOrder <- suppressWarnings(as.integer(round(as.numeric(changes$OrderComparison))))
+    changes$OrderDelta <- changes$ComparisonOrder - changes$ReferenceOrder
+    changes$AbsOrderDelta <- abs(changes$OrderDelta)
+    changes$ReferenceR2 <- suppressWarnings(as.numeric(changes$ModelMetricReference))
+    changes$ComparisonR2 <- suppressWarnings(as.numeric(changes$ModelMetricComparison))
+    changes$DeltaR2 <- changes$ComparisonR2 - changes$ReferenceR2
+    changes$ReferenceAbsRho <- suppressWarnings(as.numeric(changes$SpearmanMetricReference))
+    changes$ComparisonAbsRho <- suppressWarnings(as.numeric(changes$SpearmanMetricComparison))
+    changes$DeltaAbsRho <- changes$ComparisonAbsRho - changes$ReferenceAbsRho
+    changes$ReferenceBestCpG <- if ("TriggerBestCpGReference" %in% names(changes)) as.character(changes$TriggerBestCpGReference) else ""
+    changes$ComparisonBestCpG <- if ("TriggerBestCpGComparison" %in% names(changes)) as.character(changes$TriggerBestCpGComparison) else ""
+    changes$Direction <- ifelse(
+      !is.finite(changes$OrderDelta) | changes$OrderDelta == 0,
+      "same rank",
+      ifelse(changes$OrderDelta < 0, "moves up", "moves down")
+    )
+    changes$ChangeSummary <- paste0(
+      changes$GroupID,
+      " | ",
+      changes$PrincipalTranscript,
+      " / ",
+      changes$Gene,
+      " | ",
+      reference_class,
+      " #",
+      changes$ReferenceOrder,
+      " -> ",
+      comparison_class,
+      " #",
+      changes$ComparisonOrder,
+      " (",
+      changes$Direction,
+      ")"
+    )
+    changes <- changes[order(
+      -changes$AbsOrderDelta,
+      -abs(changes$DeltaR2),
+      -abs(changes$DeltaAbsRho),
+      changes$ComparisonOrder,
+      changes$GroupID
+    ), , drop = FALSE]
+    display_cols <- c(
+      "GroupID", "PrincipalTranscript", "Gene", "ReferenceClass", "ComparisonClass",
+      "ReferenceOrder", "ComparisonOrder", "OrderDelta", "Direction",
+      "ReferenceR2", "ComparisonR2", "DeltaR2",
+      "ReferenceAbsRho", "ComparisonAbsRho", "DeltaAbsRho",
+      "ReferenceBestCpG", "ComparisonBestCpG", "ChangeSummary"
+    )
+    changes[, intersect(display_cols, names(changes)), drop = FALSE]
+  }
+
+  geo_transcript_ml_class_change <- reactive({
+    geo_transcript_ml_class_change_for(geo_transcript_ml_class_rank_rows_for("r2"))
+  })
+
+  geo_transcript_ml_render_change_title <- function(changes, metric_label) {
+    if (!is.data.frame(changes) || nrow(changes) == 0) {
+      return(NULL)
+    }
+    tags$div(
+      tags$h4(paste0("Largest transcript changes by ", metric_label)),
+      tags$p(
+        class = "geo-step-note",
+        paste0(
+          "Compares ", changes$ReferenceClass[[1]], " against ", changes$ComparisonClass[[1]],
+          " using the selected class order. Positive OrderDelta means the transcript moved down in the comparison class; negative means it moved up."
+        )
+      )
+    )
+  }
+
+  geo_transcript_ml_render_change_table <- function(changes) {
+    req(is.data.frame(changes), nrow(changes) > 0)
+    display <- changes
+    for (metric_col in intersect(c("ReferenceR2", "ComparisonR2", "DeltaR2", "ReferenceAbsRho", "ComparisonAbsRho", "DeltaAbsRho"), names(display))) {
+      display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
+    }
+    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single")
+  }
+
   output$geo_transcript_ml_class_compare_title <- renderUI({
     compare <- geo_transcript_ml_class_compare()
     if (!is.data.frame(compare) || nrow(compare) == 0) {
@@ -4754,8 +4887,8 @@ server <- function(input, output, session) {
         y = ~PlotY,
         type = "scatter",
         mode = "lines+markers+text",
-        key = ~GroupID,
-        customdata = ~GroupID,
+        key = ~paste(GroupID, StratumColumn, as.character(StratumValue), sep = "\r"),
+        customdata = ~paste(GroupID, StratumColumn, as.character(StratumValue), sep = "\r"),
         text = ~GroupID,
         textposition = "middle right",
         hovertemplate = hover,
@@ -4832,6 +4965,14 @@ server <- function(input, output, session) {
     DT::datatable(compare, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
   })
 
+  output$geo_transcript_ml_class_change_title <- renderUI({
+    geo_transcript_ml_render_change_title(geo_transcript_ml_class_change(), "R2")
+  })
+
+  output$geo_transcript_ml_class_change_table <- DT::renderDT({
+    geo_transcript_ml_render_change_table(geo_transcript_ml_class_change())
+  })
+
   output$geo_transcript_ml_class_spearman_table <- DT::renderDT({
     compare <- geo_transcript_ml_class_compare_for(geo_transcript_ml_class_rank_rows_for("spearman"), "spearman")
     req(is.data.frame(compare), nrow(compare) > 0)
@@ -4839,11 +4980,33 @@ server <- function(input, output, session) {
     DT::datatable(compare, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
   })
 
+  output$geo_transcript_ml_class_spearman_change_title <- renderUI({
+    geo_transcript_ml_render_change_title(
+      geo_transcript_ml_class_change_for(geo_transcript_ml_class_rank_rows_for("spearman")),
+      "Spearman"
+    )
+  })
+
+  output$geo_transcript_ml_class_spearman_change_table <- DT::renderDT({
+    geo_transcript_ml_render_change_table(geo_transcript_ml_class_change_for(geo_transcript_ml_class_rank_rows_for("spearman")))
+  })
+
   output$geo_transcript_ml_class_combined_table <- DT::renderDT({
     compare <- geo_transcript_ml_class_compare_for(geo_transcript_ml_class_rank_rows_for("combined"), "combined")
     req(is.data.frame(compare), nrow(compare) > 0)
     compare$Order <- suppressWarnings(as.integer(round(as.numeric(compare$Order))))
     DT::datatable(compare, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  })
+
+  output$geo_transcript_ml_class_combined_change_title <- renderUI({
+    geo_transcript_ml_render_change_title(
+      geo_transcript_ml_class_change_for(geo_transcript_ml_class_rank_rows_for("combined")),
+      "combined rank"
+    )
+  })
+
+  output$geo_transcript_ml_class_combined_change_table <- DT::renderDT({
+    geo_transcript_ml_render_change_table(geo_transcript_ml_class_change_for(geo_transcript_ml_class_rank_rows_for("combined")))
   })
 
   output$geo_transcript_ml_table <- DT::renderDT({
@@ -4862,9 +5025,19 @@ server <- function(input, output, session) {
 
   observeEvent(plotly::event_data("plotly_click", source = "geo_ml_class_rank", priority = "event"), {
     click <- plotly::event_data("plotly_click", source = "geo_ml_class_rank", priority = "event")
-    group_id <- as.character(click$key %||% click$customdata %||% "")
+    click_value <- as.character(click$key %||% click$customdata %||% "")
+    if (length(click_value) == 0 || !nzchar(click_value[[1]])) {
+      return()
+    }
+    click_value <- click_value[[1]]
+    click_parts <- strsplit(click_value, "\r", fixed = TRUE)[[1]]
+    group_id <- click_parts[[1]] %||% click_value
     if (nzchar(group_id)) {
       geo_transcript_ml_focus_group(group_id)
+      geo_transcript_ml_focus_stratum(list(
+        column = click_parts[[2]] %||% "",
+        value = click_parts[[3]] %||% ""
+      ))
     }
   }, ignoreInit = TRUE)
 
@@ -4874,6 +5047,37 @@ server <- function(input, output, session) {
     if (is.data.frame(results) && nrow(results) > 0 && length(selected) > 0 &&
         selected[[1]] <= nrow(results) && "GroupID" %in% names(results)) {
       geo_transcript_ml_focus_group(as.character(results$GroupID[[selected[[1]]]] %||% ""))
+      geo_transcript_ml_focus_stratum(list(
+        column = if ("StratumColumn" %in% names(results)) as.character(results$StratumColumn[[selected[[1]]]] %||% "") else "",
+        value = if ("StratumValue" %in% names(results)) as.character(results$StratumValue[[selected[[1]]]] %||% "") else ""
+      ))
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$geo_transcript_ml_class_change_table_rows_selected, {
+    changes <- geo_transcript_ml_class_change()
+    selected <- input$geo_transcript_ml_class_change_table_rows_selected
+    if (is.data.frame(changes) && nrow(changes) > 0 && length(selected) > 0 && selected[[1]] <= nrow(changes)) {
+      geo_transcript_ml_focus_group(as.character(changes$GroupID[[selected[[1]]]] %||% ""))
+      geo_transcript_ml_focus_stratum(list(column = "", value = as.character(changes$ComparisonClass[[selected[[1]]]] %||% "")))
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$geo_transcript_ml_class_spearman_change_table_rows_selected, {
+    changes <- geo_transcript_ml_class_change_for(geo_transcript_ml_class_rank_rows_for("spearman"))
+    selected <- input$geo_transcript_ml_class_spearman_change_table_rows_selected
+    if (is.data.frame(changes) && nrow(changes) > 0 && length(selected) > 0 && selected[[1]] <= nrow(changes)) {
+      geo_transcript_ml_focus_group(as.character(changes$GroupID[[selected[[1]]]] %||% ""))
+      geo_transcript_ml_focus_stratum(list(column = "", value = as.character(changes$ComparisonClass[[selected[[1]]]] %||% "")))
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$geo_transcript_ml_class_combined_change_table_rows_selected, {
+    changes <- geo_transcript_ml_class_change_for(geo_transcript_ml_class_rank_rows_for("combined"))
+    selected <- input$geo_transcript_ml_class_combined_change_table_rows_selected
+    if (is.data.frame(changes) && nrow(changes) > 0 && length(selected) > 0 && selected[[1]] <= nrow(changes)) {
+      geo_transcript_ml_focus_group(as.character(changes$GroupID[[selected[[1]]]] %||% ""))
+      geo_transcript_ml_focus_stratum(list(column = "", value = as.character(changes$ComparisonClass[[selected[[1]]]] %||% "")))
     }
   }, ignoreInit = TRUE)
 
@@ -4890,6 +5094,21 @@ server <- function(input, output, session) {
       focus_rows <- results[as.character(results$GroupID) == focus_group, , drop = FALSE]
       if (!is.data.frame(focus_rows) || nrow(focus_rows) == 0) {
         return(list(row = data.frame(), track = data.frame()))
+      }
+      focus_stratum <- geo_transcript_ml_focus_stratum()
+      focus_stratum_col <- as.character(focus_stratum$column %||% "")
+      focus_stratum_value <- as.character(focus_stratum$value %||% "")
+      if (nzchar(focus_stratum_value) && "StratumValue" %in% names(focus_rows)) {
+        class_rows <- focus_rows[as.character(focus_rows$StratumValue) == focus_stratum_value, , drop = FALSE]
+        if (nzchar(focus_stratum_col) && "StratumColumn" %in% names(class_rows)) {
+          exact_rows <- class_rows[as.character(class_rows$StratumColumn) == focus_stratum_col, , drop = FALSE]
+          if (nrow(exact_rows) > 0) {
+            class_rows <- exact_rows
+          }
+        }
+        if (nrow(class_rows) > 0) {
+          focus_rows <- class_rows
+        }
       }
       if ("Phase" %in% names(focus_rows)) {
         stability_rows <- focus_rows[as.character(focus_rows$Phase) == "stability", , drop = FALSE]
@@ -4926,6 +5145,20 @@ server <- function(input, output, session) {
       if (is.data.frame(remote_importance) && nrow(remote_importance) > 0 &&
           all(c("GroupID", "CpG", "Importance") %in% names(remote_importance))) {
         remote_importance <- remote_importance[as.character(remote_importance$GroupID) == group_id, , drop = FALSE]
+        row_stratum_col <- if ("StratumColumn" %in% names(ml_row)) as.character(ml_row$StratumColumn[[1]] %||% "") else ""
+        row_stratum_value <- if ("StratumValue" %in% names(ml_row)) as.character(ml_row$StratumValue[[1]] %||% "") else ""
+        if (nzchar(row_stratum_value) && "StratumValue" %in% names(remote_importance)) {
+          class_importance <- remote_importance[as.character(remote_importance$StratumValue) == row_stratum_value, , drop = FALSE]
+          if (nzchar(row_stratum_col) && "StratumColumn" %in% names(class_importance)) {
+            exact_importance <- class_importance[as.character(class_importance$StratumColumn) == row_stratum_col, , drop = FALSE]
+            if (nrow(exact_importance) > 0) {
+              class_importance <- exact_importance
+            }
+          }
+          if (nrow(class_importance) > 0) {
+            remote_importance <- class_importance
+          }
+        }
         if ("Phase" %in% names(remote_importance) && any(as.character(remote_importance$Phase) == "stability")) {
           remote_importance <- remote_importance[as.character(remote_importance$Phase) == "stability", , drop = FALSE]
         }
@@ -4968,29 +5201,35 @@ server <- function(input, output, session) {
     )
   })
 
-  geo_transcript_ml_epigenetic_story_data <- reactive({
+  geo_transcript_ml_story_context <- reactive({
     selected <- geo_transcript_ml_selected_data()
     row <- selected$row
     track <- selected$track
     if (!is.data.frame(row) || nrow(row) == 0 || !is.data.frame(track) || nrow(track) == 0) {
-      return(data.frame())
+      return(list(row = data.frame(), track = data.frame(), dataset = data.frame()))
     }
-    dataset_path <- as.character(row$DatasetPath[[1]] %||% "")
-    if (!nzchar(dataset_path) || !file.exists(dataset_path)) {
-      return(data.frame())
+    group_id <- as.character(row$GroupID[[1]] %||% "")
+    group_payload <- as.list(row)
+    remote_dataset <- geo_transcript_group_dataset_remote(group_id)
+    if (is.data.frame(remote_dataset) && nrow(remote_dataset) > 0) {
+      group_payload$dataset <- remote_dataset
     }
-    dataset <- tryCatch(utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+    dataset_info <- tryCatch(
+      geo_ml_group_dataset(group_payload, keep_sample_id = TRUE),
+      error = function(e) list(dataset = data.frame(), error = conditionMessage(e))
+    )
+    dataset <- dataset_info$dataset
     metadata <- geo_sample_metadata()
     if (!is.data.frame(dataset) || nrow(dataset) == 0 || !"sample_id" %in% names(dataset) ||
         !is.data.frame(metadata) || nrow(metadata) == 0 || !"sample_id" %in% names(metadata)) {
-      return(data.frame())
+      return(list(row = row, track = track, dataset = data.frame(), error = dataset_info$error %||% ""))
     }
     class_col <- if ("StratumColumn" %in% names(row)) as.character(row$StratumColumn[[1]] %||% "") else ""
     if (!nzchar(class_col)) {
       class_col <- input$geo_ml_stability_group_column %||% ""
     }
     if (!nzchar(class_col) || !class_col %in% names(metadata)) {
-      return(data.frame())
+      return(list(row = row, track = track, dataset = data.frame(), error = "No class column is available for the selected transcript."))
     }
     target_col <- if ("target" %in% names(dataset)) {
       "target"
@@ -4999,7 +5238,7 @@ server <- function(input, output, session) {
       candidates[[1]] %||% ""
     }
     if (!nzchar(target_col) || !target_col %in% names(dataset)) {
-      return(data.frame())
+      return(list(row = row, track = track, dataset = data.frame(), error = "No target column is available in the transcript dataset."))
     }
     kept_track <- track
     if ("CpGKeptForML" %in% names(kept_track)) {
@@ -5014,20 +5253,15 @@ server <- function(input, output, session) {
       cpg_cols <- grep("^cg", names(dataset), value = TRUE)
     }
     if (length(cpg_cols) == 0) {
-      return(data.frame())
+      return(list(row = row, track = track, dataset = data.frame(), error = "No CpG columns are available in the transcript dataset."))
     }
     metadata_values <- geo_ml_class_value(metadata[[class_col]])
     names(metadata_values) <- as.character(metadata$sample_id)
     dataset$EpigeneticClass <- metadata_values[as.character(dataset$sample_id)]
     dataset <- dataset[!is.na(dataset$EpigeneticClass) & nzchar(dataset$EpigeneticClass), , drop = FALSE]
     if (nrow(dataset) == 0) {
-      return(data.frame())
+      return(list(row = row, track = track, dataset = data.frame(), error = "No transcript dataset samples matched the selected classes."))
     }
-    beta_matrix <- as.matrix(dataset[, cpg_cols, drop = FALSE])
-    storage.mode(beta_matrix) <- "numeric"
-    sample_beta <- rowMeans(beta_matrix, na.rm = TRUE)
-    sample_beta[!is.finite(sample_beta)] <- NA_real_
-    target_values <- suppressWarnings(as.numeric(dataset[[target_col]]))
     strata <- geo_ml_stability_strata(metadata, class_col)
     class_order <- if (is.data.frame(strata) && nrow(strata) > 0) as.character(strata$StratumValue) else unique(as.character(dataset$EpigeneticClass))
     custom_order <- input$geo_ml_class_compare_order %||% character(0)
@@ -5040,8 +5274,38 @@ server <- function(input, output, session) {
     }
     class_order <- class_order[class_order %in% unique(as.character(dataset$EpigeneticClass))]
     if (length(class_order) == 0) {
+      return(list(row = row, track = track, dataset = data.frame(), error = "No selected classes matched the transcript dataset."))
+    }
+    list(
+      row = row,
+      track = track,
+      dataset = dataset,
+      metadata = metadata,
+      class_col = class_col,
+      target_col = target_col,
+      cpg_cols = cpg_cols,
+      class_order = class_order,
+      error = ""
+    )
+  })
+
+  geo_transcript_ml_epigenetic_story_data <- reactive({
+    context <- geo_transcript_ml_story_context()
+    row <- context$row
+    dataset <- context$dataset
+    class_col <- context$class_col
+    target_col <- context$target_col
+    cpg_cols <- context$cpg_cols
+    class_order <- context$class_order
+    if (!is.data.frame(row) || nrow(row) == 0 || !is.data.frame(dataset) || nrow(dataset) == 0 ||
+        length(cpg_cols) == 0 || length(class_order) == 0) {
       return(data.frame())
     }
+    beta_matrix <- as.matrix(dataset[, cpg_cols, drop = FALSE])
+    storage.mode(beta_matrix) <- "numeric"
+    sample_beta <- rowMeans(beta_matrix, na.rm = TRUE)
+    sample_beta[!is.finite(sample_beta)] <- NA_real_
+    target_values <- suppressWarnings(as.numeric(dataset[[target_col]]))
     ml_results <- geo_transcript_ml_results_current()
     group_id <- as.character(row$GroupID[[1]] %||% "")
     group_rows <- if (is.data.frame(ml_results) && nrow(ml_results) > 0 && "GroupID" %in% names(ml_results)) {
@@ -5169,12 +5433,18 @@ server <- function(input, output, session) {
   output$geo_transcript_ml_epigenetic_story_title <- renderUI({
     story <- geo_transcript_ml_epigenetic_story_data()
     selected <- geo_transcript_ml_selected_data()
+    context <- geo_transcript_ml_story_context()
     row <- selected$row
     if (!is.data.frame(row) || nrow(row) == 0) {
       return(NULL)
     }
     if (!is.data.frame(story) || nrow(story) == 0) {
-      return(tags$p(class = "geo-step-note", "Epigenetic story needs class-based ML results plus the cached transcript CpG dataset."))
+      detail <- as.character(context$error %||% "")
+      message <- "Epigenetic story needs class-based ML results plus the cached transcript CpG dataset."
+      if (nzchar(detail)) {
+        message <- paste(message, detail)
+      }
+      return(tags$p(class = "geo-step-note", message))
     }
     changed <- story[story$ClassOrder > 1 & story$Interpretation != "similar to reference", , drop = FALSE]
     headline <- if (nrow(changed) > 0) {
@@ -5221,6 +5491,95 @@ server <- function(input, output, session) {
       display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
     }
     DT::datatable(display, options = list(pageLength = 5, scrollX = TRUE), rownames = FALSE)
+  })
+
+  geo_transcript_ml_epigenetic_cpg_change_data <- reactive({
+    context <- geo_transcript_ml_story_context()
+    row <- context$row
+    track <- context$track
+    dataset <- context$dataset
+    cpg_cols <- context$cpg_cols
+    class_order <- context$class_order
+    if (!is.data.frame(row) || nrow(row) == 0 || !is.data.frame(track) || nrow(track) == 0 ||
+        !is.data.frame(dataset) || nrow(dataset) == 0 || length(cpg_cols) == 0 || length(class_order) < 2) {
+      return(data.frame())
+    }
+    reference_class <- class_order[[1]]
+    comparison_class <- class_order[[length(class_order)]]
+    ref_rows <- as.character(dataset$EpigeneticClass) == reference_class
+    cmp_rows <- as.character(dataset$EpigeneticClass) == comparison_class
+    if (!any(ref_rows) || !any(cmp_rows)) {
+      return(data.frame())
+    }
+    cpg_rows <- lapply(cpg_cols, function(cpg) {
+      values <- suppressWarnings(as.numeric(dataset[[cpg]]))
+      ref_mean <- mean(values[ref_rows], na.rm = TRUE)
+      cmp_mean <- mean(values[cmp_rows], na.rm = TRUE)
+      data.frame(
+        CpG = cpg,
+        ReferenceClass = reference_class,
+        ComparisonClass = comparison_class,
+        ReferenceMeanBeta = ref_mean,
+        ComparisonMeanBeta = cmp_mean,
+        DeltaBeta = cmp_mean - ref_mean,
+        AbsDeltaBeta = abs(cmp_mean - ref_mean),
+        ReferenceSamples = sum(ref_rows & is.finite(values)),
+        ComparisonSamples = sum(cmp_rows & is.finite(values)),
+        stringsAsFactors = FALSE
+      )
+    })
+    cpg_changes <- bind_summary_rows(cpg_rows)
+    if (!is.data.frame(cpg_changes) || nrow(cpg_changes) == 0) {
+      return(data.frame())
+    }
+    detail_cols <- intersect(c("CpG", "Region", "Position", "SpearmanRho", "AbsRho", "Importance", "ImportanceRank"), names(track))
+    if (length(detail_cols) > 1) {
+      detail <- track[, detail_cols, drop = FALSE]
+      detail <- detail[!duplicated(as.character(detail$CpG)), , drop = FALSE]
+      cpg_changes <- merge(cpg_changes, detail, by = "CpG", all.x = TRUE, sort = FALSE)
+    }
+    cpg_changes$AbsRho <- if ("AbsRho" %in% names(cpg_changes)) suppressWarnings(as.numeric(cpg_changes$AbsRho)) else NA_real_
+    cpg_changes$Importance <- if ("Importance" %in% names(cpg_changes)) suppressWarnings(as.numeric(cpg_changes$Importance)) else NA_real_
+    cpg_changes <- cpg_changes[order(
+      -cpg_changes$AbsDeltaBeta,
+      -cpg_changes$Importance,
+      -cpg_changes$AbsRho,
+      cpg_changes$CpG
+    ), , drop = FALSE]
+    display_cols <- c(
+      "CpG", "Region", "Position", "ReferenceClass", "ComparisonClass",
+      "ReferenceMeanBeta", "ComparisonMeanBeta", "DeltaBeta", "AbsDeltaBeta",
+      "ReferenceSamples", "ComparisonSamples", "SpearmanRho", "AbsRho", "Importance", "ImportanceRank"
+    )
+    cpg_changes[, intersect(display_cols, names(cpg_changes)), drop = FALSE]
+  })
+
+  output$geo_transcript_ml_epigenetic_cpg_change_title <- renderUI({
+    cpg_changes <- geo_transcript_ml_epigenetic_cpg_change_data()
+    if (!is.data.frame(cpg_changes) || nrow(cpg_changes) == 0) {
+      return(NULL)
+    }
+    tags$div(
+      tags$h4("Top CpG changes inside selected transcript"),
+      tags$p(
+        class = "geo-step-note",
+        paste0(
+          "Ranks CpGs by beta difference between ", cpg_changes$ReferenceClass[[1]],
+          " and ", cpg_changes$ComparisonClass[[1]],
+          ". Use this table to find which CpGs drive the class-level transcript shift."
+        )
+      )
+    )
+  })
+
+  output$geo_transcript_ml_epigenetic_cpg_change_table <- DT::renderDT({
+    cpg_changes <- geo_transcript_ml_epigenetic_cpg_change_data()
+    req(is.data.frame(cpg_changes), nrow(cpg_changes) > 0)
+    display <- cpg_changes
+    for (metric_col in intersect(c("ReferenceMeanBeta", "ComparisonMeanBeta", "DeltaBeta", "AbsDeltaBeta", "SpearmanRho", "AbsRho", "Importance"), names(display))) {
+      display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
+    }
+    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
   })
 
   output$geo_transcript_ml_importance_track <- renderPlotly({
@@ -10602,6 +10961,9 @@ server <- function(input, output, session) {
 	      title = "Remote result loaded",
 	      message = paste0("Pipeline outputs remain on the remote server cache: ", result$cache_dir %||% "")
 	    ))
+	    session$onFlushed(function() {
+	      updateTabsetPanel(session, "tabs", selected = "GEO IMPORT")
+	    }, once = TRUE)
 	    invisible(result)
 	  }
 
