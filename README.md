@@ -103,6 +103,10 @@ Use ugPlot when you need to:
 4. Train many caret models and compare metrics.
 5. Save/load models and validate predictions in a reproducible way.
 
+The app is most useful when the analysis is still exploratory but needs to remain reproducible. A typical session starts with a messy matrix, narrows it to the samples/features that make biological or clinical sense, checks whether visible structure exists, and only then runs machine learning. Treat ugPlot as a guided workbench: each tab helps answer a specific question before moving to the next one.
+
+The most common mistake is to jump directly to ML. If row/sample labels, missing values, categories, or matrix orientation are wrong, a model can still train but answer the wrong question. Use the early tabs to make the dataset explicit before trusting any downstream metric.
+
 ---
 
 ## 0) Interface overview
@@ -121,6 +125,15 @@ The workflow is linear:
 
 A practical recommendation: always finish row/column cleanup in **TABLE** before training models.
 
+Think of the tabs as checkpoints:
+
+- **LOAD DATA** answers: "Did ugPlot read my file correctly?"
+- **TABLE** answers: "Which samples and variables are really part of this analysis?"
+- **HEATMAP / 2D PLOT / GRAPH MODELS** answer: "Is there structure worth modeling, and are there obvious artifacts?"
+- **MACHINE LEARNING** answers: "Can the selected variables predict my target robustly?"
+- **MODEL ANALYSIS** answers: "Does a saved model behave sensibly on this dataset?"
+- **GEO IMPORT** answers: "Can a public methylation accession be turned into CpG/transcript-level hypotheses?"
+
 ---
 
 ## 1) LOAD DATA — bring your dataset correctly
@@ -134,6 +147,15 @@ A practical recommendation: always finish row/column cleanup in **TABLE** before
 - **Choose a CSV file**: upload your file.
 
 If separator/line start is wrong, downstream columns may be broken. Fix this here before moving on.
+
+Before continuing, quickly scan the preview and ask:
+
+- Are samples and features in the expected orientation?
+- Did the header become real column names rather than a data row?
+- Are decimal values split correctly, or did the wrong separator merge columns?
+- Are metadata columns mixed with numeric features, and should they later be marked as categories?
+
+If any answer looks wrong, fix it here. Later tabs assume the imported table shape is intentional.
 
 ### 1.2 Confirm detected columns and rows
 
@@ -154,6 +176,8 @@ Then click **GO TO STEP 2 (TABLE)**.
 
 If you just want to test the app first, click **Click here to load an example**.
 
+For most biomedical tables, include all columns/samples at first, then remove or mark items in **TABLE**. Starting broad keeps the original context visible while you decide what belongs in the final analysis.
+
 ---
 
 ## 2) TABLE — the most important preprocessing page
@@ -161,6 +185,8 @@ If you just want to test the app first, click **Click here to load an example**.
 ![doc4 - table tab controls](man/img/doc4.png)
 
 Think of this tab as your "quality gate" before plotting/training.
+
+Use this page slowly. The goal is not only to remove bad data, but to define the study design inside the app: which rows are cases/controls, which columns are predictors, which columns are labels, and which values should be considered missing. A clean TABLE setup makes plots easier to interpret and ML results much less ambiguous.
 
 ### 2.1 Columns panel (features)
 
@@ -174,10 +200,21 @@ Think of this tab as your "quality gate" before plotting/training.
   - useful for quick sanity checks / negative controls.
 - **Restore** reverts scrambled data.
 
+When to remove columns:
+
+- remove near-constant variables because they usually add noise rather than signal,
+- remove identifiers that encode sample names or batch labels unless you explicitly want to model them,
+- keep biological/clinical variables that are plausible predictors,
+- mark outcome/group columns as categories instead of leaving them among numeric predictors.
+
+Use **Scramble column** as a sanity check: if scrambling a key feature does not change performance later, the model may not have been using that feature meaningfully.
+
 ### 2.2 Rows panel (samples)
 
 - Select only the samples you want to keep.
 - Use **Uncheck all / Check all** for fast cohort filtering.
+
+Rows are samples. Remove samples when they are outside the comparison you want to make, have unresolved quality issues, or belong to a cohort that would answer a different question. If the dataset mixes discovery/validation cohorts, first analyze them separately unless your goal is explicitly cross-cohort robustness.
 
 ### 2.3 Categories panel
 
@@ -185,15 +222,21 @@ Think of this tab as your "quality gate" before plotting/training.
 - **Transpose table** swaps rows/columns (useful when dataset orientation is opposite of expected).
 - **Download** exports exactly what is currently selected.
 
+Categories should be used for labels, groups, batches, and phenotype descriptors. A category column can be useful for coloring plots, splitting comparisons, or selecting ML targets. Do not treat sample IDs, free-text notes, or high-cardinality identifiers as ordinary predictors unless you have a specific reason.
+
 ### 2.4 Bottom data table
 
 Use search/sort to inspect suspicious values before plotting or ML.
+
+This is the best place to catch practical problems: hidden missing values, unexpected zeros, duplicated samples, impossible ages, mixed units, and class imbalance. If a value looks suspicious in the table, fix the inclusion/missingness decision before interpreting downstream figures.
 
 ---
 
 ## 3) HEATMAP PLOT — fast visual diagnostics + editable code
 
 ![doc5 - heatmap plot tab](man/img/doc5.png)
+
+Use heatmaps early, before ML, to see whether the dataset has broad structure. A useful heatmap can reveal sample clusters, batch effects, outliers, and groups of correlated variables. A confusing heatmap is also informative: it may mean the selected features are too noisy, too many, or not scaled/filtered appropriately.
 
 - **plot_xy** controls matrix orientation (`ROW x COL`, `COL x COL`, `ROW x ROW`).
 - Left gallery (large images): choose plot template.
@@ -204,6 +247,8 @@ Use search/sort to inspect suspicious values before plotting or ML.
 
 Best practice: choose a template close to your goal, then refine code in the text area.
 
+Interpret heatmaps qualitatively. They are not proof of prediction performance, but they are excellent for deciding whether the dataset is ready for modeling or still needs filtering. If one row or column dominates the color scale, inspect it in TABLE before moving on.
+
 ---
 
 ## 4) 2D PLOT — discover pairwise relationships
@@ -211,6 +256,8 @@ Best practice: choose a template close to your goal, then refine code in the tex
 ### 4.1 Correlation filtering
 
 ![doc6 - 2d correlations](man/img/doc6.png)
+
+Use 2D plots when you want to understand pairwise relationships rather than global structure. They are especially useful for spotting a small number of strong feature-target relationships, checking whether correlations are linear, and finding outliers that drive an apparent association.
 
 - Correlation method: `pearson`, `spearman`, `kendall`.
 - Positive threshold slider (`>= x`).
@@ -221,11 +268,21 @@ Best practice: choose a template close to your goal, then refine code in the tex
 
 Main panel displays only pairs that pass your thresholds.
 
+Choose the correlation method based on the question:
+
+- **Pearson** is best for approximately linear numeric relationships.
+- **Spearman** is better when the relationship is monotonic but not linear, or when ranks are more reliable than raw values.
+- **Kendall** is conservative and useful for smaller datasets or many tied values.
+
+If a strong correlation appears only because of one or two extreme samples, do not treat it as stable evidence until you inspect those samples.
+
 ### 4.2 Distribution mode example
 
 ![doc7 - 2d distribution mode](man/img/doc7.png)
 
 Use distribution mode to check whether correlations may be driven by skewed ranges/outliers.
+
+Distribution mode is also useful before ML because a target with extreme imbalance or heavy skew can make standard train/test metrics misleading. If the target distribution is poor, consider filtering, transforming, or explicitly treating the task as classification/regression before training.
 
 ---
 
@@ -235,12 +292,16 @@ Use distribution mode to check whether correlations may be driven by skewed rang
 
 ![doc8 - machine learning seeds](man/img/doc8.png)
 
+Use MACHINE LEARNING only after the dataset shape is settled. The main question here is not "which model wins once?", but "does any model perform consistently enough to justify further investigation?"
+
 - **Target column**: variable to predict (class or numeric).
 - **Seeds** section:
   - initial/final dataset seed,
   - initial/final training seed,
   - supports repeatability and robustness checks.
 - **Timeout (s)** controls maximum training time.
+
+For small exploratory runs, use fewer models or shorter timeouts to check that the setup works. For a result you plan to report, run multiple seeds and prefer models whose performance remains stable. A single high score from one split can be luck, leakage, or class imbalance.
 
 ### 5.2 Missing data strategy (critical for robust models)
 
@@ -264,6 +325,10 @@ You can define what missing means and how to process it:
 - **Run exhaustive threshold scan (0-100%)** to test many threshold combinations automatically.
 
 Read the summary table/plots before running models, to confirm filtering did not distort target distribution.
+
+Missingness choices change the question being modeled. Removing many samples may produce a cleaner dataset but can also bias the cohort. Imputing values keeps sample size but may add artificial signal. Use the missingness summary to check whether one class or group is being removed more aggressively than another.
+
+Zero deserves special attention. In some omics matrices zero means "not detected"; in others it is a real measured value. Use zero exceptions for columns where zero is biologically or technically valid.
 
 ### 5.3 Installing missing model libraries (step-by-step)
 
@@ -290,11 +355,15 @@ ugPlotCheckModelDeps()
 ugPlotInstallModelDeps()
 ```
 
+If you are comparing many models, treat this phase as screening rather than final inference. Different caret models have different dependency packages, tuning grids, and failure modes. It is normal for some models to fail or time out; the important part is whether enough suitable models finish to compare stable performance.
+
 ### 5.4 Remote jobs and loading results
 
 ![doc18 - remote jobs overview](man/img/doc18.png)
 
 Use **JOBS** to monitor model runs submitted to local or remote ugPlot servers.
+
+Use remote jobs when the work is long, memory-heavy, or should continue even if the browser closes. This is especially important for large GEO methylation workflows and many-model ML screening. The local interface should be treated as the control panel; the remote server is where the heavy computation lives.
 
 - Server cards summarize connection state, active jobs, and version mismatches.
 - The job table shows server, job name, type, state, progress, target, model list, timestamps, and actions.
@@ -321,6 +390,10 @@ After running:
 
 Tip: prefer models with stable performance across seed combinations, not only best single score.
 
+For regression, check `R2`, `RMSE`, and residual plots together. A high `R2` with structured residuals can still mean the model is biased in part of the range. For classification, inspect class-specific performance and confidence; a good global accuracy can hide poor detection of the minority class.
+
+If results look too good, check for leakage: target-derived columns, sample IDs, batch columns that encode outcome, duplicated rows, or preprocessing performed before train/test split.
+
 ---
 
 ## 6) MODEL ANALYSIS — validate saved `.rds` models
@@ -335,11 +408,15 @@ Tip: prefer models with stable performance across seed combinations, not only be
 - Set **Confidence Threshold**.
 - Click **Run Analysis**.
 
+Use MODEL ANALYSIS when the model already exists and the question is validation rather than training. This is useful for checking whether a saved `.rds` model can be applied to a new dataset, whether required predictors are present, and whether predictions remain reliable outside the training context.
+
 ### 6.2 Model metadata view
 
 ![doc13 - model details loaded](man/img/doc13.png)
 
 ugPlot displays model call/statistics, compatibility/preprocess notes, and inferred target details when available.
+
+Read this metadata before trusting predictions. If the new dataset is missing predictors, uses different column names, or has incompatible preprocessing assumptions, performance estimates may not be comparable to the original training run.
 
 ### 6.3 Summary and reliability report
 
@@ -351,6 +428,8 @@ Inspect:
 - reliable/inconclusive counts,
 - accuracy summary in reliable subset.
 
+The reliability report separates "can make a confident prediction" from "made a prediction for every row." This distinction matters when a model is only reliable for part of the dataset. A smaller reliable subset with transparent criteria is often more useful than pretending every prediction has the same quality.
+
 ### 6.4 Final outputs and export
 
 ![doc15 - analysis outputs](man/img/doc15.png)
@@ -360,6 +439,8 @@ Inspect:
 - **Download analysis table (CSV)** for downstream reporting.
 - Per-sample table with truth, prediction, confidence, error, and status.
 
+Use the per-sample table to investigate failures. Sort by error or low confidence, then look for patterns: one cohort failing, one class consistently confused, or samples with many missing predictors.
+
 ---
 
 ## 7) DEEP LEARNING — train neural networks with `torch`
@@ -367,6 +448,8 @@ Inspect:
 ![doc16 - deep learning tab](man/img/doc16.png)
 
 Use this tab when you want a configurable neural network pipeline directly inside ugPlot.
+
+Deep learning is not automatically better than caret models. Use it when you have enough samples/features to justify a flexible model, when simpler models underfit, or when you want to test whether a neural network can discover interactions missed by classical methods. For small biomedical tables, deep learning can overfit quickly, so start conservatively.
 
 ### 7.1 Training configuration (left panel)
 
@@ -385,6 +468,8 @@ Use this tab when you want a configurable neural network pipeline directly insid
 - **Auto adjust hidden layer sizes**: quickly generates a reasonable architecture from feature count.
 - **Train Deep Learning model**: starts the full preprocessing + training + evaluation cycle.
 
+A practical starting point is a small number of hidden layers, moderate dropout, and enough epochs to see whether train and test loss separate. If train loss improves but test loss worsens, reduce model size, increase dropout, or stop earlier.
+
 ### 7.2 Outputs and diagnostics (right panel)
 
 After training, ugPlot shows:
@@ -402,6 +487,8 @@ After training, ugPlot shows:
 
 Practical tip: start with auto architecture + moderate epochs, then tune hidden units/dropout and learning rate based on loss gap and prediction quality.
 
+Use the network view as a diagnostic, not as biological proof. Strong weights or paths suggest what the neural network used, but they still need validation against simpler models, feature correlations, and domain knowledge.
+
 ---
 
 ## 8) GRAPH MODELS — visualize feature correlation networks
@@ -409,6 +496,8 @@ Practical tip: start with auto architecture + moderate epochs, then tune hidden 
 ![doc19 - graph models 3d controls](man/img/doc19.png)
 
 Use **GRAPH MODELS** when you want to inspect how selected variables relate to each other as a correlation network.
+
+Graph models are useful when individual pairwise plots are too fragmented and you want to see whether variables form communities. They help identify feature groups that move together, potential redundant predictors, and hub variables that may dominate downstream models.
 
 - **Target column (optional)** can keep the outcome visible while selecting features.
 - **Max nodes** limits the graph to the most variable columns, preventing unreadable dense networks.
@@ -418,6 +507,8 @@ Use **GRAPH MODELS** when you want to inspect how selected variables relate to e
 - **Render in 3D (plotly)** enables interactive rotation/zoom for spatial inspection.
 
 The graph summary reports the number of nodes, edges, average degree, and maximum absolute correlation. Use these values as a quick density check before interpreting individual edges.
+
+If the graph is too dense, raise the edge threshold or lower max nodes. If it is nearly empty, lower the threshold or include more variables. Avoid interpreting every edge individually; first look for robust clusters and then inspect representative variables in 2D plots or TABLE.
 
 ![doc20 - graph models outputs](man/img/doc20.png)
 
@@ -431,7 +522,17 @@ When 3D rendering is disabled or when reviewing static output, ugPlot shows a 2D
 
 Use **GEO IMPORT** when you want ugPlot to inspect a GEO methylation accession, prepare CpG matrices, find CpGs correlated with a phenotype, build transcript-level candidate datasets, and run transcript ML models.
 
+> **The core question: what changed between two classes?**
+>
+> The main goal of the GEO IMPORT transcript workflow is to compare a **reference class** against a **comparison class** in relation to a defined **predictable target**. The target is the variable the CpGs/transcripts are trying to explain or predict, such as age, disease severity, treatment response, vitamin intake, exposure level, or another measurable phenotype. Once that target exists, the key question becomes: which transcript groups, CpGs, and ML signals changed between the selected classes?
+>
+> Examples include predicting age and then comparing younger vs older groups, predicting disease severity and comparing control vs cancer, predicting response and comparing untreated vs treated, or predicting intake/exposure and comparing low vs high intake. ugPlot first finds CpGs associated with the selected target, groups them by transcript, trains transcript-level models, and then orders the selected classes by target-prediction performance. The reports then show which transcript groups move up or down between classes and which CpGs may explain that movement.
+>
+> Read the GEO results as a guided comparison, not just a collection of tables. The class ranking plot shows whether transcript order changes between groups. The largest-change tables identify the strongest transcript shifts. The selected-transcript reports explain whether the shift comes from methylation differences, ML prediction differences, or both. The CpG-level tables help narrow the transcript signal to specific probes that can be checked biologically.
+
 This page is organized as a numbered pipeline. Green **DONE** cards mean ugPlot found the required local or remote output for that step. Yellow **PENDING** means the step still needs to run, be loaded from a remote result, or be refreshed after changing a parameter.
+
+The GEO workflow is intentionally stricter than loading a normal CSV because public methylation datasets mix raw files, processed matrices, platform annotation, phenotype metadata, missing probes, and large ML outputs. If a later report looks empty, first check which numbered card is still pending or which threshold removed all candidates.
 
 ### 9.1 Choose local or remote processing
 
@@ -447,6 +548,8 @@ The **GEO processing location** panel controls where the expensive work runs.
 
 When a remote result is loaded, the blue status banner shows the active remote matrix source and remote cache path. This means downstream GEO tables and transcript ML summaries are being read from the loaded remote job metadata, while large matrices can remain on the server.
 
+For small processed matrices, local mode can be enough. For raw IDAT/sesame or transcript ML screening, prefer remote mode because the job can take hours and produce large artifacts. In that setup, the browser session is only a viewer/controller; the authoritative cache remains on the remote server.
+
 ### 9.2 Step 1 — Inspect GEO accession
 
 <img src="man/img/geo-import-02-accession.png" alt="GEO IMPORT accession step" width="360">
@@ -454,6 +557,8 @@ When a remote result is loaded, the blue status banner shows the active remote m
 Enter a GEO accession, for example `GSE87571`, and click **Inspect files** or **Refresh GEO status**.
 
 This step checks the GEO record and supplementary files. If it succeeds, the accession card turns **DONE** and the app can plan which matrix or raw IDAT files are available.
+
+At this point you are checking whether the accession is technically usable, not interpreting biology yet. A good accession for this workflow should have enough samples, methylation-compatible files, at least one metadata field that can serve as the prediction/correlation target, and optionally another metadata field that can define comparison classes.
 
 ### 9.3 Step 2 — Review sample metadata
 
@@ -468,7 +573,9 @@ Check:
 - likely analysis fields such as `age`, `status`, `disease state:ch1`, `gender:ch1`, or `subject_status`,
 - the local cache folder used by ugPlot.
 
-These metadata fields are the candidates for the target/correlation variable used later in Step 6 and for class/group comparisons in Step 10.
+These metadata fields are the candidates for two different roles: the target/correlation variable used later in Step 6, and the class/group variable used in Step 10 to compare how the target-prediction signal changes between groups.
+
+Choose metadata fields deliberately. Numeric fields such as age, dose, intake, exposure, or severity scores work well as the target for Spearman scans and ML prediction. Categorical fields such as disease state, responder group, treatment group, or severity class are useful later as comparison classes. Avoid fields with too many unique values, inconsistent text labels, or severe class imbalance unless you clean or collapse them first.
 
 ### 9.4 Step 3 — Choose matrix files
 
@@ -480,6 +587,8 @@ In **Matrix files**, choose the matrix source:
 - **Recalculate from raw IDAT with sesame** when you want ugPlot to use raw IDAT files and create a sesame beta matrix.
 
 The card reports how many files were found, how much disk space they use, which files are needed for the selected workflow, and the cache folder. If **Still needed** is `0 file(s)`, ugPlot already has the required files for the selected source.
+
+Processed matrices are faster and usually enough for exploratory analysis. Raw IDAT with sesame is slower but gives a more controlled preprocessing path and QC report. Use raw IDAT when reproducibility of methylation preprocessing matters or when the processed GEO matrix is not suitable for the question.
 
 ### 9.5 Step 4 — Download progress
 
@@ -511,12 +620,14 @@ Step 6 computes CpG-level Spearman correlations against the selected numeric met
 
 Key settings:
 
-- **Metadata field to predict/correlate**: the phenotype variable, such as `age`.
+- **Metadata field to predict/correlate**: the target phenotype variable, such as `age`, severity score, dose, intake, or another numeric measurement.
 - **Max CpGs to scan**: use `0` to scan all available CpGs.
 - **Minimum samples per CpG for Spearman (%)**: minimum complete samples required per CpG.
 - **Transcript CpG threshold |rho|**: minimum absolute Spearman correlation used to keep transcript candidates.
 
 The summary reports how many CpGs were scanned, how many passed the sample filter, and the observed maximum `|rho|`. If the current threshold keeps transcript candidates, the green **Ready to continue transcript pipeline** box appears. If no candidate passes the threshold, lower the threshold or change the target field before continuing.
+
+The transcript threshold is a discovery filter, not a biological truth cutoff. A high value such as `0.8` is strict and may produce no candidates. A value around `0.7` is often a useful first pass for testing the full pipeline. If you lower the threshold, expect more transcript groups and longer ML runs; use the rank limit in Step 9 when you only want to test the workflow.
 
 ### 9.8 Step 7 — Load CpG annotation
 
@@ -540,6 +651,8 @@ ugPlot treats empty strings, `NA`/`na` text, true `NA`, and zero as missing for 
 
 The status box reports processed groups, compatible groups, excluded groups, and the cached group summary path.
 
+This grouping is important. Multiple transcripts can share the same retained CpGs and samples, so running ML separately for each would repeat the same computation. ugPlot keeps a representative transcript and records compatible transcripts so the result remains traceable without wasting compute.
+
 ### 9.10 Step 9 — Screen transcript ML models
 
 <img src="man/img/geo-import-11-screen-models.png" alt="GEO IMPORT transcript ML screening step" width="360">
@@ -555,6 +668,8 @@ Key settings:
 - **Timeout per model/seed (s)**: maximum training time for each model/seed attempt.
 
 The model summary shows how many caret models are installed and will be screened. In remote mode, these jobs stay on the selected server until a result is loaded.
+
+Use Step 9 to find plausible model families, not to make final claims. If you are still debugging an accession, restrict to the top Spearman groups or use the representative-model option. Once the workflow is correct, run the broader model screen and let Step 10 stabilize the best candidates.
 
 ### 9.11 Step 10 — Stabilize best transcript ML
 
@@ -572,10 +687,12 @@ Key settings:
 
 When complete, the status box reports how many transcript ML summary rows were loaded and where the final summary CSV is cached. Use the transcript ML results tables below the pipeline cards to inspect class rankings, transcript changes between selected classes, CpG-level changes, and ML importance plots.
 
+The optional class/group column changes the meaning of Step 10. Without it, stability is evaluated across all samples together. With it, ugPlot can summarize whether a transcript model predicts the same target differently across classes such as control, mild, severe, responder, or non-responder. Use this when the biological question is not only "what predicts the target?", but "does that target-prediction behavior shift between groups?"
+
 ### 9.12 Recommended GEO workflow
 
 1. Enter the GEO accession and refresh Step 1.
-2. Confirm sample metadata and choose the target field you want to analyze.
+2. Confirm sample metadata and choose the target field you want to predict/correlate, such as age, severity, response, dose, or intake.
 3. Choose processed matrix or raw IDAT/sesame as the matrix source.
 4. Run locally only for small jobs; use a remote server for large IDAT/sesame and transcript ML runs.
 5. In Step 6, start with a practical `|rho|` threshold such as `0.7`, then lower it only if no transcript candidates appear.
@@ -583,6 +700,8 @@ When complete, the status box reports how many transcript ML summary rows were l
 7. Screen models in Step 9.
 8. Stabilize the best models in Step 10, optionally using a disease/status class column.
 9. Open the transcript ML results section to compare transcript ranking changes across classes and inspect the CpGs driving those changes.
+
+For a first development run, do not optimize every setting. Run the pipeline with a small candidate set, confirm that reports load, then expand the candidate count and model set. This avoids spending a day on a remote run before discovering that the chosen metadata field or class column was not the one you wanted.
 
 ### 9.13 GEO report tables and plots
 
@@ -596,12 +715,12 @@ After the pipeline cards, **GEO IMPORT** exposes collapsible report sections. Th
 
 ![GEO report sample metadata](man/img/geo-report-01-sample-metadata.png)
 
-This table shows the parsed phenotype/sample metadata from GEO. Use it to confirm that the accession contains the expected cohorts, disease/status labels, ages, sex, tissue/cell type, and any other candidate target columns.
+This table shows the parsed phenotype/sample metadata from GEO. Use it to confirm that the accession contains both the variable you want to predict/correlate and the class labels you want to compare. For example, `age` can be the target, while disease state can be the class column.
 
 Important uses:
 
-- choose the numeric field for CpG Spearman analysis, such as `age`,
-- choose a class/group column for Step 10 stability summaries,
+- choose the numeric target field for CpG Spearman analysis, such as `age`, severity score, dose, or intake,
+- choose a class/group column for Step 10 stability summaries and class comparisons,
 - verify sample counts and class labels before interpreting ML results.
 
 #### GEO files table
@@ -688,7 +807,7 @@ Use this table when you need exact CpG IDs and coordinates for downstream valida
 
 ![GEO report class ranking plot](man/img/geo-report-07-class-rank-plot.png)
 
-This plot compares transcript group ranking across selected classes. The class tags at the top define the order shown on the x-axis and can be reordered by the user.
+This plot compares transcript group ranking across selected classes for the already chosen prediction target. The class tags at the top define the order shown on the x-axis and can be reordered by the user.
 
 Tabs change the ranking rule:
 
