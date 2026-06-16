@@ -427,11 +427,15 @@ When 3D rendering is disabled or when reviewing static output, ugPlot shows a 2D
 
 ## 9) GEO IMPORT — methylation pipeline tutorial
 
+![GEO IMPORT overview](man/img/geo-import-01-overview.png)
+
 Use **GEO IMPORT** when you want ugPlot to inspect a GEO methylation accession, prepare CpG matrices, find CpGs correlated with a phenotype, build transcript-level candidate datasets, and run transcript ML models.
 
 This page is organized as a numbered pipeline. Green **DONE** cards mean ugPlot found the required local or remote output for that step. Yellow **PENDING** means the step still needs to run, be loaded from a remote result, or be refreshed after changing a parameter.
 
 ### 9.1 Choose local or remote processing
+
+![GEO IMPORT remote processing controls](man/img/geo-import-04-remote-processing.png)
 
 The **GEO processing location** panel controls where the expensive work runs.
 
@@ -445,11 +449,15 @@ When a remote result is loaded, the blue status banner shows the active remote m
 
 ### 9.2 Step 1 — Inspect GEO accession
 
+![GEO IMPORT accession step](man/img/geo-import-02-accession.png)
+
 Enter a GEO accession, for example `GSE87571`, and click **Inspect files** or **Refresh GEO status**.
 
 This step checks the GEO record and supplementary files. If it succeeds, the accession card turns **DONE** and the app can plan which matrix or raw IDAT files are available.
 
 ### 9.3 Step 2 — Review sample metadata
+
+![GEO IMPORT sample metadata step](man/img/geo-import-03-metadata.png)
 
 The **Sample metadata** card summarizes the phenotype table extracted from GEO.
 
@@ -464,6 +472,8 @@ These metadata fields are the candidates for the target/correlation variable use
 
 ### 9.4 Step 3 — Choose matrix files
 
+![GEO IMPORT matrix files step](man/img/geo-import-05-matrix-files.png)
+
 In **Matrix files**, choose the matrix source:
 
 - **Use GEO processed matrix** when GEO already provides a usable beta/intensity table.
@@ -473,11 +483,15 @@ The card reports how many files were found, how much disk space they use, which 
 
 ### 9.5 Step 4 — Download progress
 
+![GEO IMPORT download progress step](man/img/geo-import-06-download-progress.png)
+
 This card tracks GEO file acquisition.
 
 For remote jobs, downloads happen on the selected remote server. For local jobs, this card reports local download/extraction status. If it says the selected files are already local, you can continue without downloading again.
 
 ### 9.6 Step 5 — Recalculate beta matrix
+
+![GEO IMPORT beta matrix step](man/img/geo-import-07-beta-matrix.png)
 
 When using raw IDAT files, Step 5 runs sesame QC/reprocessing and creates the beta matrix used by Spearman analysis.
 
@@ -490,6 +504,8 @@ Key settings:
 When loaded from a remote run, this card shows the remote beta matrix path, QC report path, and number of processed QC rows. If the beta matrix is available, Step 6 can scan CpGs without rerunning sesame.
 
 ### 9.7 Step 6 — Analyze CpGs
+
+![GEO IMPORT CpG analysis step](man/img/geo-import-08-analyze-cpgs.png)
 
 Step 6 computes CpG-level Spearman correlations against the selected numeric metadata field.
 
@@ -504,11 +520,15 @@ The summary reports how many CpGs were scanned, how many passed the sample filte
 
 ### 9.8 Step 7 — Load CpG annotation
 
+![GEO IMPORT CpG annotation step](man/img/geo-import-09-cpg-annotation.png)
+
 Step 7 loads or builds the CpG-to-gene/transcript annotation map for the GEO platform.
 
 The card shows the detected platform, for example `GPL21145`, and the annotation cache path. This annotation is required before ugPlot can group CpGs by transcript and build transcript ML datasets.
 
 ### 9.9 Step 8 — Build transcript ML datasets
+
+![GEO IMPORT transcript dataset step](man/img/geo-import-10-transcript-datasets.png)
 
 Step 8 creates complete-case transcript datasets from the CpGs that passed Step 6 and the annotation from Step 7.
 
@@ -521,6 +541,8 @@ ugPlot treats empty strings, `NA`/`na` text, true `NA`, and zero as missing for 
 The status box reports processed groups, compatible groups, excluded groups, and the cached group summary path.
 
 ### 9.10 Step 9 — Screen transcript ML models
+
+![GEO IMPORT transcript ML screening step](man/img/geo-import-11-screen-models.png)
 
 Step 9 screens installed caret models for each transcript candidate group.
 
@@ -535,6 +557,8 @@ Key settings:
 The model summary shows how many caret models are installed and will be screened. In remote mode, these jobs stay on the selected server until a result is loaded.
 
 ### 9.11 Step 10 — Stabilize best transcript ML
+
+![GEO IMPORT transcript ML stability step](man/img/geo-import-12-stabilize-ml.png)
 
 Step 10 takes the best screened model for each transcript group and reruns seed batches until the metric stabilizes.
 
