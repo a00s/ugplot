@@ -435,7 +435,7 @@ This page is organized as a numbered pipeline. Green **DONE** cards mean ugPlot 
 
 ### 9.1 Choose local or remote processing
 
-![GEO IMPORT remote processing controls](man/img/geo-import-04-remote-processing.png)
+<img src="man/img/geo-import-04-remote-processing.png" alt="GEO IMPORT remote processing controls" width="360">
 
 The **GEO processing location** panel controls where the expensive work runs.
 
@@ -449,7 +449,7 @@ When a remote result is loaded, the blue status banner shows the active remote m
 
 ### 9.2 Step 1 — Inspect GEO accession
 
-![GEO IMPORT accession step](man/img/geo-import-02-accession.png)
+<img src="man/img/geo-import-02-accession.png" alt="GEO IMPORT accession step" width="360">
 
 Enter a GEO accession, for example `GSE87571`, and click **Inspect files** or **Refresh GEO status**.
 
@@ -457,7 +457,7 @@ This step checks the GEO record and supplementary files. If it succeeds, the acc
 
 ### 9.3 Step 2 — Review sample metadata
 
-![GEO IMPORT sample metadata step](man/img/geo-import-03-metadata.png)
+<img src="man/img/geo-import-03-metadata.png" alt="GEO IMPORT sample metadata step" width="360">
 
 The **Sample metadata** card summarizes the phenotype table extracted from GEO.
 
@@ -472,7 +472,7 @@ These metadata fields are the candidates for the target/correlation variable use
 
 ### 9.4 Step 3 — Choose matrix files
 
-![GEO IMPORT matrix files step](man/img/geo-import-05-matrix-files.png)
+<img src="man/img/geo-import-05-matrix-files.png" alt="GEO IMPORT matrix files step" width="360">
 
 In **Matrix files**, choose the matrix source:
 
@@ -483,7 +483,7 @@ The card reports how many files were found, how much disk space they use, which 
 
 ### 9.5 Step 4 — Download progress
 
-![GEO IMPORT download progress step](man/img/geo-import-06-download-progress.png)
+<img src="man/img/geo-import-06-download-progress.png" alt="GEO IMPORT download progress step" width="360">
 
 This card tracks GEO file acquisition.
 
@@ -491,7 +491,7 @@ For remote jobs, downloads happen on the selected remote server. For local jobs,
 
 ### 9.6 Step 5 — Recalculate beta matrix
 
-![GEO IMPORT beta matrix step](man/img/geo-import-07-beta-matrix.png)
+<img src="man/img/geo-import-07-beta-matrix.png" alt="GEO IMPORT beta matrix step" width="360">
 
 When using raw IDAT files, Step 5 runs sesame QC/reprocessing and creates the beta matrix used by Spearman analysis.
 
@@ -505,7 +505,7 @@ When loaded from a remote run, this card shows the remote beta matrix path, QC r
 
 ### 9.7 Step 6 — Analyze CpGs
 
-![GEO IMPORT CpG analysis step](man/img/geo-import-08-analyze-cpgs.png)
+<img src="man/img/geo-import-08-analyze-cpgs.png" alt="GEO IMPORT CpG analysis step" width="360">
 
 Step 6 computes CpG-level Spearman correlations against the selected numeric metadata field.
 
@@ -520,7 +520,7 @@ The summary reports how many CpGs were scanned, how many passed the sample filte
 
 ### 9.8 Step 7 — Load CpG annotation
 
-![GEO IMPORT CpG annotation step](man/img/geo-import-09-cpg-annotation.png)
+<img src="man/img/geo-import-09-cpg-annotation.png" alt="GEO IMPORT CpG annotation step" width="360">
 
 Step 7 loads or builds the CpG-to-gene/transcript annotation map for the GEO platform.
 
@@ -528,7 +528,7 @@ The card shows the detected platform, for example `GPL21145`, and the annotation
 
 ### 9.9 Step 8 — Build transcript ML datasets
 
-![GEO IMPORT transcript dataset step](man/img/geo-import-10-transcript-datasets.png)
+<img src="man/img/geo-import-10-transcript-datasets.png" alt="GEO IMPORT transcript dataset step" width="360">
 
 Step 8 creates complete-case transcript datasets from the CpGs that passed Step 6 and the annotation from Step 7.
 
@@ -542,7 +542,7 @@ The status box reports processed groups, compatible groups, excluded groups, and
 
 ### 9.10 Step 9 — Screen transcript ML models
 
-![GEO IMPORT transcript ML screening step](man/img/geo-import-11-screen-models.png)
+<img src="man/img/geo-import-11-screen-models.png" alt="GEO IMPORT transcript ML screening step" width="360">
 
 Step 9 screens installed caret models for each transcript candidate group.
 
@@ -558,7 +558,7 @@ The model summary shows how many caret models are installed and will be screened
 
 ### 9.11 Step 10 — Stabilize best transcript ML
 
-![GEO IMPORT transcript ML stability step](man/img/geo-import-12-stabilize-ml.png)
+<img src="man/img/geo-import-12-stabilize-ml.png" alt="GEO IMPORT transcript ML stability step" width="360">
 
 Step 10 takes the best screened model for each transcript group and reruns seed batches until the metric stabilizes.
 
