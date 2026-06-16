@@ -584,6 +584,192 @@ When complete, the status box reports how many transcript ML summary rows were l
 8. Stabilize the best models in Step 10, optionally using a disease/status class column.
 9. Open the transcript ML results section to compare transcript ranking changes across classes and inspect the CpGs driving those changes.
 
+### 9.13 GEO report tables and plots
+
+After the pipeline cards, **GEO IMPORT** exposes collapsible report sections. These reports are meant to answer three questions:
+
+1. Which samples, files, CpGs, and transcripts entered the analysis?
+2. Which transcript groups are strongest overall?
+3. Which transcript groups and CpGs change most between selected classes?
+
+#### Sample metadata table
+
+![GEO report sample metadata](man/img/geo-report-01-sample-metadata.png)
+
+This table shows the parsed phenotype/sample metadata from GEO. Use it to confirm that the accession contains the expected cohorts, disease/status labels, ages, sex, tissue/cell type, and any other candidate target columns.
+
+Important uses:
+
+- choose the numeric field for CpG Spearman analysis, such as `age`,
+- choose a class/group column for Step 10 stability summaries,
+- verify sample counts and class labels before interpreting ML results.
+
+#### GEO files table
+
+![GEO report files](man/img/geo-report-02-files.png)
+
+This table lists supplementary GEO files and their local/remote status.
+
+Key columns:
+
+- **File**: GEO supplementary file name.
+- **Type**: table, archive, IDAT bundle, or other detected file type.
+- **MethylationHint**: whether the file looks relevant for methylation.
+- **Loadable**: whether ugPlot can load the file directly as a table.
+- **LocalStatus** and **LocalSize**: download/extraction state and local cache size.
+- **Action**: next useful action, such as extracted or ready to extract.
+
+Use this table to confirm that the selected matrix source really has the files it needs.
+
+#### CpG Spearman table
+
+![GEO report CpG Spearman](man/img/geo-report-03-cpg-spearman.png)
+
+This table ranks CpGs by correlation with the selected metadata field from Step 6.
+
+Key columns:
+
+- **CpG**: probe identifier.
+- **SpearmanRho**: signed Spearman correlation with the target field.
+- **PValue**: correlation p-value.
+- **N**: complete sample count used for that CpG.
+- **AbsRho**: absolute correlation, useful for thresholding.
+
+If annotation is already loaded, one CpG can appear in multiple rows because the same CpG may map to multiple transcripts.
+
+#### Transcript ML candidate groups
+
+![GEO report transcript candidate groups](man/img/geo-report-04-candidate-groups.png)
+
+This table lists transcript candidate groups created in Step 8. A group can represent one transcript or several compatible transcripts that produce the same final CpG/sample dataset.
+
+Key columns:
+
+- **Load**: loads that transcript-group dataset into the main ugPlot data workflow.
+- **PrincipalTranscript** and **Gene**: representative transcript and gene.
+- **Columns**: number of CpGs/features retained.
+- **Samples**: complete-case samples retained.
+- **TranscriptCount**: number of compatible transcripts in the group.
+- **TriggerMaxAbsRho**: strongest absolute Spearman correlation that triggered the group.
+
+Select a row to inspect the CpGs and genomic context for that transcript group.
+
+#### Transcript genomic track
+
+![GEO report transcript genomic track](man/img/geo-report-05-transcript-track.png)
+
+The transcript track shows where the group CpGs fall across genomic position and transcript regions.
+
+How to read it:
+
+- dots are CpGs,
+- color/height highlight Spearman `|rho|` and, when available, ML importance,
+- shaded regions represent transcript/gene regions such as body, UTR, exon, or TSS windows,
+- clustered high-signal CpGs near a regulatory region are often more interpretable than isolated points.
+
+Use this plot to see whether the strongest CpGs are concentrated in promoter/TSS regions, gene body, UTRs, or exon regions.
+
+#### Transcript CpG detail table
+
+![GEO report transcript CpG table](man/img/geo-report-06-transcript-cpg-table.png)
+
+This table gives CpG-level details for the selected transcript group.
+
+Important columns:
+
+- **CpGKeptForML**: whether the CpG was retained in the final ML dataset.
+- **GeneRegion**, **Chr**, **Position**, **Strand**: genomic annotation.
+- **CpGIslandRelation**, **RegulatoryFeature**, **ProbeType**: platform annotation context.
+- **SpearmanRho**, **AbsRho**, **PValue**: association with the selected metadata field.
+
+Use this table when you need exact CpG IDs and coordinates for downstream validation or external annotation.
+
+#### Transcript class ranking plot
+
+![GEO report class ranking plot](man/img/geo-report-07-class-rank-plot.png)
+
+This plot compares transcript group ranking across selected classes. The class tags at the top define the order shown on the x-axis and can be reordered by the user.
+
+Tabs change the ranking rule:
+
+- **R2** ranks by class-specific ML prediction performance.
+- **Spearman** ranks by the strongest transcript-triggering CpG correlation.
+- **Combined** blends ML performance and Spearman rank.
+
+Each line is a transcript group. Large vertical movement between classes means the group changes rank strongly between those classes.
+
+#### Transcript class ranking table
+
+![GEO report class ranking table](man/img/geo-report-08-class-rank-table.png)
+
+This table is the numeric version of the class ranking plot. Each column is a selected class; each row is a rank position. The cell shows the group, transcript/gene, metric value, trigger `|rho|`, and trigger CpG.
+
+Use it when the plot is crowded and you need the exact order per class.
+
+#### Largest transcript changes
+
+![GEO report largest transcript changes](man/img/geo-report-09-largest-transcript-changes.png)
+
+This table focuses on the selected reference and comparison classes. By default, ugPlot uses the first and last selected class tags, but the dropdowns let you choose any pair.
+
+Key columns:
+
+- **Group**: transcript group ID.
+- **Transcript** and **Gene**: representative transcript and gene.
+- **Delta**: comparison value minus reference value for the active metric.
+- **ReferenceValue** and **ComparisonValue**: metric values in each selected class.
+
+Rows are sorted by absolute delta, so the top rows are the strongest class-dependent transcript changes for the active tab.
+
+#### Selected transcript class comparison
+
+![GEO report selected transcript class comparison](man/img/geo-report-10-class-comparison.png)
+
+After selecting a transcript group, this table summarizes class-level behavior for that group.
+
+It reports:
+
+- class label and interpretation,
+- sample count,
+- number of CpGs,
+- mean transcript beta,
+- beta shift against the reference class,
+- association rho,
+- median R2 and R2 change.
+
+This is the main report for deciding whether the transcript changes because methylation changed, ML prediction changed, or both.
+
+#### Top CpG changes inside selected transcript
+
+![GEO report top CpG changes](man/img/geo-report-11-top-cpg-changes.png)
+
+This table ranks CpGs inside the selected transcript by beta difference between the reference and comparison classes.
+
+Important columns:
+
+- **ReferenceMeanBeta** and **ComparisonMeanBeta**: class-specific methylation means.
+- **DeltaBeta** and **AbsDeltaBeta**: signed and absolute methylation shift.
+- **ReferenceSamples** and **ComparisonSamples**: complete sample counts.
+- **ReferenceR2** and **ComparisonR2**: transcript-level class-specific ML result.
+- importance columns, when present, compare ML importance for the same CpG across classes.
+
+Use this table to identify which CpGs are driving the class-level transcript shift.
+
+#### Spearman vs ML importance agreement
+
+![GEO report Spearman vs ML importance](man/img/geo-report-12-rho-importance.png)
+
+This plot compares normalized Spearman `|rho|` with normalized ML importance for CpGs in the selected transcript group.
+
+How to interpret it:
+
+- points near the diagonal are CpGs supported similarly by correlation and ML importance,
+- high ML importance with low `|rho|` may indicate a non-linear or model-specific signal,
+- high `|rho|` with low ML importance may be redundant once other CpGs are present,
+- color shows the difference between ML importance and Spearman signal.
+
+Use this plot after selecting a transcript group to decide whether the model is relying on the same CpGs that drove the Spearman candidate selection.
+
 ---
 
 ## Suggested end-to-end workflow (quick checklist)
