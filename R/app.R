@@ -4825,7 +4825,7 @@ server <- function(input, output, session) {
         class = "geo-step-note",
         paste0(
           "Compares ", changes$ReferenceClass[[1]], " against ", changes$ComparisonClass[[1]],
-          " using the selected class order. Positive OrderDelta means the transcript moved down in the comparison class; negative means it moved up."
+          " using the first and last tags in the selected class order. Positive OrderDelta means the transcript moved down in the comparison class; negative means it moved up."
         )
       )
     )
@@ -5500,6 +5500,7 @@ server <- function(input, output, session) {
     dataset <- context$dataset
     cpg_cols <- context$cpg_cols
     class_order <- context$class_order
+    class_col <- context$class_col
     if (!is.data.frame(row) || nrow(row) == 0 || !is.data.frame(track) || nrow(track) == 0 ||
         !is.data.frame(dataset) || nrow(dataset) == 0 || length(cpg_cols) == 0 || length(class_order) < 2) {
       return(data.frame())
@@ -5532,6 +5533,106 @@ server <- function(input, output, session) {
     if (!is.data.frame(cpg_changes) || nrow(cpg_changes) == 0) {
       return(data.frame())
     }
+    group_id <- as.character(row$GroupID[[1]] %||% "")
+    ml_results <- geo_transcript_ml_results_current()
+    group_rows <- if (is.data.frame(ml_results) && nrow(ml_results) > 0 && "GroupID" %in% names(ml_results)) {
+      ml_results[as.character(ml_results$GroupID) == group_id, , drop = FALSE]
+    } else {
+      data.frame()
+    }
+    ml_row_for_class <- function(class_value) {
+      if (!is.data.frame(group_rows) || nrow(group_rows) == 0 || !all(c("StratumColumn", "StratumValue") %in% names(group_rows))) {
+        return(data.frame())
+      }
+      class_rows <- group_rows[
+        as.character(group_rows$StratumValue) == class_value,
+        ,
+        drop = FALSE
+      ]
+      if (nzchar(class_col %||% "") && "StratumColumn" %in% names(class_rows)) {
+        exact_rows <- class_rows[as.character(class_rows$StratumColumn) == class_col, , drop = FALSE]
+        if (nrow(exact_rows) > 0) {
+          class_rows <- exact_rows
+        }
+      }
+      if (nrow(class_rows) > 1 && "Phase" %in% names(class_rows)) {
+        stability_rows <- class_rows[as.character(class_rows$Phase) == "stability", , drop = FALSE]
+        if (nrow(stability_rows) > 0) {
+          class_rows <- stability_rows
+        }
+      }
+      if (nrow(class_rows) > 0) class_rows[1, , drop = FALSE] else data.frame()
+    }
+    reference_ml <- ml_row_for_class(reference_class)
+    comparison_ml <- ml_row_for_class(comparison_class)
+    metric_value <- function(ml_row, column) {
+      if (is.data.frame(ml_row) && nrow(ml_row) > 0 && column %in% names(ml_row)) {
+        suppressWarnings(as.numeric(ml_row[[column]][[1]]))
+      } else {
+        NA_real_
+      }
+    }
+    text_value <- function(ml_row, column) {
+      if (is.data.frame(ml_row) && nrow(ml_row) > 0 && column %in% names(ml_row)) {
+        as.character(ml_row[[column]][[1]] %||% "")
+      } else {
+        ""
+      }
+    }
+    cpg_changes$ReferenceR2 <- metric_value(reference_ml, "MedianMetric")
+    cpg_changes$ComparisonR2 <- metric_value(comparison_ml, "MedianMetric")
+    cpg_changes$DeltaR2 <- cpg_changes$ComparisonR2 - cpg_changes$ReferenceR2
+    cpg_changes$ReferenceBestModel <- text_value(reference_ml, "BestModel")
+    cpg_changes$ComparisonBestModel <- text_value(comparison_ml, "BestModel")
+    importance_for_class <- function(class_value, ml_row, prefix) {
+      remote_importance <- geo_transcript_ml_importance_current()
+      importance <- data.frame()
+      if (is.data.frame(remote_importance) && nrow(remote_importance) > 0 &&
+          all(c("GroupID", "CpG", "Importance") %in% names(remote_importance))) {
+        importance <- remote_importance[as.character(remote_importance$GroupID) == group_id, , drop = FALSE]
+        if (nzchar(class_value) && "StratumValue" %in% names(importance)) {
+          class_importance <- importance[as.character(importance$StratumValue) == class_value, , drop = FALSE]
+          if (nzchar(class_col %||% "") && "StratumColumn" %in% names(class_importance)) {
+            exact_importance <- class_importance[as.character(class_importance$StratumColumn) == class_col, , drop = FALSE]
+            if (nrow(exact_importance) > 0) {
+              class_importance <- exact_importance
+            }
+          }
+          if (nrow(class_importance) > 0) {
+            importance <- class_importance
+          }
+        }
+        if ("Phase" %in% names(importance) && any(as.character(importance$Phase) == "stability")) {
+          importance <- importance[as.character(importance$Phase) == "stability", , drop = FALSE]
+        }
+      }
+      if ((!is.data.frame(importance) || nrow(importance) == 0) && is.data.frame(ml_row) && nrow(ml_row) > 0 &&
+          "ImportancePath" %in% names(ml_row)) {
+        importance_path <- as.character(ml_row$ImportancePath[[1]] %||% "")
+        if (!is.na(importance_path) && nzchar(importance_path) && file.exists(importance_path)) {
+          importance <- tryCatch(utils::read.csv(importance_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+        }
+      }
+      if (!is.data.frame(importance) || nrow(importance) == 0 || !"CpG" %in% names(importance)) {
+        return(data.frame(CpG = character(0), stringsAsFactors = FALSE))
+      }
+      importance <- importance[, intersect(c("CpG", "Importance", "ImportanceRank"), names(importance)), drop = FALSE]
+      importance <- importance[!duplicated(as.character(importance$CpG)), , drop = FALSE]
+      names(importance)[names(importance) == "Importance"] <- paste0(prefix, "Importance")
+      names(importance)[names(importance) == "ImportanceRank"] <- paste0(prefix, "ImportanceRank")
+      importance
+    }
+    reference_importance <- importance_for_class(reference_class, reference_ml, "Reference")
+    comparison_importance <- importance_for_class(comparison_class, comparison_ml, "Comparison")
+    if (nrow(reference_importance) > 0) {
+      cpg_changes <- merge(cpg_changes, reference_importance, by = "CpG", all.x = TRUE, sort = FALSE)
+    }
+    if (nrow(comparison_importance) > 0) {
+      cpg_changes <- merge(cpg_changes, comparison_importance, by = "CpG", all.x = TRUE, sort = FALSE)
+    }
+    cpg_changes$ReferenceImportance <- if ("ReferenceImportance" %in% names(cpg_changes)) suppressWarnings(as.numeric(cpg_changes$ReferenceImportance)) else NA_real_
+    cpg_changes$ComparisonImportance <- if ("ComparisonImportance" %in% names(cpg_changes)) suppressWarnings(as.numeric(cpg_changes$ComparisonImportance)) else NA_real_
+    cpg_changes$DeltaImportance <- cpg_changes$ComparisonImportance - cpg_changes$ReferenceImportance
     detail_cols <- intersect(c("CpG", "Region", "Position", "SpearmanRho", "AbsRho", "Importance", "ImportanceRank"), names(track))
     if (length(detail_cols) > 1) {
       detail <- track[, detail_cols, drop = FALSE]
@@ -5542,6 +5643,7 @@ server <- function(input, output, session) {
     cpg_changes$Importance <- if ("Importance" %in% names(cpg_changes)) suppressWarnings(as.numeric(cpg_changes$Importance)) else NA_real_
     cpg_changes <- cpg_changes[order(
       -cpg_changes$AbsDeltaBeta,
+      -abs(cpg_changes$DeltaImportance),
       -cpg_changes$Importance,
       -cpg_changes$AbsRho,
       cpg_changes$CpG
@@ -5549,7 +5651,9 @@ server <- function(input, output, session) {
     display_cols <- c(
       "CpG", "Region", "Position", "ReferenceClass", "ComparisonClass",
       "ReferenceMeanBeta", "ComparisonMeanBeta", "DeltaBeta", "AbsDeltaBeta",
-      "ReferenceSamples", "ComparisonSamples", "SpearmanRho", "AbsRho", "Importance", "ImportanceRank"
+      "ReferenceSamples", "ComparisonSamples", "ReferenceR2", "ComparisonR2", "DeltaR2",
+      "ReferenceBestModel", "ComparisonBestModel", "ReferenceImportance", "ComparisonImportance", "DeltaImportance",
+      "SpearmanRho", "AbsRho", "Importance", "ImportanceRank"
     )
     cpg_changes[, intersect(display_cols, names(cpg_changes)), drop = FALSE]
   })
@@ -5566,7 +5670,7 @@ server <- function(input, output, session) {
         paste0(
           "Ranks CpGs by beta difference between ", cpg_changes$ReferenceClass[[1]],
           " and ", cpg_changes$ComparisonClass[[1]],
-          ". Use this table to find which CpGs drive the class-level transcript shift."
+          ". Reference/comparison are the first and last selected class tags. R2/model columns show the class-specific ML prediction result for the selected transcript; importance columns compare the CpG's ML importance when available."
         )
       )
     )
@@ -5576,7 +5680,7 @@ server <- function(input, output, session) {
     cpg_changes <- geo_transcript_ml_epigenetic_cpg_change_data()
     req(is.data.frame(cpg_changes), nrow(cpg_changes) > 0)
     display <- cpg_changes
-    for (metric_col in intersect(c("ReferenceMeanBeta", "ComparisonMeanBeta", "DeltaBeta", "AbsDeltaBeta", "SpearmanRho", "AbsRho", "Importance"), names(display))) {
+    for (metric_col in intersect(c("ReferenceMeanBeta", "ComparisonMeanBeta", "DeltaBeta", "AbsDeltaBeta", "ReferenceR2", "ComparisonR2", "DeltaR2", "ReferenceImportance", "ComparisonImportance", "DeltaImportance", "SpearmanRho", "AbsRho", "Importance"), names(display))) {
       display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
     }
     DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
