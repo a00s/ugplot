@@ -2954,12 +2954,12 @@ server <- function(input, output, session) {
           tagList(
             uiOutput("geo_transcript_ml_class_compare_title"),
             uiOutput("geo_transcript_ml_class_order_control"),
-            uiOutput("geo_transcript_ml_class_change_controls"),
             tabsetPanel(
               tabPanel(
                 "R2",
                 plotlyOutput("geo_transcript_ml_class_rank_plot", height = "420px"),
                 DT::DTOutput("geo_transcript_ml_class_compare_table"),
+                uiOutput("geo_transcript_ml_class_change_controls_r2"),
                 uiOutput("geo_transcript_ml_class_change_title"),
                 DT::DTOutput("geo_transcript_ml_class_change_table")
               ),
@@ -2967,6 +2967,7 @@ server <- function(input, output, session) {
                 "Spearman",
                 plotlyOutput("geo_transcript_ml_class_spearman_plot", height = "420px"),
                 DT::DTOutput("geo_transcript_ml_class_spearman_table"),
+                uiOutput("geo_transcript_ml_class_change_controls_spearman"),
                 uiOutput("geo_transcript_ml_class_spearman_change_title"),
                 DT::DTOutput("geo_transcript_ml_class_spearman_change_table")
               ),
@@ -2974,12 +2975,12 @@ server <- function(input, output, session) {
                 "Combined",
                 plotlyOutput("geo_transcript_ml_class_combined_plot", height = "420px"),
                 DT::DTOutput("geo_transcript_ml_class_combined_table"),
+                uiOutput("geo_transcript_ml_class_change_controls_combined"),
                 uiOutput("geo_transcript_ml_class_combined_change_title"),
                 DT::DTOutput("geo_transcript_ml_class_combined_change_table")
               )
             ),
             uiOutput("geo_transcript_ml_epigenetic_story_title"),
-            plotlyOutput("geo_transcript_ml_epigenetic_story_plot", height = "340px"),
             DT::DTOutput("geo_transcript_ml_epigenetic_story_table"),
             uiOutput("geo_transcript_ml_epigenetic_cpg_change_title"),
             DT::DTOutput("geo_transcript_ml_epigenetic_cpg_change_table"),
@@ -4835,8 +4836,8 @@ server <- function(input, output, session) {
   geo_transcript_ml_class_change <- reactive({
     geo_transcript_ml_class_change_for(
       geo_transcript_ml_class_rank_rows_for("r2"),
-      input$geo_ml_class_change_reference,
-      input$geo_ml_class_change_comparison
+      input$geo_ml_class_change_reference_r2,
+      input$geo_ml_class_change_comparison_r2
     )
   })
 
@@ -4858,7 +4859,8 @@ server <- function(input, output, session) {
 
   geo_transcript_ml_render_change_table <- function(changes) {
     req(is.data.frame(changes), nrow(changes) > 0)
-    display <- changes[, intersect(c("PrincipalTranscript", "Gene", "Delta", "ReferenceValue", "ComparisonValue"), names(changes)), drop = FALSE]
+    display <- changes[, intersect(c("GroupID", "PrincipalTranscript", "Gene", "Delta", "ReferenceValue", "ComparisonValue"), names(changes)), drop = FALSE]
+    names(display)[names(display) == "GroupID"] <- "Group"
     names(display)[names(display) == "PrincipalTranscript"] <- "Transcript"
     for (metric_col in intersect(c("Delta", "ReferenceValue", "ComparisonValue"), names(display))) {
       display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
@@ -4866,8 +4868,7 @@ server <- function(input, output, session) {
     DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single")
   }
 
-  output$geo_transcript_ml_class_change_controls <- renderUI({
-    ranked <- geo_transcript_ml_class_rank_rows_for("r2")
+  geo_transcript_ml_class_change_controls_ui <- function(ranked, reference_id, comparison_id) {
     if (!is.data.frame(ranked) || nrow(ranked) == 0 || !"StratumValue" %in% names(ranked)) {
       return(NULL)
     }
@@ -4876,25 +4877,49 @@ server <- function(input, output, session) {
     if (length(strata) < 2) {
       return(NULL)
     }
-    reference_selected <- input$geo_ml_class_change_reference %||% strata[[1]]
-    comparison_selected <- input$geo_ml_class_change_comparison %||% strata[[length(strata)]]
+    reference_selected <- input[[reference_id]] %||% strata[[1]]
+    comparison_selected <- input[[comparison_id]] %||% strata[[length(strata)]]
     if (!reference_selected %in% strata) reference_selected <- strata[[1]]
     if (!comparison_selected %in% strata) comparison_selected <- strata[[length(strata)]]
     tags$div(
       style = "display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin: 4px 0 14px 0;",
       tags$div(
         style = "width: 220px;",
-        selectInput("geo_ml_class_change_reference", "Reference class:", choices = strata, selected = reference_selected)
+        selectInput(reference_id, "Reference class:", choices = strata, selected = reference_selected)
       ),
       tags$div(
         style = "width: 220px;",
-        selectInput("geo_ml_class_change_comparison", "Comparison class:", choices = strata, selected = comparison_selected)
+        selectInput(comparison_id, "Comparison class:", choices = strata, selected = comparison_selected)
       ),
       tags$p(
         class = "geo-step-note",
         style = "margin: 0 0 15px 0;",
         "Delta tables use these two classes. Defaults are the first and last selected class tags."
       )
+    )
+  }
+
+  output$geo_transcript_ml_class_change_controls_r2 <- renderUI({
+    geo_transcript_ml_class_change_controls_ui(
+      geo_transcript_ml_class_rank_rows_for("r2"),
+      "geo_ml_class_change_reference_r2",
+      "geo_ml_class_change_comparison_r2"
+    )
+  })
+
+  output$geo_transcript_ml_class_change_controls_spearman <- renderUI({
+    geo_transcript_ml_class_change_controls_ui(
+      geo_transcript_ml_class_rank_rows_for("spearman"),
+      "geo_ml_class_change_reference_spearman",
+      "geo_ml_class_change_comparison_spearman"
+    )
+  })
+
+  output$geo_transcript_ml_class_change_controls_combined <- renderUI({
+    geo_transcript_ml_class_change_controls_ui(
+      geo_transcript_ml_class_rank_rows_for("combined"),
+      "geo_ml_class_change_reference_combined",
+      "geo_ml_class_change_comparison_combined"
     )
   })
 
@@ -5042,8 +5067,8 @@ server <- function(input, output, session) {
     geo_transcript_ml_render_change_title(
       geo_transcript_ml_class_change_for(
         geo_transcript_ml_class_rank_rows_for("spearman"),
-        input$geo_ml_class_change_reference,
-        input$geo_ml_class_change_comparison
+        input$geo_ml_class_change_reference_spearman,
+        input$geo_ml_class_change_comparison_spearman
       ),
       "Spearman"
     )
@@ -5052,8 +5077,8 @@ server <- function(input, output, session) {
   output$geo_transcript_ml_class_spearman_change_table <- DT::renderDT({
     geo_transcript_ml_render_change_table(geo_transcript_ml_class_change_for(
       geo_transcript_ml_class_rank_rows_for("spearman"),
-      input$geo_ml_class_change_reference,
-      input$geo_ml_class_change_comparison
+      input$geo_ml_class_change_reference_spearman,
+      input$geo_ml_class_change_comparison_spearman
     ))
   })
 
@@ -5068,8 +5093,8 @@ server <- function(input, output, session) {
     geo_transcript_ml_render_change_title(
       geo_transcript_ml_class_change_for(
         geo_transcript_ml_class_rank_rows_for("combined"),
-        input$geo_ml_class_change_reference,
-        input$geo_ml_class_change_comparison
+        input$geo_ml_class_change_reference_combined,
+        input$geo_ml_class_change_comparison_combined
       ),
       "combined rank"
     )
@@ -5078,8 +5103,8 @@ server <- function(input, output, session) {
   output$geo_transcript_ml_class_combined_change_table <- DT::renderDT({
     geo_transcript_ml_render_change_table(geo_transcript_ml_class_change_for(
       geo_transcript_ml_class_rank_rows_for("combined"),
-      input$geo_ml_class_change_reference,
-      input$geo_ml_class_change_comparison
+      input$geo_ml_class_change_reference_combined,
+      input$geo_ml_class_change_comparison_combined
     ))
   })
 
@@ -5579,8 +5604,8 @@ server <- function(input, output, session) {
         !is.data.frame(dataset) || nrow(dataset) == 0 || length(cpg_cols) == 0 || length(class_order) < 2) {
       return(data.frame())
     }
-    reference_class <- as.character(input$geo_ml_class_change_reference %||% "")
-    comparison_class <- as.character(input$geo_ml_class_change_comparison %||% "")
+    reference_class <- as.character(input$geo_ml_class_change_reference_r2 %||% "")
+    comparison_class <- as.character(input$geo_ml_class_change_comparison_r2 %||% "")
     if (!nzchar(reference_class) || !reference_class %in% class_order) {
       reference_class <- class_order[[1]]
     }
