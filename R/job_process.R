@@ -308,6 +308,36 @@ ugplot_auto_resume_crashed_jobs <- function(jobs_dir = ugplot_default_jobs_dir()
   invisible(resumed)
 }
 
+ugplot_monitor_active_jobs <- function(jobs_dir = ugplot_default_jobs_dir(), state = new.env(parent = emptyenv())) {
+  if (!dir.exists(jobs_dir) || .Platform$OS.type == "windows") {
+    return(invisible(list()))
+  }
+  job_ids <- basename(list.dirs(jobs_dir, full.names = TRUE, recursive = FALSE))
+  samples <- list()
+  for (job_id in job_ids) {
+    status <- tryCatch(ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir)), error = function(e) NULL)
+    if (!is.list(status) || !(status$state %||% "") %in% c("queued", "running")) {
+      next
+    }
+    previous <- if (exists(job_id, envir = state, inherits = FALSE)) get(job_id, envir = state) else NULL
+    sample <- tryCatch(ugplot_sample_job_resources(status, previous, jobs_dir), error = function(e) NULL)
+    if (!is.data.frame(sample) || nrow(sample) == 0) {
+      next
+    }
+    try(ugplot_append_job_resources(job_id, sample, jobs_dir), silent = TRUE)
+    current <- list(
+      pid = sample$pid[[1]],
+      process_cpu_ticks = sample$process_cpu_ticks[[1]],
+      system_cpu_ticks = sample$system_cpu_ticks[[1]],
+      vm_oom_kill = sample$vm_oom_kill[[1]],
+      cgroup_oom_kill = sample$cgroup_oom_kill[[1]]
+    )
+    assign(job_id, current, envir = state)
+    samples[[job_id]] <- sample
+  }
+  invisible(samples)
+}
+
 ugplot_start_auto_resume_monitor <- function(jobs_dir = ugplot_default_jobs_dir(),
                                              interval = 30,
                                              source_dir = NULL,
@@ -336,7 +366,9 @@ ugplot_start_auto_resume_monitor <- function(jobs_dir = ugplot_default_jobs_dir(
       } else {
         library(ugplot)
       }
+      monitor_state <- new.env(parent = emptyenv())
       repeat {
+        try(ugplot_monitor_active_jobs(jobs_dir, monitor_state), silent = TRUE)
         try(ugplot_auto_resume_crashed_jobs(jobs_dir), silent = TRUE)
         Sys.sleep(interval)
       }

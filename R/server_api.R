@@ -182,6 +182,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         job_bundle = TRUE,
         job_preview = TRUE,
         job_config_summary = TRUE,
+        job_resource_monitor = !is.null(auto_resume_process),
         geo_pipeline = TRUE
       )
     )
@@ -217,6 +218,20 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         max_lines <- 200L
       }
       list(log = ugplot_read_job_log(job_id, jobs_dir, max_lines = max_lines))
+    }, error = function(e) {
+      res$status <- 404
+      list(error = conditionMessage(e))
+    })
+  })
+
+  pr$handle("GET", "/jobs/<job_id>/resources", function(job_id, req, res) {
+    tryCatch({
+      query <- req$argsQuery %||% list()
+      max_lines <- suppressWarnings(as.integer(query$max_lines %||% 500L))
+      if (is.na(max_lines) || max_lines < 1L) {
+        max_lines <- 500L
+      }
+      list(resources = ugplot_read_job_resources(job_id, jobs_dir, max_lines = max_lines))
     }, error = function(e) {
       res$status <- 404
       list(error = conditionMessage(e))

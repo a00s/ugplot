@@ -290,6 +290,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_model_deps",
     "ugplot_remote_job_status",
     "ugplot_remote_job_log",
+    "ugplot_remote_job_resources",
     "ugplot_remote_stop_job",
     "ugplot_remote_resume_job",
     "ugplot_remote_delete_job",
@@ -959,6 +960,7 @@ ui <- fluidPage(
         ),
         DT::DTOutput("remote_jobs_table"),
         verbatimTextOutput("remote_job_status"),
+        uiOutput("remote_job_resources"),
         tags$div(
           style = "display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px;",
           tags$div(style = "flex: 0 0 360px; max-width: 100%;", uiOutput("remote_job_running_summary")),
@@ -2464,6 +2466,7 @@ server <- function(input, output, session) {
   remote_jobs <- reactiveVal(data.frame())
   remote_job_status_text <- reactiveVal("")
   remote_job_log_text <- reactiveVal("")
+  remote_job_resources_data <- reactiveVal(data.frame())
   remote_job_preview_status <- reactiveVal(NULL)
   remote_job_preview_result <- reactiveVal(NULL)
   remote_job_loading <- reactiveVal(FALSE)
@@ -11471,9 +11474,49 @@ server <- function(input, output, session) {
       error = function(e) ""
     )
     remote_job_log_text(log_text)
+    resources <- if (remote_server_supports("job_resource_monitor", server$name[[1]])) {
+      tryCatch(
+        ugplot_remote_job_resources(
+          server_url = server$url,
+          job_id = job_id,
+          token = server$token %||% "",
+          max_lines = 60L
+        ),
+        error = function(e) data.frame()
+      )
+    } else {
+      data.frame()
+    }
+    remote_job_resources_data(resources)
     remote_job_status_text(status_text)
     invisible(status)
   }
+
+  remote_resource_refresh_timer <- reactiveTimer(30000, session = session)
+  observe({
+    remote_resource_refresh_timer()
+    job_id <- input$remote_job_id %||% ""
+    if (!nzchar(job_id)) {
+      return()
+    }
+    server <- tryCatch(remote_server_by_name(remote_server_name_for_job(job_id)), error = function(e) NULL)
+    if (is.null(server) || !remote_server_supports("job_resource_monitor", server$name[[1]])) {
+      remote_job_resources_data(data.frame())
+      return()
+    }
+    resources <- tryCatch(
+      ugplot_remote_job_resources(
+        server_url = server$url,
+        job_id = job_id,
+        token = server$token %||% "",
+        max_lines = 60L
+      ),
+      error = function(e) NULL
+    )
+    if (is.data.frame(resources)) {
+      remote_job_resources_data(resources)
+    }
+  })
 
   load_remote_job_bundle_locally <- function(job_id, server_name = NULL) {
     req(nzchar(job_id %||% ""))
@@ -11954,6 +11997,7 @@ server <- function(input, output, session) {
         remote_job_preview_status(NULL)
         remote_job_preview_result(NULL)
         remote_job_log_text("")
+        remote_job_resources_data(data.frame())
       }
       refresh_remote_jobs()
       remote_job_status_text(paste("Remote job deleted:", job_id))
@@ -12004,6 +12048,111 @@ server <- function(input, output, session) {
     tags$div(
       style = "display: flex; gap: 8px; flex-wrap: wrap; margin: 0;",
       cards
+    )
+  })
+
+  output$remote_job_resources <- renderUI({
+    resources <- remote_job_resources_data()
+    if (!is.data.frame(resources) || nrow(resources) == 0) {
+      return(NULL)
+    }
+    latest <- resources[nrow(resources), , drop = FALSE]
+    number <- function(name, fallback = NA_real_) {
+      if (!name %in% names(latest)) return(fallback)
+      value <- suppressWarnings(as.numeric(latest[[name]][[1]]))
+      if (length(value) == 0 || !is.finite(value)) fallback else value
+    }
+    text_value <- function(name, fallback = "") {
+      if (!name %in% names(latest)) return(fallback)
+      value <- as.character(latest[[name]][[1]] %||% fallback)
+      if (is.na(value)) fallback else value
+    }
+    fmt_mb <- function(value) {
+      if (!is.finite(value)) return("N/A")
+      if (value >= 1024) paste0(round(value / 1024, 1), " GB") else paste0(round(value), " MB")
+    }
+    fmt_pct <- function(value) if (is.finite(value)) paste0(round(value, 1), "%") else "N/A"
+    severity <- function(value, warning_at, critical_at) {
+      if (!is.finite(value)) "neutral" else if (value >= critical_at) "critical" else if (value >= warning_at) "warning" else "normal"
+    }
+    card <- function(title, value, detail, level = "neutral") {
+      tags$div(
+        class = paste("job-resource-card", paste0("job-resource-", level)),
+        tags$div(class = "job-resource-title", title),
+        tags$div(class = "job-resource-value", value),
+        tags$div(class = "job-resource-detail", detail)
+      )
+    }
+
+    cpu_pct <- number("process_cpu_pct")
+    cpu_count <- number("host_cpu_count")
+    load1 <- number("host_load1")
+    memory_pct <- number("host_mem_used_pct")
+    memory_available <- number("host_mem_available_mb")
+    memory_total <- number("host_mem_total_mb")
+    swap_pct <- number("host_swap_used_pct")
+    swap_available <- number("host_swap_free_mb")
+    swap_total <- number("host_swap_total_mb")
+    disk_pct <- number("disk_used_pct")
+    disk_available <- number("disk_available_mb")
+    disk_total <- number("disk_total_mb")
+    rss <- number("process_rss_mb")
+    process_count <- number("process_count")
+    threads <- number("process_threads")
+    psi_full <- number("memory_psi_full_avg10")
+    oom_delta <- max(number("vm_oom_kill_delta", 0), number("cgroup_oom_kill_delta", 0), na.rm = TRUE)
+    oom_total <- max(number("vm_oom_kill", 0), number("cgroup_oom_kill", 0), na.rm = TRUE)
+    pressure_level <- if (oom_delta > 0) "critical" else if (is.finite(psi_full) && psi_full > 0) "warning" else "normal"
+    model <- text_value("current_model")
+    task <- if (nzchar(model)) paste0("model: ", model) else text_value("current_message")
+    sampled_at <- text_value("timestamp")
+
+    tags$div(
+      class = "job-resource-panel",
+      tags$div(
+        class = "job-resource-header",
+        tags$strong("Server resources"),
+        tags$span(paste0("Sample: ", sampled_at, if (nzchar(task)) paste0(" / ", task) else ""))
+      ),
+      tags$div(
+        class = "job-resource-grid",
+        card(
+          "Job process",
+          paste0(if (is.finite(cpu_pct)) round(cpu_pct) else "N/A", "% CPU"),
+          paste0(fmt_mb(rss), " RSS / ", if (is.finite(process_count)) round(process_count) else "?", " processes / ", if (is.finite(threads)) round(threads) else "?", " threads"),
+          if (is.finite(cpu_pct) && is.finite(cpu_count)) severity(cpu_pct, cpu_count * 80, cpu_count * 95) else "neutral"
+        ),
+        card(
+          "Host CPU",
+          paste0("Load ", if (is.finite(load1)) round(load1, 2) else "N/A"),
+          paste0(if (is.finite(cpu_count)) round(cpu_count) else "?", " logical CPUs"),
+          if (is.finite(load1) && is.finite(cpu_count)) severity(load1, cpu_count * 0.8, cpu_count) else "neutral"
+        ),
+        card(
+          "Memory",
+          fmt_pct(memory_pct),
+          paste0(fmt_mb(memory_available), " free of ", fmt_mb(memory_total)),
+          severity(memory_pct, 80, 90)
+        ),
+        card(
+          "Swap",
+          fmt_pct(swap_pct),
+          paste0(fmt_mb(swap_available), " free of ", fmt_mb(swap_total)),
+          severity(swap_pct, 50, 80)
+        ),
+        card(
+          "Disk",
+          fmt_pct(disk_pct),
+          paste0(fmt_mb(disk_available), " free of ", fmt_mb(disk_total)),
+          severity(disk_pct, 80, 90)
+        ),
+        card(
+          "Memory pressure",
+          if (oom_delta > 0) paste0("OOM kill +", round(oom_delta)) else if (is.finite(psi_full)) paste0("PSI ", round(psi_full, 2)) else "No signal",
+          paste0("OOM kills observed: ", round(oom_total)),
+          pressure_level
+        )
+      )
     )
   })
 

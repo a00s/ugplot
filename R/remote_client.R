@@ -90,6 +90,24 @@ ugplot_remote_job_log <- function(server_url, job_id, token = "", max_lines = 20
   as.character(parsed$log %||% "")
 }
 
+ugplot_remote_job_resources <- function(server_url, job_id, token = "", max_lines = 500L) {
+  request <- ugplot_remote_request(
+    server_url,
+    paste0("jobs/", job_id, "/resources?max_lines=", as.integer(max_lines)),
+    token
+  )
+  response <- httr::GET(request$url, request$headers)
+  parsed <- ugplot_remote_parse(response)
+  resources <- parsed$resources %||% data.frame()
+  if (is.data.frame(resources)) {
+    return(resources)
+  }
+  if (is.list(resources) && length(resources) > 0) {
+    return(as.data.frame(resources, stringsAsFactors = FALSE))
+  }
+  data.frame()
+}
+
 ugplot_remote_stop_job <- function(server_url, job_id, token = "") {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/stop"), token)
   response <- httr::POST(request$url, request$headers)

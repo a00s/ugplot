@@ -49,6 +49,297 @@ ugplot_best_model_path <- function(job_id, jobs_dir = ugplot_default_jobs_dir())
   file.path(ugplot_job_dir(job_id, jobs_dir), "best-model.rds")
 }
 
+ugplot_resources_path <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  file.path(ugplot_job_dir(job_id, jobs_dir), "resources.tsv")
+}
+
+ugplot_read_key_value_file <- function(path) {
+  if (!file.exists(path)) {
+    return(list())
+  }
+  lines <- tryCatch(readLines(path, warn = FALSE), error = function(e) character(0))
+  matches <- regexec("^([^:[:space:]]+):?[[:space:]]+(.+)$", lines)
+  parts <- regmatches(lines, matches)
+  parts <- parts[lengths(parts) >= 3L]
+  if (length(parts) == 0) {
+    return(list())
+  }
+  stats::setNames(
+    lapply(parts, function(part) part[[3]]),
+    vapply(parts, function(part) part[[2]], character(1))
+  )
+}
+
+ugplot_linux_numeric_value <- function(value, divisor = 1) {
+  value <- as.character(value %||% "")
+  parsed <- suppressWarnings(as.numeric(sub("[[:space:]].*$", "", value)))
+  if (length(parsed) == 0 || !is.finite(parsed[[1]])) NA_real_ else parsed[[1]] / divisor
+}
+
+ugplot_linux_process_table <- function() {
+  if (.Platform$OS.type == "windows" || !dir.exists("/proc")) {
+    return(data.frame())
+  }
+  proc_dirs <- list.files("/proc", pattern = "^[0-9]+$", full.names = TRUE)
+  rows <- lapply(proc_dirs, function(proc_dir) {
+    line <- tryCatch(readLines(file.path(proc_dir, "stat"), n = 1L, warn = FALSE), error = function(e) character(0))
+    if (length(line) == 0) {
+      return(NULL)
+    }
+    suffix <- sub("^.*\\) ", "", line[[1]])
+    fields <- strsplit(suffix, " ", fixed = TRUE)[[1]]
+    fields <- fields[nzchar(fields)]
+    if (length(fields) < 13L) {
+      return(NULL)
+    }
+    pid <- suppressWarnings(as.integer(basename(proc_dir)))
+    ppid <- suppressWarnings(as.integer(fields[[2]]))
+    cpu_ticks <- sum(suppressWarnings(as.numeric(fields[c(12L, 13L)])), na.rm = TRUE)
+    if (is.na(pid) || is.na(ppid)) {
+      return(NULL)
+    }
+    data.frame(pid = pid, ppid = ppid, cpu_ticks = cpu_ticks, stringsAsFactors = FALSE)
+  })
+  rows <- Filter(Negate(is.null), rows)
+  if (length(rows) == 0) data.frame() else do.call(rbind, rows)
+}
+
+ugplot_linux_process_tree_metrics <- function(pid, process_table = ugplot_linux_process_table()) {
+  pid <- suppressWarnings(as.integer(pid))
+  empty <- list(alive = FALSE, process_count = 0L, rss_mb = NA_real_, swap_mb = NA_real_,
+                peak_mb = NA_real_, threads = NA_integer_, cpu_ticks = NA_real_)
+  if (is.na(pid) || pid <= 0 || !is.data.frame(process_table) || nrow(process_table) == 0 ||
+      !(pid %in% process_table$pid)) {
+    return(empty)
+  }
+  tree_pids <- pid
+  repeat {
+    children <- process_table$pid[process_table$ppid %in% tree_pids]
+    expanded <- unique(c(tree_pids, children))
+    if (length(expanded) == length(tree_pids)) {
+      break
+    }
+    tree_pids <- expanded
+  }
+  process_rows <- process_table[process_table$pid %in% tree_pids, , drop = FALSE]
+  statuses <- lapply(tree_pids, function(tree_pid) {
+    ugplot_read_key_value_file(file.path("/proc", tree_pid, "status"))
+  })
+  sum_status <- function(key, divisor = 1024) {
+    values <- vapply(statuses, function(status) ugplot_linux_numeric_value(status[[key]], divisor), numeric(1))
+    if (all(is.na(values))) NA_real_ else sum(values, na.rm = TRUE)
+  }
+  list(
+    alive = TRUE,
+    process_count = length(tree_pids),
+    rss_mb = sum_status("VmRSS"),
+    swap_mb = sum_status("VmSwap"),
+    peak_mb = sum_status("VmPeak"),
+    threads = as.integer(round(sum_status("Threads", divisor = 1))),
+    cpu_ticks = sum(process_rows$cpu_ticks, na.rm = TRUE)
+  )
+}
+
+ugplot_linux_psi_avg10 <- function(path, kind) {
+  if (!file.exists(path)) {
+    return(NA_real_)
+  }
+  lines <- tryCatch(readLines(path, warn = FALSE), error = function(e) character(0))
+  line <- lines[startsWith(lines, paste0(kind, " "))]
+  if (length(line) == 0) {
+    return(NA_real_)
+  }
+  match <- regexec("avg10=([0-9.]+)", line[[1]])
+  parts <- regmatches(line[[1]], match)[[1]]
+  if (length(parts) < 2L) NA_real_ else suppressWarnings(as.numeric(parts[[2]]))
+}
+
+ugplot_linux_cgroup_memory <- function() {
+  empty <- list(current_mb = NA_real_, max_mb = NA_real_, swap_current_mb = NA_real_,
+                swap_max_mb = NA_real_, high = NA_real_, max_events = NA_real_,
+                oom = NA_real_, oom_kill = NA_real_)
+  if (.Platform$OS.type == "windows" || !file.exists("/proc/self/cgroup")) {
+    return(empty)
+  }
+  lines <- tryCatch(readLines("/proc/self/cgroup", warn = FALSE), error = function(e) character(0))
+  unified <- lines[startsWith(lines, "0::")]
+  if (length(unified) == 0) {
+    return(empty)
+  }
+  relative <- sub("^0::", "", unified[[1]])
+  base <- file.path("/sys/fs/cgroup", sub("^/", "", relative))
+  read_number <- function(name, divisor = 1) {
+    path <- file.path(base, name)
+    value <- if (file.exists(path)) tryCatch(readLines(path, n = 1L, warn = FALSE), error = function(e) "") else ""
+    value <- if (length(value) == 0) "" else value[[1]]
+    parsed <- suppressWarnings(as.numeric(value))
+    if (!is.finite(parsed)) NA_real_ else parsed / divisor
+  }
+  events <- ugplot_read_key_value_file(file.path(base, "memory.events"))
+  list(
+    current_mb = read_number("memory.current", 1024^2),
+    max_mb = read_number("memory.max", 1024^2),
+    swap_current_mb = read_number("memory.swap.current", 1024^2),
+    swap_max_mb = read_number("memory.swap.max", 1024^2),
+    high = ugplot_linux_numeric_value(events$high, 1),
+    max_events = ugplot_linux_numeric_value(events$max, 1),
+    oom = ugplot_linux_numeric_value(events$oom, 1),
+    oom_kill = ugplot_linux_numeric_value(events$oom_kill, 1)
+  )
+}
+
+ugplot_linux_system_resources <- function() {
+  mem <- ugplot_read_key_value_file("/proc/meminfo")
+  vm <- ugplot_read_key_value_file("/proc/vmstat")
+  load_line <- if (file.exists("/proc/loadavg")) tryCatch(readLines("/proc/loadavg", n = 1L, warn = FALSE), error = function(e) "") else ""
+  load_line <- if (length(load_line) == 0) "" else load_line[[1]]
+  load_fields <- strsplit(load_line, " ", fixed = TRUE)[[1]]
+  load1 <- suppressWarnings(as.numeric(if (length(load_fields) > 0) load_fields[[1]] else NA_character_))
+  cpu_line <- if (file.exists("/proc/stat")) tryCatch(readLines("/proc/stat", n = 1L, warn = FALSE), error = function(e) "") else ""
+  cpu_line <- if (length(cpu_line) == 0) "" else cpu_line[[1]]
+  cpu_fields <- suppressWarnings(as.numeric(strsplit(trimws(sub("^cpu", "", cpu_line)), " +")[[1]]))
+  total_cpu_ticks <- if (length(cpu_fields) == 0 || all(is.na(cpu_fields))) NA_real_ else sum(cpu_fields, na.rm = TRUE)
+  mem_total <- ugplot_linux_numeric_value(mem$MemTotal, 1024)
+  mem_available <- ugplot_linux_numeric_value(mem$MemAvailable, 1024)
+  swap_total <- ugplot_linux_numeric_value(mem$SwapTotal, 1024)
+  swap_free <- ugplot_linux_numeric_value(mem$SwapFree, 1024)
+  list(
+    load1 = load1,
+    mem_total_mb = mem_total,
+    mem_available_mb = mem_available,
+    mem_used_pct = if (is.finite(mem_total) && mem_total > 0) 100 * (mem_total - mem_available) / mem_total else NA_real_,
+    swap_total_mb = swap_total,
+    swap_free_mb = swap_free,
+    swap_used_pct = if (is.finite(swap_total) && swap_total > 0) 100 * (swap_total - swap_free) / swap_total else 0,
+    psi_some_avg10 = ugplot_linux_psi_avg10("/proc/pressure/memory", "some"),
+    psi_full_avg10 = ugplot_linux_psi_avg10("/proc/pressure/memory", "full"),
+    vm_oom_kill = ugplot_linux_numeric_value(vm$oom_kill, 1),
+    total_cpu_ticks = total_cpu_ticks,
+    cpus = {
+      detected <- suppressWarnings(as.integer(parallel::detectCores(logical = TRUE)))
+      if (is.na(detected) || detected < 1L) 1L else detected
+    },
+    cgroup = ugplot_linux_cgroup_memory()
+  )
+}
+
+ugplot_disk_resources <- function(path) {
+  empty <- list(total_mb = NA_real_, available_mb = NA_real_, used_pct = NA_real_)
+  if (.Platform$OS.type == "windows" || !nzchar(Sys.which("df"))) {
+    return(empty)
+  }
+  output <- tryCatch(
+    suppressWarnings(system2("df", c("-Pk", path), stdout = TRUE, stderr = FALSE)),
+    error = function(e) character(0)
+  )
+  if (length(output) < 2L) {
+    return(empty)
+  }
+  fields <- strsplit(trimws(utils::tail(output, 1L)), "[[:space:]]+")[[1]]
+  if (length(fields) < 6L) {
+    return(empty)
+  }
+  total_kb <- suppressWarnings(as.numeric(fields[[2]]))
+  available_kb <- suppressWarnings(as.numeric(fields[[4]]))
+  used_pct <- suppressWarnings(as.numeric(sub("%$", "", fields[[5]])))
+  list(
+    total_mb = if (is.finite(total_kb)) total_kb / 1024 else NA_real_,
+    available_mb = if (is.finite(available_kb)) available_kb / 1024 else NA_real_,
+    used_pct = if (is.finite(used_pct)) used_pct else NA_real_
+  )
+}
+
+ugplot_resource_delta <- function(current, previous) {
+  if (!is.finite(current) || !is.finite(previous)) NA_real_ else current - previous
+}
+
+ugplot_sample_job_resources <- function(status, previous = NULL, jobs_dir = ugplot_default_jobs_dir()) {
+  pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
+  process <- ugplot_linux_process_tree_metrics(pid)
+  system <- ugplot_linux_system_resources()
+  disk <- ugplot_disk_resources(jobs_dir)
+  same_process <- is.list(previous) && identical(suppressWarnings(as.integer(previous$pid)), pid)
+  process_delta <- if (same_process) ugplot_resource_delta(process$cpu_ticks, previous$process_cpu_ticks) else NA_real_
+  system_delta <- if (same_process) ugplot_resource_delta(system$total_cpu_ticks, previous$system_cpu_ticks) else NA_real_
+  cpu_pct <- if (is.finite(process_delta) && process_delta >= 0 && is.finite(system_delta) && system_delta > 0) {
+    100 * system$cpus * process_delta / system_delta
+  } else {
+    NA_real_
+  }
+  data.frame(
+    timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
+    pid = pid,
+    alive = isTRUE(process$alive),
+    process_count = process$process_count,
+    process_rss_mb = round(process$rss_mb, 2),
+    process_swap_mb = round(process$swap_mb, 2),
+    process_peak_mb = round(process$peak_mb, 2),
+    process_threads = process$threads,
+    process_cpu_ticks = process$cpu_ticks,
+    process_cpu_pct = round(cpu_pct, 2),
+    host_cpu_count = system$cpus,
+    host_load1 = round(system$load1, 2),
+    host_mem_total_mb = round(system$mem_total_mb, 2),
+    host_mem_available_mb = round(system$mem_available_mb, 2),
+    host_mem_used_pct = round(system$mem_used_pct, 2),
+    host_swap_total_mb = round(system$swap_total_mb, 2),
+    host_swap_free_mb = round(system$swap_free_mb, 2),
+    host_swap_used_pct = round(system$swap_used_pct, 2),
+    disk_total_mb = round(disk$total_mb, 2),
+    disk_available_mb = round(disk$available_mb, 2),
+    disk_used_pct = round(disk$used_pct, 2),
+    memory_psi_some_avg10 = system$psi_some_avg10,
+    memory_psi_full_avg10 = system$psi_full_avg10,
+    vm_oom_kill = system$vm_oom_kill,
+    system_cpu_ticks = system$total_cpu_ticks,
+    vm_oom_kill_delta = ugplot_resource_delta(system$vm_oom_kill, previous$vm_oom_kill %||% NA_real_),
+    cgroup_mem_current_mb = round(system$cgroup$current_mb, 2),
+    cgroup_mem_max_mb = round(system$cgroup$max_mb, 2),
+    cgroup_swap_current_mb = round(system$cgroup$swap_current_mb, 2),
+    cgroup_swap_max_mb = round(system$cgroup$swap_max_mb, 2),
+    cgroup_high = system$cgroup$high,
+    cgroup_max_events = system$cgroup$max_events,
+    cgroup_oom = system$cgroup$oom,
+    cgroup_oom_kill = system$cgroup$oom_kill,
+    cgroup_oom_kill_delta = ugplot_resource_delta(system$cgroup$oom_kill, previous$cgroup_oom_kill %||% NA_real_),
+    current_model = as.character(status$current_model %||% ""),
+    current_message = as.character(status$message %||% ""),
+    stringsAsFactors = FALSE
+  )
+}
+
+ugplot_append_job_resources <- function(job_id, sample, jobs_dir = ugplot_default_jobs_dir()) {
+  path <- ugplot_resources_path(job_id, jobs_dir)
+  utils::write.table(
+    sample,
+    file = path,
+    sep = "\t",
+    row.names = FALSE,
+    col.names = !file.exists(path) || file.info(path)$size == 0,
+    quote = FALSE,
+    append = file.exists(path) && file.info(path)$size > 0,
+    na = "NA"
+  )
+  invisible(path)
+}
+
+ugplot_read_job_resources <- function(job_id, jobs_dir = ugplot_default_jobs_dir(), max_lines = 500L) {
+  path <- ugplot_resources_path(job_id, jobs_dir)
+  if (!file.exists(path)) {
+    return(data.frame())
+  }
+  lines <- readLines(path, warn = FALSE)
+  if (length(lines) <= 1L) {
+    return(data.frame())
+  }
+  max_lines <- suppressWarnings(as.integer(max_lines))
+  if (is.na(max_lines) || max_lines < 1L) {
+    max_lines <- 500L
+  }
+  selected <- c(lines[[1]], utils::tail(lines[-1], max_lines))
+  utils::read.delim(text = selected, stringsAsFactors = FALSE, check.names = FALSE)
+}
+
 ugplot_job_result_preview <- function(result) {
   if (!is.list(result)) {
     return(result)

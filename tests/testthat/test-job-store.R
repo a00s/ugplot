@@ -297,3 +297,41 @@ test_that("crashed ML jobs auto-resume with an attempt limit", {
   expect_equal(limited_status$state, "failed")
   expect_equal(limited_status$auto_resume_count, 2L)
 })
+
+test_that("resource monitor persists Linux job and host diagnostics", {
+  skip_on_os("windows")
+  skip_if_not(dir.exists("/proc"))
+
+  jobs_dir <- tempfile("ugplot-jobs-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  write_job_status <- ugplot_test_internal("ugplot_write_job_status")
+  monitor_jobs <- ugplot_test_internal("ugplot_monitor_active_jobs")
+  read_resources <- ugplot_test_internal("ugplot_read_job_resources")
+
+  status <- create_job(data.frame(x = 1:3), config = list(), jobs_dir = jobs_dir)
+  status$state <- "running"
+  status$pid <- Sys.getpid()
+  status$current_model <- "lm"
+  write_job_status(status$id, status, jobs_dir)
+
+  monitor_state <- new.env(parent = emptyenv())
+  first <- monitor_jobs(jobs_dir, monitor_state)
+  Sys.sleep(0.05)
+  second <- monitor_jobs(jobs_dir, monitor_state)
+  resources <- read_resources(status$id, jobs_dir)
+
+  expect_named(first, status$id)
+  expect_named(second, status$id)
+  expect_equal(nrow(resources), 2L)
+  expect_true(all(resources$alive))
+  expect_true(all(resources$pid == Sys.getpid()))
+  expect_true(all(resources$process_count >= 1L))
+  expect_true(all(resources$process_rss_mb > 0))
+  expect_equal(resources$current_model, rep("lm", 2L))
+  expect_true(all(c(
+    "host_mem_available_mb", "host_swap_free_mb", "memory_psi_some_avg10",
+    "vm_oom_kill", "cgroup_oom_kill", "process_cpu_pct", "disk_available_mb",
+    "disk_used_pct"
+  ) %in% names(resources)))
+  expect_equal(nrow(read_resources(status$id, jobs_dir, max_lines = 1L)), 1L)
+})
