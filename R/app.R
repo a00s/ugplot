@@ -12048,11 +12048,12 @@ server <- function(input, output, session) {
       return(NULL)
     }
     latest <- resources[nrow(resources), , drop = FALSE]
-    number <- function(name, fallback = NA_real_) {
-      if (!name %in% names(latest)) return(fallback)
-      value <- suppressWarnings(as.numeric(latest[[name]][[1]]))
+    number_from <- function(row, name, fallback = NA_real_) {
+      if (!name %in% names(row)) return(fallback)
+      value <- suppressWarnings(as.numeric(row[[name]][[1]]))
       if (length(value) == 0 || !is.finite(value)) fallback else value
     }
+    number <- function(name, fallback = NA_real_) number_from(latest, name, fallback)
     text_value <- function(name, fallback = "") {
       if (!name %in% names(latest)) return(fallback)
       value <- as.character(latest[[name]][[1]] %||% fallback)
@@ -12075,7 +12076,16 @@ server <- function(input, output, session) {
       )
     }
 
-    cpu_pct <- number("process_cpu_pct")
+    alive_values <- if ("alive" %in% names(resources)) {
+      tolower(as.character(resources$alive)) %in% c("true", "1", "yes")
+    } else {
+      rep(FALSE, nrow(resources))
+    }
+    rss_values <- if ("process_rss_mb" %in% names(resources)) suppressWarnings(as.numeric(resources$process_rss_mb)) else rep(NA_real_, nrow(resources))
+    live_rows <- which(alive_values & is.finite(rss_values))
+    process_row <- if (length(live_rows) > 0) resources[utils::tail(live_rows, 1L), , drop = FALSE] else latest
+    process_alive <- isTRUE(utils::tail(alive_values, 1L))
+    cpu_pct <- number_from(process_row, "process_cpu_pct")
     cpu_count <- number("host_cpu_count")
     load1 <- number("host_load1")
     memory_pct <- number("host_mem_used_pct")
@@ -12087,9 +12097,10 @@ server <- function(input, output, session) {
     disk_pct <- number("disk_used_pct")
     disk_available <- number("disk_available_mb")
     disk_total <- number("disk_total_mb")
-    rss <- number("process_rss_mb")
-    process_count <- number("process_count")
-    threads <- number("process_threads")
+    rss <- number_from(process_row, "process_rss_mb")
+    process_count <- number_from(process_row, "process_count")
+    threads <- number_from(process_row, "process_threads")
+    process_sampled_at <- if ("timestamp" %in% names(process_row)) as.character(process_row$timestamp[[1]]) else ""
     psi_full <- number("memory_psi_full_avg10")
     oom_delta <- max(number("vm_oom_kill_delta", 0), number("cgroup_oom_kill_delta", 0), na.rm = TRUE)
     oom_total <- max(number("vm_oom_kill", 0), number("cgroup_oom_kill", 0), na.rm = TRUE)
@@ -12109,9 +12120,12 @@ server <- function(input, output, session) {
         class = "job-resource-grid",
         card(
           "Job process",
-          paste0(if (is.finite(cpu_pct)) round(cpu_pct) else "N/A", "% CPU"),
-          paste0(fmt_mb(rss), " RSS / ", if (is.finite(process_count)) round(process_count) else "?", " processes / ", if (is.finite(threads)) round(threads) else "?", " threads"),
-          if (is.finite(cpu_pct) && is.finite(cpu_count)) severity(cpu_pct, cpu_count * 80, cpu_count * 95) else "neutral"
+          if (process_alive) paste0(if (is.finite(cpu_pct)) round(cpu_pct) else "Sampling", if (is.finite(cpu_pct)) "% CPU" else "") else "Stopped",
+          paste0(
+            if (!process_alive && nzchar(process_sampled_at)) paste0("Last seen ", process_sampled_at, ": ") else "",
+            fmt_mb(rss), " RSS / ", if (is.finite(process_count)) round(process_count) else "?", " processes / ", if (is.finite(threads)) round(threads) else "?", " threads"
+          ),
+          if (!process_alive) "neutral" else if (is.finite(cpu_pct) && is.finite(cpu_count)) severity(cpu_pct, cpu_count * 80, cpu_count * 95) else "normal"
         ),
         card(
           "Host CPU",
@@ -12127,9 +12141,9 @@ server <- function(input, output, session) {
         ),
         card(
           "Swap",
-          fmt_pct(swap_pct),
-          paste0(fmt_mb(swap_available), " free of ", fmt_mb(swap_total)),
-          severity(swap_pct, 50, 80)
+          if (is.finite(swap_total) && swap_total > 0) fmt_pct(swap_pct) else "Disabled",
+          if (is.finite(swap_total) && swap_total > 0) paste0(fmt_mb(swap_available), " free of ", fmt_mb(swap_total)) else "No swap configured",
+          if (is.finite(swap_total) && swap_total > 0) severity(swap_pct, 50, 80) else "warning"
         ),
         card(
           "Disk",
