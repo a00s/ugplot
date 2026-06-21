@@ -11413,22 +11413,9 @@ server <- function(input, output, session) {
       geo_remote_pipeline_status(status_text)
     }
 
-    if (remote_status_is_geo(status) && remote_status_has_result(status)) {
-      result <- tryCatch(
-        ugplot_remote_get_result(
-          server_url = server$url,
-          job_id = job_id,
-          token = server$token %||% ""
-        ),
-        error = function(e) NULL
-      )
-      if (remote_result_is_geo(result)) {
-        load_remote_geo_job_locally(job_id, server, status = status, result = result)
-        status_text <- paste(status_text, "| GEO result loaded")
-      } else {
-        remote_job_preview_result(NULL)
-        status_text <- paste(status_text, "| GEO result unavailable")
-      }
+    if (remote_status_is_geo(status)) {
+      remote_job_preview_result(NULL)
+      status_text <- paste(status_text, "| status only; use Load to open the saved GEO result")
     } else if (remote_status_has_result(status)) {
       if (isTRUE(switch_to_ml)) {
         result <- ugplot_remote_get_result(
@@ -11778,6 +11765,7 @@ server <- function(input, output, session) {
       states <- if ("state" %in% names(jobs)) as.character(jobs$state) else rep("", length(job_ids))
       can_stop <- states %in% c("queued", "running")
       can_load <- !can_stop
+      load_labels <- ifelse(states == "finished", "Load", "Load partial")
       can_delete <- vapply(server_names, function(server_name) remote_server_supports("delete_job", server_name), logical(1)) & !states %in% c("queued", "running")
       can_resume <- if ("resumable" %in% names(raw_jobs)) {
         vapply(server_names, function(server_name) remote_server_supports("resume_job", server_name), logical(1)) &
@@ -11793,7 +11781,7 @@ server <- function(input, output, session) {
         action_key <- htmltools::htmlEscape(remote_job_action_key(server_names[[i]], job_ids[[i]]), attribute = TRUE)
         buttons <- character()
         if (isTRUE(can_load[[i]])) {
-          buttons <- c(buttons, paste0("<button type='button' class='btn btn-default btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_load_result_row', '", action_key, "', {priority: 'event'});\">Load</button>"))
+          buttons <- c(buttons, paste0("<button type='button' class='btn btn-default btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_load_result_row', '", action_key, "', {priority: 'event'});\">", load_labels[[i]], "</button>"))
         } else {
           buttons <- c(buttons, "<button type='button' class='btn btn-default btn-sm' disabled title='Stop or wait for the job before loading the full dataset/results.'>Load</button>")
         }
