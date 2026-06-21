@@ -367,9 +367,13 @@ Use remote jobs when the work is long, memory-heavy, or should continue even if 
 
 - Server cards summarize connection state, active jobs, and version mismatches.
 - The job table shows server, job name, type, state, progress, target, model list, timestamps, and actions.
-- **Load** imports the selected job preview/results back into the app.
+- Selecting a job row only refreshes its status, resource telemetry, and log. It does not load the result or change tabs.
+- **Load** imports a finished result back into the app. **Load partial** explicitly opens the latest checkpoint from a failed or stopped job.
+- **Resume** continues a recoverable failed or stopped job from its saved checkpoint.
 - **Stop** asks a running remote server to stop the active job.
 - **Delete** removes finished job records when they are no longer needed.
+
+The **Server resources** panel is sampled every 30 seconds while a job is active. It reports the job process CPU and RSS, host load, available memory, swap, disk usage, Linux memory pressure (PSI), and observed OOM kills. Green cards are within normal limits, yellow cards need attention, and red cards indicate critical pressure or an OOM event. `Swap: Disabled` means the server has no swap configured; it does not mean swap usage is zero on an available swap device. For a stopped process, the first card shows the last live process sample rather than a current CPU value.
 
 If a server card shows **VERSION MISMATCH**, update the remote server package so the interface and server use the same ugPlot version.
 
