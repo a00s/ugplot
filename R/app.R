@@ -3772,7 +3772,8 @@ server <- function(input, output, session) {
   update_geo_transcript_build_progress <- function(phase = NULL, message = NULL,
                                                    processed = NULL, total = NULL,
                                                    compatible = NULL, excluded = NULL,
-                                                   current = NULL, cache = NULL) {
+                                                   current = NULL, cache = NULL,
+                                                   detail = NULL) {
     progress <- geo_transcript_build_progress()
     if (!is.null(phase)) progress$phase <- phase
     if (!is.null(message)) progress$message <- message
@@ -3782,6 +3783,7 @@ server <- function(input, output, session) {
     if (!is.null(excluded)) progress$excluded <- excluded
     if (!is.null(current)) progress$current <- current
     if (!is.null(cache)) progress$cache <- cache
+    if (!is.null(detail)) progress$detail <- detail
     geo_transcript_build_progress(progress)
     invisible(progress)
   }
@@ -3820,6 +3822,7 @@ server <- function(input, output, session) {
         "; compatible ", compatible,
         "; excluded ", excluded, "."
       )),
+      if (nzchar(progress$detail %||% "")) tags$p(style = "margin: 0 0 4px 0;", progress$detail) else NULL,
       if (nzchar(progress$current %||% "")) tags$p(style = "margin: 0 0 4px 0;", paste0("Current transcript: ", progress$current)) else NULL,
       if (nzchar(progress$cache %||% "")) tags$p(style = "margin: 0; font-size: 12px; color: #596273;", paste0("Cache: ", progress$cache)) else NULL
     )
