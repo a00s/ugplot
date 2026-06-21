@@ -157,6 +157,8 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
     },
     args = list(job_id = job_id, jobs_dir = jobs_dir, lib_paths = lib_paths, source_dir = source_dir),
     supervise = TRUE,
+    cleanup = FALSE,
+    poll_connection = FALSE,
     stdout = stdout_path,
     stderr = stderr_path
   )
@@ -166,6 +168,17 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
     pid = process$get_pid(),
     message = "Started background process"
   )
+  startup_deadline <- Sys.time() + 60
+  repeat {
+    startup_status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+    if (is.list(startup_status) && identical(startup_status$state %||% "", "running")) {
+      break
+    }
+    if (!process$is_alive() || Sys.time() >= startup_deadline) {
+      break
+    }
+    Sys.sleep(0.1)
+  }
   list(job = ugplot_read_job_status(job_id, jobs_dir), process = process)
 }
 

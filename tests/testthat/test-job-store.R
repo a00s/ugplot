@@ -39,6 +39,38 @@ test_that("job runner records progress and result", {
   expect_equal(result$summary$columns, 2)
 })
 
+test_that("background jobs survive launcher process object collection", {
+  skip_if_not_installed("callr")
+  skip_on_os("windows")
+
+  jobs_dir <- tempfile("ugplot-jobs-detached-")
+  start_job <- ugplot_test_internal("ugplot_start_background_job")
+  stop_job <- ugplot_test_internal("ugplot_stop_job")
+
+  started <- start_job(
+    data.frame(x = 1:3),
+    config = list(runner = "ugplot_run_placeholder_job", steps = 1L, delay = 2),
+    jobs_dir = jobs_dir
+  )
+  job_id <- started$job$id
+  pid <- started$job$pid
+  on.exit({
+    if (file.exists(file.path("/proc", pid))) {
+      try(tools::pskill(pid), silent = TRUE)
+    }
+  }, add = TRUE)
+
+  expect_equal(started$job$state, "running")
+  rm(started)
+  gc()
+  Sys.sleep(0.2)
+
+  raw_status <- readRDS(file.path(jobs_dir, job_id, "status.rds"))
+  expect_true(file.exists(file.path("/proc", pid)))
+  expect_equal(raw_status$state, "running")
+  expect_equal(stop_job(job_id, jobs_dir)$state, "stopped")
+})
+
 test_that("job listing marks dead background processes as failed", {
   jobs_dir <- tempfile("ugplot-jobs-")
   dataset <- data.frame(x = 1:3)
