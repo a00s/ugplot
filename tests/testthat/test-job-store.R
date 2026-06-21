@@ -46,6 +46,8 @@ test_that("background jobs survive launcher process object collection", {
   jobs_dir <- tempfile("ugplot-jobs-detached-")
   start_job <- ugplot_test_internal("ugplot_start_background_job")
   stop_job <- ugplot_test_internal("ugplot_stop_job")
+  process_alive <- ugplot_test_internal("ugplot_process_alive")
+  terminate_process <- ugplot_test_internal("ugplot_terminate_process")
 
   started <- start_job(
     data.frame(x = 1:3),
@@ -55,8 +57,8 @@ test_that("background jobs survive launcher process object collection", {
   job_id <- started$job$id
   pid <- started$job$pid
   on.exit({
-    if (file.exists(file.path("/proc", pid))) {
-      try(tools::pskill(pid), silent = TRUE)
+    if (process_alive(pid)) {
+      try(terminate_process(pid), silent = TRUE)
     }
   }, add = TRUE)
 
@@ -66,7 +68,7 @@ test_that("background jobs survive launcher process object collection", {
   Sys.sleep(0.2)
 
   raw_status <- readRDS(file.path(jobs_dir, job_id, "status.rds"))
-  expect_true(file.exists(file.path("/proc", pid)))
+  expect_true(process_alive(pid))
   expect_equal(raw_status$state, "running")
   expect_equal(stop_job(job_id, jobs_dir)$state, "stopped")
 })
