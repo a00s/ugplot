@@ -11239,25 +11239,120 @@ server <- function(input, output, session) {
     isTRUE(capabilities[[capability]] %||% FALSE)
   }
 
-  remote_job_progress_label <- function(progress) {
+  remote_job_progress_label <- function(progress, status = NULL) {
     progress_value <- suppressWarnings(as.numeric(progress))
     if (length(progress_value) == 0 || !is.finite(progress_value[[1]])) {
       return("N/A")
     }
-    paste0(round(max(0, min(1, progress_value[[1]])) * 100), "%")
+    label <- paste0(round(max(0, min(1, progress_value[[1]])) * 100), "%")
+    if (is.list(status) &&
+        identical(remote_status_scalar(status$type), "geo") &&
+        grepl("^Stability[[:space:]]+", remote_status_scalar(status$message))) {
+      return(paste0(label, " stage"))
+    }
+    label
+  }
+
+  remote_status_scalar <- function(value, default = "") {
+    value <- unlist(value %||% default, use.names = FALSE)
+    if (length(value) == 0 || is.na(value[[1]])) default else as.character(value[[1]])
+  }
+
+  remote_geo_stage_summary_text <- function(status, result = NULL) {
+    status_message <- remote_status_scalar(status$message)
+    is_geo <- identical(remote_status_scalar(status$type), "geo") ||
+      (is.list(result) && identical(result$kind %||% "", "geo_pipeline"))
+    if (!isTRUE(is_geo)) {
+      return("")
+    }
+
+    lines <- character()
+    stage <- if (is.list(result) && nzchar(result$stage %||% "")) result$stage else status_message
+    if (nzchar(stage)) {
+      lines <- c(lines, paste0("GEO stage: ", stage))
+    }
+    progress_path <- remote_status_scalar(status$partial_result_path)
+    if (nzchar(progress_path)) {
+      lines <- c(lines, "Saved partial GEO result: available")
+    }
+
+    match <- regexec(
+      "^Stability ([^[:space:]]+) / ([^:]+): (Running|Finished) ([^[:space:]]+)(?: dataset seed ([0-9]+) training seed ([0-9]+))?",
+      status_message
+    )
+    parts <- regmatches(status_message, match)[[1]]
+    current_group <- ""
+    current_seed <- NA_integer_
+    if (length(parts) >= 5) {
+      current_group <- parts[[2]]
+      current_seed <- if (length(parts) >= 7 && nzchar(parts[[7]])) {
+        suppressWarnings(as.integer(parts[[7]]))
+      } else {
+        NA_integer_
+      }
+      lines <- c(
+        lines,
+        paste0("Current stability task: ", current_group, " / ", parts[[3]]),
+        paste0("Current model: ", parts[[5]],
+               if (length(parts) >= 7 && nzchar(parts[[6]]) && nzchar(parts[[7]])) {
+                 paste0(" | dataset seed ", parts[[6]], " | training seed ", parts[[7]])
+               } else {
+                 ""
+               }),
+        "TG order follows the screening CombinedRank, so TG numbers can move down after higher TG ids."
+      )
+    }
+
+    if (is.list(result) && identical(result$kind %||% "", "geo_pipeline") && is.list(result$tables)) {
+      screening <- result$tables$transcript_ml_screening
+      summary <- result$tables$transcript_ml_summary
+      if (is.data.frame(screening) && nrow(screening) > 0) {
+        lines <- c(lines, paste0("Screening summary rows saved: ", nrow(screening)))
+        if (nzchar(current_group) && "GroupID" %in% names(screening)) {
+          ordered <- screening
+          order_columns <- intersect(c("CombinedRank", "ModelRank", "RhoRank"), names(ordered))
+          if (length(order_columns) > 0) {
+            order_args <- lapply(order_columns, function(column_name) suppressWarnings(as.numeric(ordered[[column_name]])))
+            ordered <- ordered[do.call(order, c(order_args, list(na.last = TRUE))), , drop = FALSE]
+          }
+          group_index <- match(current_group, as.character(ordered$GroupID))
+          min_seeds <- suppressWarnings(as.integer(result$settings$geo_ml_min_stability_seeds %||% 30L))
+          if (!is.finite(min_seeds) || min_seeds < 1L) {
+            min_seeds <- 30L
+          }
+          if (is.finite(group_index)) {
+            seed_fraction <- if (is.finite(current_seed)) min(1, max(0, current_seed / min_seeds)) else 0
+            estimate <- 100 * ((group_index - 1) + seed_fraction) / nrow(ordered)
+            lines <- c(lines, paste0(
+              "Stability estimate: task ", group_index, "/", nrow(ordered),
+              if (is.finite(current_seed)) paste0(" | minimum-seed pass ", current_seed, "/", min_seeds) else "",
+              " | lower-bound progress ~", round(estimate), "%"
+            ))
+          }
+        }
+      }
+      if (is.data.frame(summary) && nrow(summary) > 0 && "Phase" %in% names(summary)) {
+        stability_rows <- sum(as.character(summary$Phase) == "stability", na.rm = TRUE)
+        lines <- c(lines, paste0("Stability summary rows saved: ", stability_rows))
+      }
+    }
+
+    paste(unique(lines[nzchar(lines)]), collapse = "\n")
   }
 
   remote_status_summary_text <- function(status) {
     if (!is.list(status)) {
       return("")
     }
-    paste0(
-      "Job ", status$id %||% "",
-      " | pid: ", status$pid %||% "N/A",
-      " | state: ", status$state %||% "unknown",
-      " | progress: ", remote_job_progress_label(status$progress %||% NA_real_),
-      " | ", status$message %||% ""
+    base <- paste0(
+      "Job ", remote_status_scalar(status$id),
+      " | pid: ", remote_status_scalar(status$pid, "N/A"),
+      " | state: ", remote_status_scalar(status$state, "unknown"),
+      " | progress: ", remote_job_progress_label(status$progress %||% NA_real_, status = status),
+      " | ", remote_status_scalar(status$message)
     )
+    geo_details <- remote_geo_stage_summary_text(status)
+    if (nzchar(geo_details)) paste(base, geo_details, sep = "\n") else base
   }
 
   remote_status_has_result <- function(status) {
@@ -11415,7 +11510,25 @@ server <- function(input, output, session) {
 
     if (remote_status_is_geo(status)) {
       remote_job_preview_result(NULL)
-      status_text <- paste(status_text, "| status only; use Load to open the saved GEO result")
+      active_geo <- remote_status_scalar(status$state, "unknown") %in% c("queued", "running")
+      if (isTRUE(active_geo) && remote_status_has_result(status)) {
+        result <- tryCatch(
+          ugplot_remote_get_result(
+            server_url = server$url,
+            job_id = job_id,
+            token = server$token %||% ""
+          ),
+          error = function(e) NULL
+        )
+        if (remote_result_is_geo(result)) {
+          remote_job_preview_result(result)
+          status_text <- paste(status_text, "| partial GEO metadata loaded for progress estimate")
+        } else {
+          status_text <- paste(status_text, "| status only; use Load to open the saved GEO result")
+        }
+      } else {
+        status_text <- paste(status_text, "| status only; use Load to open the saved GEO result")
+      }
     } else if (remote_status_has_result(status)) {
       if (isTRUE(switch_to_ml)) {
         result <- ugplot_remote_get_result(
@@ -11726,7 +11839,13 @@ server <- function(input, output, session) {
       jobs[[date_column]] <- sub("[[:space:]][+-][0-9]{4}$", "", as.character(jobs[[date_column]]))
     }
     if ("progress" %in% names(jobs)) {
-      jobs$progress <- vapply(jobs$progress, remote_job_progress_label, character(1))
+      jobs$progress <- vapply(seq_len(nrow(jobs)), function(i) {
+        row_status <- list(
+          type = if ("type" %in% names(raw_jobs)) raw_jobs$type[[i]] else "",
+          message = if ("message" %in% names(raw_jobs)) raw_jobs$message[[i]] else ""
+        )
+        remote_job_progress_label(jobs$progress[[i]], status = row_status)
+      }, character(1))
     }
     raw_model_values <- if ("models" %in% names(raw_jobs)) as.character(raw_jobs$models) else character(0)
     character_columns <- names(jobs)[vapply(jobs, is.character, logical(1))]
@@ -12193,15 +12312,21 @@ server <- function(input, output, session) {
 
   output$remote_job_running_details <- renderText({
     status <- remote_job_preview_status()
+    result <- remote_job_preview_result()
+    geo_details <- remote_geo_stage_summary_text(status, result)
     metric_data <- remote_job_metric_values()
-    if (is.null(metric_data)) {
+    if (is.null(metric_data) && !nzchar(geo_details)) {
       return("")
     }
-    paste(
-      remote_status_summary_text(status),
-      format_running_stability_signal(metric_data$values, metric_name = metric_data$metric_name),
-      sep = "\n\n"
-    )
+    status_summary <- remote_status_summary_text(status)
+    sections <- c(status_summary)
+    if (nzchar(geo_details) && !grepl(geo_details, status_summary, fixed = TRUE)) {
+      sections <- c(sections, geo_details)
+    }
+    if (!is.null(metric_data)) {
+      sections <- c(sections, format_running_stability_signal(metric_data$values, metric_name = metric_data$metric_name))
+    }
+    paste(unique(sections[nzchar(sections)]), collapse = "\n\n")
   })
 
   output$remote_job_metric_distribution <- plotly::renderPlotly({
