@@ -375,6 +375,12 @@ Use remote jobs when the work is long, memory-heavy, or should continue even if 
 
 The **Server resources** panel is sampled every 30 seconds while a job is active. It reports the job process CPU and RSS, host load, available memory, swap, disk usage, Linux memory pressure (PSI), and observed OOM kills. Green cards are within normal limits, yellow cards need attention, and red cards indicate critical pressure or an OOM event. `Swap: Disabled` means the server has no swap configured; it does not mean swap usage is zero on an available swap device. For a stopped process, the first card shows the last live process sample rather than a current CPU value.
 
+For remote GEO jobs, selecting the running job also shows a visual **GEO job progress** report. This separates coarse pipeline stage progress from the long stability-seed phase, so a job that is near the final stage does not look falsely complete. Completed steps are green, the active step is blue, and pending steps are gray.
+
+<img src="man/img/geo-remote-job-progress.png" alt="Remote GEO job progress report with stability-seed counters" width="760">
+
+The stability bar is a lower-bound estimate based on the saved partial result and the currently running transcript group. It reports how many transcript groups are done, which task is active, how many groups remain, and whether a partial checkpoint is available. Transcript group IDs can move from higher numbers to lower numbers because the stability queue follows the screening `CombinedRank`, not numeric TG order.
+
 If a server card shows **VERSION MISMATCH**, update the remote server package so the interface and server use the same ugPlot version.
 
 ![doc17 - remote job loaded result](man/img/doc17.png)
