@@ -12481,6 +12481,16 @@ server <- function(input, output, session) {
         ),
         step_card(7, "Final result", stage_state(final_done, stability_done && !final_done), if (final_done) "result.rds available" else "waiting for stability")
       ),
+      tags$div(class = "remote-geo-distribution",
+        tags$div(class = "remote-geo-distribution-header",
+          tags$div(
+            tags$div(class = "remote-geo-distribution-title", "Result distribution"),
+            tags$div(class = "remote-geo-distribution-subtitle", "Observed transcript-group metrics with normal fit")
+          ),
+          tags$div(class = "remote-geo-distribution-note", "updates from saved partial result")
+        ),
+        plotlyOutput("remote_geo_metric_distribution", height = "260px")
+      ),
       tags$div(class = "remote-geo-focus",
         tags$div(class = "remote-geo-focus-main",
           tags$div(class = "remote-geo-focus-label", "Stability lower-bound progress"),
@@ -12650,6 +12660,88 @@ server <- function(input, output, session) {
     ml_final_summary_ui(result$final_summary)
   })
 
+  remote_geo_metric_distribution_data <- function(result, stability = NULL) {
+    if (!is.list(result) || !identical(result$kind %||% "", "geo_pipeline") || !is.list(result$tables)) {
+      return(NULL)
+    }
+    tables <- result$tables
+    metric_columns <- c("MedianMetric", "MeanMetric", "BestMetric", "MetricValue", "Metric", "R2", "Accuracy")
+    candidates <- list()
+    summary <- tables$transcript_ml_summary
+    if (is.data.frame(summary) && nrow(summary) > 0) {
+      if ("Phase" %in% names(summary)) {
+        stability_rows <- summary[as.character(summary$Phase) == "stability", , drop = FALSE]
+        if (nrow(stability_rows) > 0) {
+          candidates[[length(candidates) + 1L]] <- list(rows = stability_rows, source = "stability")
+        }
+      }
+      candidates[[length(candidates) + 1L]] <- list(rows = summary, source = "summary")
+    }
+    screening <- tables$transcript_ml_screening
+    if (is.data.frame(screening) && nrow(screening) > 0) {
+      candidates[[length(candidates) + 1L]] <- list(rows = screening, source = "screening")
+    }
+    if (length(candidates) == 0) {
+      return(NULL)
+    }
+
+    for (candidate in candidates) {
+      rows <- candidate$rows
+      metric_column <- intersect(metric_columns, names(rows))[1]
+      if (is.na(metric_column)) {
+        next
+      }
+      values_all <- suppressWarnings(as.numeric(rows[[metric_column]]))
+      ok <- is.finite(values_all)
+      values <- values_all[ok]
+      if (length(values) == 0) {
+        next
+      }
+      rows_ok <- rows[ok, , drop = FALSE]
+      metric_name <- metric_column
+      if ("MetricName" %in% names(rows_ok)) {
+        names_available <- unique(trimws(as.character(rows_ok$MetricName)))
+        names_available <- names_available[nzchar(names_available) & !is.na(names_available)]
+        if (length(names_available) > 0) {
+          metric_name <- names_available[[1]]
+        }
+      }
+
+      current_value <- NA_real_
+      current_label <- ""
+      if (is.list(stability) && isTRUE(stability$is_stability) && "GroupID" %in% names(rows_ok)) {
+        group_rows <- which(as.character(rows_ok$GroupID) == stability$group_id)
+        if (length(group_rows) > 0) {
+          current_values <- suppressWarnings(as.numeric(rows_ok[[metric_column]][group_rows]))
+          current_values <- current_values[is.finite(current_values)]
+          if (length(current_values) > 0) {
+            current_value <- current_values[[1]]
+            current_label <- stability$group_id
+          }
+        }
+      }
+
+      return(list(
+        metric_name = metric_name,
+        metric_column = metric_column,
+        source_label = candidate$source,
+        values = values,
+        current_value = current_value,
+        current_label = current_label,
+        n = length(values)
+      ))
+    }
+    NULL
+  }
+
+  remote_geo_metric_values <- reactive({
+    result <- remote_job_preview_result()
+    resources <- remote_job_resources_data()
+    status <- remote_status_with_live_message(remote_job_preview_status(), resources)
+    stability <- remote_geo_stability_context(status, result)
+    remote_geo_metric_distribution_data(result, stability)
+  })
+
   remote_job_metric_values <- reactive({
     result <- remote_job_preview_result()
     if (!is.list(result) || !is.data.frame(result$results_table)) {
@@ -12692,6 +12784,101 @@ server <- function(input, output, session) {
       sections <- c(sections, format_running_stability_signal(metric_data$values, metric_name = metric_data$metric_name))
     }
     paste(unique(sections[nzchar(sections)]), collapse = "\n\n")
+  })
+
+  output$remote_geo_metric_distribution <- plotly::renderPlotly({
+    metric_data <- remote_geo_metric_values()
+    if (is.null(metric_data) || length(metric_data$values) == 0) {
+      return(plotly::plot_ly() |>
+        plotly::layout(
+          annotations = list(
+            text = "Waiting for metric summary",
+            x = 0.5,
+            y = 0.5,
+            showarrow = FALSE,
+            xref = "paper",
+            yref = "paper"
+          ),
+          xaxis = list(visible = FALSE),
+          yaxis = list(visible = FALSE),
+          margin = list(l = 35, r = 12, t = 20, b = 35)
+        ))
+    }
+
+    values <- metric_data$values
+    nbins <- max(5L, min(24L, ceiling(sqrt(length(values)) * 2)))
+    plot_obj <- plotly::plot_ly()
+    plot_obj <- plotly::add_histogram(
+      plot_obj,
+      x = values,
+      nbinsx = nbins,
+      histnorm = "probability density",
+      marker = list(color = "#ccfbf1", line = list(color = "#14b8a6", width = 1)),
+      name = "Observed groups",
+      hovertemplate = paste0(metric_data$metric_name, ": %{x}<br>Density: %{y}<extra></extra>")
+    )
+
+    value_sd <- stats::sd(values)
+    if (length(values) >= 2 && is.finite(value_sd) && value_sd > 0) {
+      value_range <- range(values, finite = TRUE)
+      pad <- diff(value_range) * 0.08
+      if (!is.finite(pad) || pad <= 0) {
+        pad <- value_sd
+      }
+      x_grid <- seq(value_range[[1]] - pad, value_range[[2]] + pad, length.out = 180)
+      plot_obj <- plotly::add_lines(
+        plot_obj,
+        x = x_grid,
+        y = stats::dnorm(x_grid, mean = mean(values), sd = value_sd),
+        name = "Normal fit",
+        line = list(color = "#ef4444", width = 2),
+        hovertemplate = paste0(metric_data$metric_name, ": %{x:.4f}<br>Density: %{y:.4f}<extra></extra>")
+      )
+    }
+
+    shapes <- list()
+    annotations <- list()
+    if (is.finite(metric_data$current_value)) {
+      shapes <- list(list(
+        type = "line",
+        xref = "x",
+        yref = "paper",
+        x0 = metric_data$current_value,
+        x1 = metric_data$current_value,
+        y0 = 0,
+        y1 = 1,
+        line = list(color = "#7c3aed", width = 2, dash = "dot")
+      ))
+      annotations <- list(list(
+        text = paste("current", metric_data$current_label),
+        x = metric_data$current_value,
+        y = 1,
+        xref = "x",
+        yref = "paper",
+        yanchor = "bottom",
+        showarrow = FALSE,
+        font = list(color = "#5b21b6", size = 11)
+      ))
+    }
+
+    plot_obj |>
+      plotly::layout(
+        title = list(
+          text = paste0(
+            metric_data$metric_name,
+            " distribution from ", metric_data$source_label,
+            " rows (n=", metric_data$n, ")"
+          ),
+          font = list(size = 13)
+        ),
+        xaxis = list(title = metric_data$metric_name, zeroline = FALSE),
+        yaxis = list(title = "Density", zeroline = FALSE),
+        bargap = 0.04,
+        margin = list(l = 48, r = 18, t = 42, b = 46),
+        legend = list(orientation = "h", x = 0, y = -0.22),
+        shapes = shapes,
+        annotations = annotations
+      )
   })
 
   output$remote_job_metric_distribution <- plotly::renderPlotly({

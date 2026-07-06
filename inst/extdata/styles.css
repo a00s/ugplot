@@ -659,6 +659,45 @@ table.dataTable th.dt-error-column {
   gap: 8px;
 }
 
+.remote-geo-distribution {
+  margin-top: 10px;
+  padding: 10px 12px 6px;
+  border: 1px solid #d0d5dd;
+  border-left: 5px solid #14b8a6;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.remote-geo-distribution-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 2px;
+}
+
+.remote-geo-distribution-title {
+  color: #1f2937;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.remote-geo-distribution-subtitle,
+.remote-geo-distribution-note {
+  color: #667085;
+  font-size: 11px;
+}
+
+.remote-geo-distribution-note {
+  padding: 3px 7px;
+  border: 1px solid #ccfbf1;
+  border-radius: 999px;
+  color: #0f766e;
+  background: #f0fdfa;
+  font-weight: 700;
+}
+
 .remote-geo-active {
   display: grid;
   grid-template-columns: minmax(360px, 1fr) 260px;
