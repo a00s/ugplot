@@ -10793,6 +10793,36 @@ server <- function(input, output, session) {
           jobs <- data.frame(server = character(0), stringsAsFactors = FALSE)
         } else {
           jobs$server <- server_name
+          if (all(c("id", "type", "state") %in% names(jobs))) {
+            active_geo_rows <- which(
+              as.character(jobs$type) == "geo" &
+                as.character(jobs$state) %in% c("queued", "running")
+            )
+            for (active_row in active_geo_rows) {
+              active_job_id <- as.character(jobs$id[[active_row]])
+              tryCatch({
+                active_status <- ugplot_remote_job_status(
+                  server_url = server$url,
+                  job_id = active_job_id,
+                  token = server$token %||% ""
+                )
+                row_message <- if ("message" %in% names(jobs)) as.character(jobs$message[[active_row]]) else ""
+                if (nzchar(row_message) && grepl("^Stability[[:space:]]+", row_message)) {
+                  active_status$message <- row_message
+                }
+                if (remote_status_has_result(active_status)) {
+                  active_result <- ugplot_remote_get_result(
+                    server_url = server$url,
+                    job_id = active_job_id,
+                    token = server$token %||% ""
+                  )
+                  if (remote_result_is_geo(active_result)) {
+                    remote_remember_progress_estimate(active_job_id, active_status, active_result)
+                  }
+                }
+              }, error = function(e) NULL)
+            }
+          }
         }
         active_count <- if (is.data.frame(jobs) && nrow(jobs) > 0 && "state" %in% names(jobs)) {
           sum(as.character(jobs$state) %in% c("queued", "running"), na.rm = TRUE)
