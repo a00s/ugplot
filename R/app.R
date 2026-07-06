@@ -2469,6 +2469,7 @@ server <- function(input, output, session) {
   remote_job_resources_data <- reactiveVal(data.frame())
   remote_job_preview_status <- reactiveVal(NULL)
   remote_job_preview_result <- reactiveVal(NULL)
+  remote_job_progress_estimates <- reactiveVal(list())
   remote_job_loading <- reactiveVal(FALSE)
   remote_geo_result_applying <- reactiveVal(FALSE)
   remote_selected_job <- reactiveVal(list(id = "", server = ""))
@@ -11248,7 +11249,7 @@ server <- function(input, output, session) {
     if (is.list(status) &&
         identical(remote_status_scalar(status$type), "geo") &&
         grepl("^Stability[[:space:]]+", remote_status_scalar(status$message))) {
-      return(paste0(label, " stage"))
+      return("Stability running")
     }
     label
   }
@@ -11256,6 +11257,76 @@ server <- function(input, output, session) {
   remote_status_scalar <- function(value, default = "") {
     value <- unlist(value %||% default, use.names = FALSE)
     if (length(value) == 0 || is.na(value[[1]])) default else as.character(value[[1]])
+  }
+
+  remote_geo_stability_context <- function(status, result = NULL) {
+    status_message <- remote_status_scalar(status$message)
+    match <- regexec(
+      "^Stability ([^[:space:]]+) / ([^:]+): (Running|Finished) ([^[:space:]]+)(?: dataset seed ([0-9]+) training seed ([0-9]+))?",
+      status_message
+    )
+    parts <- regmatches(status_message, match)[[1]]
+    if (length(parts) < 5) {
+      return(list(is_stability = FALSE, label = ""))
+    }
+
+    context <- list(
+      is_stability = TRUE,
+      group_id = parts[[2]],
+      stratum = parts[[3]],
+      state = parts[[4]],
+      model = parts[[5]],
+      dataset_seed = if (length(parts) >= 6) parts[[6]] else "",
+      training_seed = if (length(parts) >= 7) suppressWarnings(as.integer(parts[[7]])) else NA_integer_,
+      task_index = NA_integer_,
+      task_total = NA_integer_,
+      min_seeds = NA_integer_,
+      estimate_pct = NA_real_,
+      label = "Stability running"
+    )
+
+    if (is.list(result) && identical(result$kind %||% "", "geo_pipeline") && is.list(result$tables)) {
+      screening <- result$tables$transcript_ml_screening
+      if (is.data.frame(screening) && nrow(screening) > 0 && "GroupID" %in% names(screening)) {
+        ordered <- screening
+        order_columns <- intersect(c("CombinedRank", "ModelRank", "RhoRank"), names(ordered))
+        if (length(order_columns) > 0) {
+          order_args <- lapply(order_columns, function(column_name) suppressWarnings(as.numeric(ordered[[column_name]])))
+          ordered <- ordered[do.call(order, c(order_args, list(na.last = TRUE))), , drop = FALSE]
+        }
+        group_index <- match(context$group_id, as.character(ordered$GroupID))
+        min_seeds <- suppressWarnings(as.integer(result$settings$geo_ml_min_stability_seeds %||% 30L))
+        if (!is.finite(min_seeds) || min_seeds < 1L) {
+          min_seeds <- 30L
+        }
+        if (is.finite(group_index)) {
+          seed_fraction <- if (is.finite(context$training_seed)) min(1, max(0, context$training_seed / min_seeds)) else 0
+          estimate <- 100 * ((group_index - 1) + seed_fraction) / nrow(ordered)
+          context$task_index <- as.integer(group_index)
+          context$task_total <- as.integer(nrow(ordered))
+          context$min_seeds <- as.integer(min_seeds)
+          context$estimate_pct <- estimate
+          context$label <- paste0("~", round(estimate), "% stability")
+        }
+      }
+    }
+
+    context
+  }
+
+  remote_remember_progress_estimate <- function(job_id, status, result = NULL) {
+    job_id <- remote_status_scalar(job_id)
+    if (!nzchar(job_id)) {
+      return(invisible(FALSE))
+    }
+    context <- remote_geo_stability_context(status, result)
+    if (!isTRUE(context$is_stability)) {
+      return(invisible(FALSE))
+    }
+    estimates <- remote_job_progress_estimates()
+    estimates[[job_id]] <- context$label
+    remote_job_progress_estimates(estimates)
+    invisible(TRUE)
   }
 
   remote_geo_stage_summary_text <- function(status, result = NULL) {
@@ -11276,26 +11347,14 @@ server <- function(input, output, session) {
       lines <- c(lines, "Saved partial GEO result: available")
     }
 
-    match <- regexec(
-      "^Stability ([^[:space:]]+) / ([^:]+): (Running|Finished) ([^[:space:]]+)(?: dataset seed ([0-9]+) training seed ([0-9]+))?",
-      status_message
-    )
-    parts <- regmatches(status_message, match)[[1]]
-    current_group <- ""
-    current_seed <- NA_integer_
-    if (length(parts) >= 5) {
-      current_group <- parts[[2]]
-      current_seed <- if (length(parts) >= 7 && nzchar(parts[[7]])) {
-        suppressWarnings(as.integer(parts[[7]]))
-      } else {
-        NA_integer_
-      }
+    stability <- remote_geo_stability_context(status, result)
+    if (isTRUE(stability$is_stability)) {
       lines <- c(
         lines,
-        paste0("Current stability task: ", current_group, " / ", parts[[3]]),
-        paste0("Current model: ", parts[[5]],
-               if (length(parts) >= 7 && nzchar(parts[[6]]) && nzchar(parts[[7]])) {
-                 paste0(" | dataset seed ", parts[[6]], " | training seed ", parts[[7]])
+        paste0("Current stability task: ", stability$group_id, " / ", stability$stratum),
+        paste0("Current model: ", stability$model,
+               if (nzchar(stability$dataset_seed) && is.finite(stability$training_seed)) {
+                 paste0(" | dataset seed ", stability$dataset_seed, " | training seed ", stability$training_seed)
                } else {
                  ""
                }),
@@ -11308,27 +11367,12 @@ server <- function(input, output, session) {
       summary <- result$tables$transcript_ml_summary
       if (is.data.frame(screening) && nrow(screening) > 0) {
         lines <- c(lines, paste0("Screening summary rows saved: ", nrow(screening)))
-        if (nzchar(current_group) && "GroupID" %in% names(screening)) {
-          ordered <- screening
-          order_columns <- intersect(c("CombinedRank", "ModelRank", "RhoRank"), names(ordered))
-          if (length(order_columns) > 0) {
-            order_args <- lapply(order_columns, function(column_name) suppressWarnings(as.numeric(ordered[[column_name]])))
-            ordered <- ordered[do.call(order, c(order_args, list(na.last = TRUE))), , drop = FALSE]
-          }
-          group_index <- match(current_group, as.character(ordered$GroupID))
-          min_seeds <- suppressWarnings(as.integer(result$settings$geo_ml_min_stability_seeds %||% 30L))
-          if (!is.finite(min_seeds) || min_seeds < 1L) {
-            min_seeds <- 30L
-          }
-          if (is.finite(group_index)) {
-            seed_fraction <- if (is.finite(current_seed)) min(1, max(0, current_seed / min_seeds)) else 0
-            estimate <- 100 * ((group_index - 1) + seed_fraction) / nrow(ordered)
-            lines <- c(lines, paste0(
-              "Stability estimate: task ", group_index, "/", nrow(ordered),
-              if (is.finite(current_seed)) paste0(" | minimum-seed pass ", current_seed, "/", min_seeds) else "",
-              " | lower-bound progress ~", round(estimate), "%"
-            ))
-          }
+        if (isTRUE(stability$is_stability) && is.finite(stability$estimate_pct)) {
+          lines <- c(lines, paste0(
+            "Stability estimate: task ", stability$task_index, "/", stability$task_total,
+            if (is.finite(stability$training_seed)) paste0(" | minimum-seed pass ", stability$training_seed, "/", stability$min_seeds) else "",
+            " | lower-bound progress ~", round(stability$estimate_pct), "%"
+          ))
         }
       }
       if (is.data.frame(summary) && nrow(summary) > 0 && "Phase" %in% names(summary)) {
@@ -11468,6 +11512,7 @@ server <- function(input, output, session) {
     }
     if (remote_result_is_geo(result)) {
       remote_job_preview_result(result)
+      remote_remember_progress_estimate(job_id, status, result)
       apply_remote_geo_result(
         result,
         job_id,
@@ -11522,6 +11567,7 @@ server <- function(input, output, session) {
         )
         if (remote_result_is_geo(result)) {
           remote_job_preview_result(result)
+          remote_remember_progress_estimate(job_id, status, result)
           status_text <- paste(status_text, "| partial GEO metadata loaded for progress estimate")
         } else {
           status_text <- paste(status_text, "| status only; use Load to open the saved GEO result")
@@ -11839,10 +11885,20 @@ server <- function(input, output, session) {
       jobs[[date_column]] <- sub("[[:space:]][+-][0-9]{4}$", "", as.character(jobs[[date_column]]))
     }
     if ("progress" %in% names(jobs)) {
+      progress_estimates <- remote_job_progress_estimates()
       jobs$progress <- vapply(seq_len(nrow(jobs)), function(i) {
+        job_id <- if ("id" %in% names(raw_jobs)) as.character(raw_jobs$id[[i]]) else ""
+        estimate_label <- if (nzchar(job_id)) progress_estimates[[job_id]] %||% "" else ""
+        row_state <- if ("state" %in% names(raw_jobs)) as.character(raw_jobs$state[[i]]) else ""
+        row_message <- if ("message" %in% names(raw_jobs)) as.character(raw_jobs$message[[i]]) else ""
+        if (nzchar(estimate_label) &&
+            row_state %in% c("queued", "running") &&
+            grepl("^Stability[[:space:]]+", row_message)) {
+          return(estimate_label)
+        }
         row_status <- list(
           type = if ("type" %in% names(raw_jobs)) raw_jobs$type[[i]] else "",
-          message = if ("message" %in% names(raw_jobs)) raw_jobs$message[[i]] else ""
+          message = row_message
         )
         remote_job_progress_label(jobs$progress[[i]], status = row_status)
       }, character(1))
