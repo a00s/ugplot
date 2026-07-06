@@ -959,13 +959,10 @@ ui <- fluidPage(
           )
         ),
         DT::DTOutput("remote_jobs_table"),
-        verbatimTextOutput("remote_job_status"),
+        uiOutput("remote_job_status_panel"),
+        uiOutput("remote_job_geo_progress_report"),
         uiOutput("remote_job_resources"),
-        tags$div(
-          style = "display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px;",
-          tags$div(style = "flex: 0 0 360px; max-width: 100%;", uiOutput("remote_job_running_summary")),
-          tags$div(style = "flex: 1 1 420px; min-width: 320px; max-width: 620px;", plotlyOutput("remote_job_metric_distribution", height = "260px"))
-        ),
+        uiOutput("remote_job_metric_panel"),
         verbatimTextOutput("remote_job_running_details"),
         uiOutput("remote_job_log_panel")
       )
@@ -12178,6 +12175,19 @@ server <- function(input, output, session) {
     remote_job_status_text()
   })
 
+  output$remote_job_status_panel <- renderUI({
+    status <- remote_job_preview_status()
+    result <- remote_job_preview_result()
+    if (remote_status_is_geo(status) || (is.list(result) && identical(result$kind %||% "", "geo_pipeline"))) {
+      return(NULL)
+    }
+    text <- remote_job_status_text()
+    if (!nzchar(text %||% "")) {
+      return(NULL)
+    }
+    tags$pre(class = "remote-job-status-panel", text)
+  })
+
   output$remote_server_connection_status <- renderUI({
     server_state <- remote_server_connection_state()
     if (!is.data.frame(server_state) || nrow(server_state) == 0) {
@@ -12214,6 +12224,178 @@ server <- function(input, output, session) {
     tags$div(
       style = "display: flex; gap: 8px; flex-wrap: wrap; margin: 0;",
       cards
+    )
+  })
+
+  output$remote_job_geo_progress_report <- renderUI({
+    status <- remote_job_preview_status()
+    result <- remote_job_preview_result()
+    if (!remote_status_is_geo(status) && !(is.list(result) && identical(result$kind %||% "", "geo_pipeline"))) {
+      return(NULL)
+    }
+
+    tables <- if (is.list(result) && is.list(result$tables)) result$tables else list()
+    n_table <- function(name) {
+      table <- tables[[name]]
+      if (is.data.frame(table)) nrow(table) else 0L
+    }
+    status_state <- remote_status_scalar(status$state, "unknown")
+    status_message <- remote_status_scalar(status$message)
+    stability <- remote_geo_stability_context(status, result)
+
+    remote_files_n <- n_table("remote_files")
+    metadata_n <- n_table("metadata_preview")
+    idat_n <- n_table("idat_qc")
+    spearman_n <- max(n_table("spearman_preview"), n_table("transcript_spearman_preview"))
+    candidates_n <- n_table("transcript_candidates_preview")
+    groups_n <- n_table("transcript_groups")
+    screening_n <- n_table("transcript_ml_screening")
+    summary <- tables$transcript_ml_summary
+    stability_saved <- if (is.data.frame(summary) && "Phase" %in% names(summary)) {
+      sum(as.character(summary$Phase) == "stability", na.rm = TRUE)
+    } else {
+      0L
+    }
+    total_groups <- max(groups_n, screening_n, stability$task_total %||% NA_integer_, na.rm = TRUE)
+    if (!is.finite(total_groups) || total_groups < 1L) {
+      total_groups <- max(groups_n, screening_n, 0L)
+    }
+    stability_current <- if (isTRUE(stability$is_stability) && is.finite(stability$task_index)) 1L else 0L
+    stability_done_lower <- if (isTRUE(stability$is_stability) && is.finite(stability$task_index)) {
+      max(stability_saved, stability$task_index - if (identical(stability$state, "Running")) 1L else 0L)
+    } else {
+      stability_saved
+    }
+    stability_remaining <- if (is.finite(total_groups) && total_groups > 0) {
+      max(0L, total_groups - stability_done_lower - if (identical(stability$state, "Running")) stability_current else 0L)
+    } else {
+      NA_integer_
+    }
+
+    stage_state <- function(done, running = FALSE) {
+      if (isTRUE(done)) "done" else if (isTRUE(running)) "running" else "pending"
+    }
+    badge_text <- function(state) {
+      switch(state, done = "Completed", running = "Running", pending = "Pending", "Pending")
+    }
+    step_card <- function(index, title, state, detail = "", metric = "") {
+      tags$div(
+        class = paste("remote-geo-step", paste0("remote-geo-step-", state)),
+        tags$div(class = "remote-geo-step-top",
+          tags$span(class = "remote-geo-step-index", index),
+          tags$span(class = "remote-geo-step-title", title),
+          tags$span(class = paste("remote-geo-step-badge", paste0("remote-geo-step-badge-", state)), badge_text(state))
+        ),
+        if (nzchar(metric)) tags$div(class = "remote-geo-step-metric", metric),
+        if (nzchar(detail)) tags$div(class = "remote-geo-step-detail", detail)
+      )
+    }
+    stat_card <- function(title, value, detail, level = "neutral") {
+      tags$div(
+        class = paste("remote-geo-stat", paste0("remote-geo-stat-", level)),
+        tags$div(class = "remote-geo-stat-title", title),
+        tags$div(class = "remote-geo-stat-value", value),
+        tags$div(class = "remote-geo-stat-detail", detail)
+      )
+    }
+
+    files_done <- remote_files_n > 0 || metadata_n > 0
+    idat_done <- idat_n > 0
+    spearman_done <- spearman_n > 0 || candidates_n > 0
+    groups_done <- groups_n > 0
+    screening_done <- screening_n > 0 && (groups_n == 0 || screening_n >= groups_n)
+    stability_done <- total_groups > 0 && stability_saved >= total_groups
+    final_done <- identical(status_state, "finished")
+    stability_running <- isTRUE(stability$is_stability) && status_state %in% c("queued", "running")
+    estimate_pct <- if (isTRUE(stability$is_stability) && is.finite(stability$estimate_pct)) {
+      stability$estimate_pct
+    } else if (total_groups > 0) {
+      100 * stability_done_lower / total_groups
+    } else {
+      NA_real_
+    }
+    estimate_width <- if (is.finite(estimate_pct)) max(0, min(100, estimate_pct)) else 0
+    current_seed_detail <- if (isTRUE(stability$is_stability) && is.finite(stability$training_seed)) {
+      paste0("seed ", stability$training_seed, "/", if (is.finite(stability$min_seeds)) stability$min_seeds else "?")
+    } else if (isTRUE(stability$is_stability)) {
+      stability$state
+    } else {
+      "not started"
+    }
+
+    tags$div(
+      class = "remote-geo-report",
+      tags$div(class = "remote-geo-report-header",
+        tags$div(
+          tags$div(class = "remote-geo-report-title", "GEO job progress"),
+          tags$div(class = "remote-geo-report-subtitle",
+            paste0(
+              remote_status_scalar(status$id),
+              " / ", remote_status_scalar(status$target, result$accession %||% ""),
+              " / ", status_state
+            )
+          )
+        ),
+        tags$div(class = "remote-geo-stage-pill", if (nzchar(status_message)) status_message else "waiting")
+      ),
+      tags$div(class = "remote-geo-stage-grid",
+        step_card(1, "Files and metadata", stage_state(files_done), paste0(remote_files_n, " files / ", metadata_n, " metadata rows")),
+        step_card(2, "Sesame QC", stage_state(idat_done, files_done && !idat_done), paste0(idat_n, " samples processed")),
+        step_card(3, "CpG and transcript scan", stage_state(spearman_done, idat_done && !spearman_done), paste0(spearman_n, " preview CpGs / ", candidates_n, " candidate transcripts")),
+        step_card(4, "Transcript groups", stage_state(groups_done, spearman_done && !groups_done), paste0(groups_n, " groups")),
+        step_card(5, "Model screening", stage_state(screening_done, groups_done && !screening_done), paste0(screening_n, "/", max(groups_n, screening_n), " groups screened")),
+        step_card(
+          6,
+          "Stability seeds",
+          stage_state(stability_done || final_done, stability_running),
+          paste0(
+            stability_done_lower, "/", if (total_groups > 0) total_groups else "?",
+            " groups done",
+            if (isTRUE(stability_running) && is.finite(stability$task_index)) paste0(" / current task ", stability$task_index, "/", stability$task_total) else ""
+          ),
+          current_seed_detail
+        ),
+        step_card(7, "Final result", stage_state(final_done, stability_done && !final_done), if (final_done) "result.rds available" else "waiting for stability")
+      ),
+      tags$div(class = "remote-geo-focus",
+        tags$div(class = "remote-geo-focus-main",
+          tags$div(class = "remote-geo-focus-label", "Stability lower-bound progress"),
+          tags$div(class = "remote-geo-focus-value", if (is.finite(estimate_pct)) paste0(round(estimate_pct), "%") else "Waiting"),
+          tags$div(class = "remote-geo-bar-shell",
+            tags$div(class = "remote-geo-bar", style = paste0("width: ", round(estimate_width), "%;"))
+          ),
+          tags$div(class = "remote-geo-focus-detail",
+            if (isTRUE(stability$is_stability)) {
+              paste0(
+                stability$group_id, " / ", stability$stratum,
+                " / ", stability$model,
+                if (is.finite(stability$training_seed)) paste0(" / seed ", stability$training_seed) else ""
+              )
+            } else {
+              "Stability has not started yet."
+            }
+          )
+        ),
+        tags$div(class = "remote-geo-stat-grid",
+          stat_card("Done", stability_done_lower, "stability groups", "done"),
+          stat_card("Current", if (isTRUE(stability_running) && is.finite(stability$task_index)) stability$task_index else "-", "task index", "running"),
+          stat_card("Remaining", if (is.finite(stability_remaining)) stability_remaining else "-", "groups after current", "pending"),
+          stat_card("Saved partial", if (remote_status_has_result(status)) "Yes" else "No", "safe to keep running", "neutral")
+        )
+      )
+    )
+  })
+
+  output$remote_job_metric_panel <- renderUI({
+    status <- remote_job_preview_status()
+    result <- remote_job_preview_result()
+    if (remote_status_is_geo(status) || (is.list(result) && identical(result$kind %||% "", "geo_pipeline"))) {
+      return(NULL)
+    }
+    tags$div(
+      style = "display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px;",
+      tags$div(style = "flex: 0 0 360px; max-width: 100%;", uiOutput("remote_job_running_summary")),
+      tags$div(style = "flex: 1 1 420px; min-width: 320px; max-width: 620px;", plotlyOutput("remote_job_metric_distribution", height = "260px"))
     )
   })
 
@@ -12369,6 +12551,9 @@ server <- function(input, output, session) {
   output$remote_job_running_details <- renderText({
     status <- remote_job_preview_status()
     result <- remote_job_preview_result()
+    if (remote_status_is_geo(status) || (is.list(result) && identical(result$kind %||% "", "geo_pipeline"))) {
+      return("")
+    }
     geo_details <- remote_geo_stage_summary_text(status, result)
     metric_data <- remote_job_metric_values()
     if (is.null(metric_data) && !nzchar(geo_details)) {
