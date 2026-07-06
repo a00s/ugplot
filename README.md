@@ -1,10 +1,28 @@
 # ugplot
 
-ugPlot is an interactive Shiny application to **prepare omics/biomedical tabular datasets**, **explore patterns visually**, **train and compare machine learning models**, and **analyze saved models on new data**.
+ugPlot is an interactive Shiny workbench for discovering, ranking, and comparing transcript-level signals in omics and biomedical datasets.
+
+Its central GEO methylation workflow starts with CpG-level evidence, groups CpGs by transcript, builds transcript-specific machine learning datasets, trains models for each transcript group, and orders transcripts by how well their methylation pattern predicts a chosen target such as age, disease severity, treatment response, exposure, intake, or another measurable phenotype.
+
+That transcript order is the key output. When the same target is evaluated across multiple clinical or biological groups, ugPlot lets you compare how transcript rankings change between those groups. A transcript that moves strongly up or down in prediction rank is not a final biological conclusion by itself, but it is a focused hypothesis: the relationship between methylation in that transcript region and the selected target may be altered in that group and may deserve deeper study.
+
+ugPlot also provides the supporting workbench needed to make those comparisons reproducible: load and clean matrix-like datasets, explore patterns visually, train and compare machine learning models, analyze saved models on new data, and run long GEO jobs on a remote server while monitoring progress in the browser.
 
 Preprint DOI: https://doi.org/10.64898/2026.02.09.704870
 
 ---
+
+## Core idea
+
+Many omics workflows ask whether a feature is associated with a phenotype. ugPlot extends that question to transcript-level prediction and comparison:
+
+1. Choose a target that can be predicted or correlated, such as age, severity, response, dose, exposure, or another phenotype.
+2. Find CpGs associated with that target and group them by transcript.
+3. Train transcript-level ML models and rank transcript groups by prediction strength and stability.
+4. If a class/group column is available, compare the transcript ranking across groups.
+5. Use rank shifts, CpG-level methylation changes, and ML importance plots to decide which transcript regions are worth follow-up.
+
+In practice, ugPlot is useful when the biological question is not only "which CpGs correlate with my target?", but also "which transcript regions predict the target best, and does that predictive behavior change between groups?"
 
 ## Installation
 
@@ -97,15 +115,17 @@ Then, in the ugPlot app:
 
 Use ugPlot when you need to:
 
-1. Load a matrix-like dataset (samples × features).
-2. Select/filter rows and columns without coding.
-3. Explore data structure (heatmaps, correlations, distributions).
-4. Train many caret models and compare metrics.
-5. Save/load models and validate predictions in a reproducible way.
+1. Turn GEO methylation accessions into CpG, transcript, and transcript-ML reports.
+2. Rank transcript groups by how well their CpG patterns predict a selected target.
+3. Compare transcript rankings across biological or clinical groups.
+4. Detect transcript groups whose predictive behavior changes between groups.
+5. Inspect CpG-level methylation shifts and ML importance inside a selected transcript.
+6. Load a matrix-like dataset (samples × features), clean it, and explore structure visually.
+7. Train many caret models, compare metrics, save models, and validate predictions reproducibly.
 
-The app is most useful when the analysis is still exploratory but needs to remain reproducible. A typical session starts with a messy matrix, narrows it to the samples/features that make biological or clinical sense, checks whether visible structure exists, and only then runs machine learning. Treat ugPlot as a guided workbench: each tab helps answer a specific question before moving to the next one.
+The app is most useful when the analysis is still exploratory but needs to remain reproducible. In a GEO methylation study, a typical session starts with a public accession, chooses a phenotype target, finds CpGs associated with that target, groups CpGs by transcript, screens transcript-level ML models, stabilizes the best model per transcript, and then asks whether transcript rank changes between groups. In a general tabular workflow, a session starts with a matrix, narrows it to the samples/features that make biological or clinical sense, checks whether visible structure exists, and only then runs machine learning.
 
-The most common mistake is to jump directly to ML. If row/sample labels, missing values, categories, or matrix orientation are wrong, a model can still train but answer the wrong question. Use the early tabs to make the dataset explicit before trusting any downstream metric.
+Treat ugPlot as a guided workbench: each tab helps answer a specific question before moving to the next one. The most common mistake is to jump directly to ML. If row/sample labels, missing values, categories, matrix orientation, target choice, or comparison groups are wrong, a model can still train but answer the wrong question. Use the early tabs and GEO pipeline cards to make the dataset explicit before trusting any downstream metric.
 
 ---
 
