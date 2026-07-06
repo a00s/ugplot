@@ -659,6 +659,116 @@ table.dataTable th.dt-error-column {
   gap: 8px;
 }
 
+.remote-geo-active {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) 260px;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.remote-geo-active-main,
+.remote-geo-active-side {
+  border: 1px solid #a8dff1;
+  border-left: 6px solid #1aa6c9;
+  border-radius: 8px;
+  background: #eefbff;
+}
+
+.remote-geo-active-main {
+  padding: 15px 16px;
+}
+
+.remote-geo-active-side {
+  padding: 13px 14px;
+}
+
+.remote-geo-active-kicker {
+  color: #087a97;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.remote-geo-active-title {
+  margin-top: 2px;
+  color: #101828;
+  font-size: 30px;
+  line-height: 1.08;
+  font-weight: 800;
+}
+
+.remote-geo-active-detail {
+  margin-top: 6px;
+  color: #344054;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.remote-geo-active-bars {
+  display: grid;
+  gap: 9px;
+  margin-top: 13px;
+}
+
+.remote-geo-active-row-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.remote-geo-active-row-label strong {
+  color: #101828;
+}
+
+.remote-geo-bar-shell-small {
+  height: 12px;
+  margin: 4px 0 0 0;
+}
+
+.remote-geo-bar-task {
+  background: #1aa6c9;
+}
+
+.remote-geo-bar-seed {
+  background: #2563eb;
+}
+
+.remote-geo-active-number {
+  color: #0f766e;
+  font-size: 36px;
+  line-height: 1;
+  font-weight: 800;
+}
+
+.remote-geo-active-number-label {
+  margin-top: 4px;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.remote-geo-active-mini {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.remote-geo-active-mini span {
+  padding: 5px 6px;
+  border: 1px solid #bae6fd;
+  border-radius: 6px;
+  color: #075985;
+  background: #ffffff;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+}
+
 .remote-geo-step {
   min-height: 106px;
   padding: 10px;
@@ -846,6 +956,10 @@ table.dataTable th.dt-error-column {
 
 @media (max-width: 900px) {
   .remote-geo-focus {
+    grid-template-columns: 1fr;
+  }
+
+  .remote-geo-active {
     grid-template-columns: 1fr;
   }
 }

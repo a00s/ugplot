@@ -11326,6 +11326,26 @@ server <- function(input, output, session) {
     invisible(TRUE)
   }
 
+  remote_latest_resource_message <- function(resources) {
+    if (!is.data.frame(resources) || nrow(resources) == 0 || !"current_message" %in% names(resources)) {
+      return("")
+    }
+    messages <- as.character(resources$current_message)
+    messages <- messages[nzchar(messages) & !is.na(messages)]
+    if (length(messages) == 0) "" else utils::tail(messages, 1L)
+  }
+
+  remote_status_with_live_message <- function(status, resources = NULL) {
+    if (!is.list(status)) {
+      return(status)
+    }
+    live_message <- remote_latest_resource_message(resources)
+    if (nzchar(live_message) && grepl("^Stability[[:space:]]+", live_message)) {
+      status$message <- live_message
+    }
+    status
+  }
+
   remote_geo_stage_summary_text <- function(status, result = NULL) {
     status_message <- remote_status_scalar(status$message)
     is_geo <- identical(remote_status_scalar(status$type), "geo") ||
@@ -12228,7 +12248,9 @@ server <- function(input, output, session) {
   })
 
   output$remote_job_geo_progress_report <- renderUI({
-    status <- remote_job_preview_status()
+    raw_status <- remote_job_preview_status()
+    resources <- remote_job_resources_data()
+    status <- remote_status_with_live_message(raw_status, resources)
     result <- remote_job_preview_result()
     if (!remote_status_is_geo(status) && !(is.list(result) && identical(result$kind %||% "", "geo_pipeline"))) {
       return(NULL)
@@ -12315,12 +12337,40 @@ server <- function(input, output, session) {
       NA_real_
     }
     estimate_width <- if (is.finite(estimate_pct)) max(0, min(100, estimate_pct)) else 0
+    task_width <- if (isTRUE(stability$is_stability) && is.finite(stability$task_index) && is.finite(stability$task_total) && stability$task_total > 0) {
+      max(0, min(100, 100 * stability$task_index / stability$task_total))
+    } else {
+      0
+    }
+    seed_width <- if (isTRUE(stability$is_stability) && is.finite(stability$training_seed) && is.finite(stability$min_seeds) && stability$min_seeds > 0) {
+      max(0, min(100, 100 * stability$training_seed / stability$min_seeds))
+    } else {
+      0
+    }
     current_seed_detail <- if (isTRUE(stability$is_stability) && is.finite(stability$training_seed)) {
       paste0("seed ", stability$training_seed, "/", if (is.finite(stability$min_seeds)) stability$min_seeds else "?")
     } else if (isTRUE(stability$is_stability)) {
       stability$state
     } else {
       "not started"
+    }
+    active_status <- if (isTRUE(stability_running)) {
+      "Running now"
+    } else if (isTRUE(stability_done || final_done)) {
+      "Completed"
+    } else if (isTRUE(stability$is_stability)) {
+      stability$state
+    } else {
+      "Waiting"
+    }
+    active_detail <- if (isTRUE(stability$is_stability)) {
+      paste0(
+        stability$group_id, " / ", stability$stratum,
+        " / model ", stability$model,
+        if (is.finite(stability$training_seed)) paste0(" / training seed ", stability$training_seed) else ""
+      )
+    } else {
+      "Stability has not started yet."
     }
 
     tags$div(
@@ -12337,6 +12387,50 @@ server <- function(input, output, session) {
           )
         ),
         tags$div(class = "remote-geo-stage-pill", if (nzchar(status_message)) status_message else "waiting")
+      ),
+      tags$div(class = "remote-geo-active",
+        tags$div(class = "remote-geo-active-main",
+          tags$div(class = "remote-geo-active-kicker", "Current running step"),
+          tags$div(class = "remote-geo-active-title", active_status),
+          tags$div(class = "remote-geo-active-detail", active_detail),
+          tags$div(class = "remote-geo-active-bars",
+            tags$div(class = "remote-geo-active-row",
+              tags$div(class = "remote-geo-active-row-label",
+                tags$span("Task"),
+                tags$strong(if (isTRUE(stability$is_stability) && is.finite(stability$task_index)) {
+                  paste0(stability$task_index, "/", stability$task_total)
+                } else {
+                  "-"
+                })
+              ),
+              tags$div(class = "remote-geo-bar-shell remote-geo-bar-shell-small",
+                tags$div(class = "remote-geo-bar remote-geo-bar-task", style = paste0("width: ", round(task_width), "%;"))
+              )
+            ),
+            tags$div(class = "remote-geo-active-row",
+              tags$div(class = "remote-geo-active-row-label",
+                tags$span("Minimum seed pass"),
+                tags$strong(if (isTRUE(stability$is_stability) && is.finite(stability$training_seed)) {
+                  paste0(stability$training_seed, "/", if (is.finite(stability$min_seeds)) stability$min_seeds else "?")
+                } else {
+                  "-"
+                })
+              ),
+              tags$div(class = "remote-geo-bar-shell remote-geo-bar-shell-small",
+                tags$div(class = "remote-geo-bar remote-geo-bar-seed", style = paste0("width: ", round(seed_width), "%;"))
+              )
+            )
+          )
+        ),
+        tags$div(class = "remote-geo-active-side",
+          tags$div(class = "remote-geo-active-number", if (is.finite(estimate_pct)) paste0(round(estimate_pct), "%") else "-"),
+          tags$div(class = "remote-geo-active-number-label", "lower-bound stability"),
+          tags$div(class = "remote-geo-active-mini",
+            tags$span(paste0("Done ", stability_done_lower)),
+            tags$span(if (isTRUE(stability_running) && is.finite(stability$task_index)) paste0("Current ", stability$task_index) else "Current -"),
+            tags$span(if (is.finite(stability_remaining)) paste0("Left ", stability_remaining) else "Left -")
+          )
+        )
       ),
       tags$div(class = "remote-geo-stage-grid",
         step_card(1, "Files and metadata", stage_state(files_done), paste0(remote_files_n, " files / ", metadata_n, " metadata rows")),
