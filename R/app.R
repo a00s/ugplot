@@ -3263,20 +3263,38 @@ server <- function(input, output, session) {
       nrow(trigger_rows)
     }
     if (isTRUE(run_remote) && transcript_candidate_count > 0) {
+      remote_result <- remote_job_preview_result()
+      remote_threshold <- if (is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")) {
+        suppressWarnings(as.numeric(remote_result$settings$transcript_absrho_threshold %||% NA_real_))
+      } else {
+        NA_real_
+      }
+      threshold_changed <- is.finite(remote_threshold) &&
+        is.finite(threshold) &&
+        !isTRUE(all.equal(remote_threshold, threshold, tolerance = 1e-8))
+      action_title <- if (isTRUE(threshold_changed)) "Start cached threshold run" else "Ready to continue transcript pipeline"
+      action_text <- if (isTRUE(threshold_changed)) {
+        paste0(
+          "Loaded job used |rho| >= ", remote_threshold,
+          "; current threshold is |rho| >= ", threshold,
+          " and keeps ", format(transcript_candidate_count, big.mark = ","),
+          " transcript candidate(s). This will create a new remote job and leave the loaded job unchanged."
+        )
+      } else {
+        paste0(
+          "Current threshold |rho| >= ", threshold,
+          " keeps ", format(transcript_candidate_count, big.mark = ","),
+          " transcript candidate(s). Continue will reuse the remote GEO cache where available."
+        )
+      }
       continue_action <- tags$div(
         style = paste0(
           "margin: 10px 0; padding: 10px 12px; border-left: 5px solid #2e9d4d;",
           "background: #e8f7eb; color: #1f6f37; border-radius: 4px;"
         ),
-        tags$p(style = "margin: 0 0 8px 0; font-weight: 700;", "Ready to continue transcript pipeline"),
-        tags$p(style = "margin: 0 0 8px 0;",
-          paste0(
-            "Current threshold |rho| >= ", threshold,
-            " keeps ", format(transcript_candidate_count, big.mark = ","),
-            " transcript candidate(s). Continue will reuse the remote GEO cache where available."
-          )
-        ),
-        actionButton("geo_continue_remote_pipeline", "Continue remote pipeline", class = "btn-success btn-sm")
+        tags$p(style = "margin: 0 0 8px 0; font-weight: 700;", action_title),
+        tags$p(style = "margin: 0 0 8px 0;", action_text),
+        actionButton("geo_continue_remote_pipeline", if (isTRUE(threshold_changed)) "Start cached remote run" else "Continue remote pipeline", class = "btn-success btn-sm")
       )
     }
     threshold_warning <- NULL
@@ -3828,16 +3846,42 @@ server <- function(input, output, session) {
     )
   })
 
-  geo_transcript_ml_dir <- function(cache_dir, source = NULL) {
+  geo_transcript_ml_run_key <- function(target_column, threshold, min_samples_pct) {
+    safe_target <- geo_safe_cache_token(target_column)
+    safe_threshold <- geo_safe_cache_token(format(threshold, trim = TRUE, scientific = FALSE))
+    safe_min_samples <- geo_safe_cache_token(format(min_samples_pct, trim = TRUE, scientific = FALSE))
+    safe_missing <- geo_safe_cache_token(paste(geo_transcript_missing_definition(), collapse = "_"))
+    paste0(
+      "target_", safe_target,
+      "_", geo_transcript_cache_version(),
+      "_absrho_", safe_threshold,
+      "_minsamples_", safe_min_samples,
+      "_missing_", safe_missing
+    )
+  }
+
+  geo_current_transcript_ml_run_key <- function() {
+    threshold <- suppressWarnings(as.numeric(input$geo_transcript_absrho_threshold %||% 0.8))
+    if (!is.finite(threshold)) threshold <- 0.8
+    min_samples <- suppressWarnings(as.numeric(input$geo_transcript_min_samples %||% 80))
+    if (!is.finite(min_samples)) min_samples <- 80
+    geo_transcript_ml_run_key(input$geo_target_column %||% "", threshold, min_samples)
+  }
+
+  geo_transcript_ml_dir <- function(cache_dir, source = NULL, run_key = NULL) {
     path <- file.path(geo_analysis_cache_dir(cache_dir, source), "transcript_ml_pipeline")
+    run_key <- as.character(run_key %||% "")
+    if (nzchar(run_key)) {
+      path <- file.path(path, geo_safe_cache_token(run_key))
+    }
     if (!dir.exists(path)) {
       dir.create(path, recursive = TRUE, showWarnings = FALSE)
     }
     path
   }
 
-  geo_transcript_ml_group_dir <- function(cache_dir, source, group_id) {
-    path <- file.path(geo_transcript_ml_dir(cache_dir, source), geo_safe_cache_token(group_id))
+  geo_transcript_ml_group_dir <- function(cache_dir, source, group_id, run_key = NULL) {
+    path <- file.path(geo_transcript_ml_dir(cache_dir, source, run_key), geo_safe_cache_token(group_id))
     if (!dir.exists(path)) {
       dir.create(path, recursive = TRUE, showWarnings = FALSE)
     }
@@ -4035,12 +4079,12 @@ server <- function(input, output, session) {
     ugplot_geo_ml_group_dataset(group, sample_ids = sample_ids, keep_sample_id = keep_sample_id)
   }
 
-  geo_ml_run_group_screen <- function(group, source, models, settings, progress_callback = NULL) {
+  geo_ml_run_group_screen <- function(group, source, models, settings, run_key = NULL, progress_callback = NULL) {
     dataset_info <- geo_ml_group_dataset(group)
     dataset <- dataset_info$dataset
     dataset_path <- dataset_info$dataset_path
     cache_dir <- ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO"))
-    group_dir <- geo_transcript_ml_group_dir(cache_dir, source, group$GroupID[[1]])
+    group_dir <- geo_transcript_ml_group_dir(cache_dir, source, group$GroupID[[1]], run_key)
     screen_path <- file.path(group_dir, "screen_result.rds")
     summary_path <- file.path(group_dir, "screen_summary.rds")
     importance_path <- file.path(group_dir, "screen_importance.csv")
@@ -4103,7 +4147,7 @@ server <- function(input, output, session) {
     summary
   }
 
-  geo_ml_run_group_stability <- function(group, source, settings, progress_callback = NULL, stratum = NULL) {
+  geo_ml_run_group_stability <- function(group, source, settings, run_key = NULL, progress_callback = NULL, stratum = NULL) {
     stratum_column <- as.character(stratum$StratumColumn %||% "")
     stratum_value <- as.character(stratum$StratumValue %||% "")
     stratum_label <- if (nzchar(stratum_column)) paste0(stratum_column, "=", stratum_value) else ""
@@ -4112,7 +4156,7 @@ server <- function(input, output, session) {
     dataset <- dataset_info$dataset
     dataset_path <- dataset_info$dataset_path
     cache_dir <- ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO"))
-    base_group_dir <- geo_transcript_ml_group_dir(cache_dir, source, group$GroupID[[1]])
+    base_group_dir <- geo_transcript_ml_group_dir(cache_dir, source, group$GroupID[[1]], run_key)
     group_dir <- base_group_dir
     if (nzchar(stratum_column)) {
       group_dir <- file.path(base_group_dir, "stability_by", geo_safe_cache_token(stratum_column), geo_safe_cache_token(stratum_value))
@@ -6922,7 +6966,11 @@ server <- function(input, output, session) {
     ml_summary <- geo_transcript_ml_results_current()
     if ((!is.data.frame(ml_summary) || nrow(ml_summary) == 0) && nzchar(input$geo_accession %||% "")) {
       ml_summary_path <- file.path(
-        geo_transcript_ml_dir(ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO")), geo_matrix_source_value()),
+        geo_transcript_ml_dir(
+          ugplot_geo_cache_dir(trimws(input$geo_accession %||% "GEO")),
+          geo_matrix_source_value(),
+          geo_current_transcript_ml_run_key()
+        ),
         "summary.csv"
       )
       if (file.exists(ml_summary_path)) {
@@ -8412,7 +8460,7 @@ server <- function(input, output, session) {
       }
       }
     }
-    ml_pipeline_dir <- geo_transcript_ml_dir(cache_dir, source)
+    ml_pipeline_dir <- geo_transcript_ml_dir(cache_dir, source, geo_current_transcript_ml_run_key())
     ml_stability_summaries <- if (dir.exists(ml_pipeline_dir)) {
       list.files(ml_pipeline_dir, pattern = "^summary_by_.*[.]csv$", full.names = TRUE)
     } else {
@@ -8795,7 +8843,8 @@ server <- function(input, output, session) {
     eligible <- groups[suppressWarnings(as.numeric(groups$TriggerMaxAbsRho)) >= min_absrho, , drop = FALSE]
     eligible_tiebreak <- if ("PrincipalTranscript" %in% names(eligible)) eligible$PrincipalTranscript else eligible$GroupID
     eligible <- eligible[order(-suppressWarnings(as.numeric(eligible$TriggerMaxAbsRho)), eligible_tiebreak), , drop = FALSE]
-    pipeline_dir <- geo_transcript_ml_dir(cache_dir, source)
+    run_key <- geo_current_transcript_ml_run_key()
+    pipeline_dir <- geo_transcript_ml_dir(cache_dir, source, run_key)
     quick_models <- isTRUE(input$geo_ml_quick_models)
     summary_path <- file.path(pipeline_dir, "screening_summary.csv")
     existing_summary <- geo_ml_load_screening_summary(pipeline_dir)
@@ -8875,7 +8924,7 @@ server <- function(input, output, session) {
             processed = length(intersect(processed_groups, eligible$GroupID)),
             total = nrow(eligible),
             current = paste0(group_id, " / ", group$PrincipalTranscript[[1]]),
-            cache = geo_transcript_ml_group_dir(cache_dir, source, group_id)
+            cache = geo_transcript_ml_group_dir(cache_dir, source, group_id, run_key)
           )
           shiny::setProgress(value = (group_i - 1) / nrow(eligible), detail = paste0("Group ", group_id))
           summary_row <- geo_ml_run_group_screen(
@@ -8883,6 +8932,7 @@ server <- function(input, output, session) {
             source,
             models,
             settings,
+            run_key = run_key,
             progress_callback = function(message) {
               update_geo_transcript_ml_progress(
                 phase = "running",
@@ -8890,7 +8940,7 @@ server <- function(input, output, session) {
                 processed = length(intersect(processed_groups, eligible$GroupID)),
                 total = nrow(eligible),
                 current = paste0(group_id, " / ", group$PrincipalTranscript[[1]]),
-                cache = geo_transcript_ml_group_dir(cache_dir, source, group_id)
+                cache = geo_transcript_ml_group_dir(cache_dir, source, group_id, run_key)
               )
               shiny::setProgress(value = (group_i - 1) / nrow(eligible), detail = message)
             }
@@ -8968,7 +9018,8 @@ server <- function(input, output, session) {
     )
     settings$max_stability_seeds <- max(settings$max_stability_seeds, settings$min_stability_seeds)
     settings$window <- min(settings$window, settings$max_stability_seeds)
-    pipeline_dir <- geo_transcript_ml_dir(cache_dir, source)
+    run_key <- geo_current_transcript_ml_run_key()
+    pipeline_dir <- geo_transcript_ml_dir(cache_dir, source, run_key)
     metadata <- geo_sample_metadata()
     stratum_column <- input$geo_ml_stability_group_column %||% ""
     strata <- if (nzchar(stratum_column)) {
@@ -9048,7 +9099,7 @@ server <- function(input, output, session) {
               )
               next
             }
-            cache_path <- geo_transcript_ml_group_dir(cache_dir, source, group_id)
+            cache_path <- geo_transcript_ml_group_dir(cache_dir, source, group_id, run_key)
             if (nzchar(stratum$StratumColumn[[1]])) {
               cache_path <- file.path(cache_path, "stability_by", geo_safe_cache_token(stratum$StratumColumn[[1]]), geo_safe_cache_token(stratum$StratumValue[[1]]))
             }
@@ -9074,6 +9125,7 @@ server <- function(input, output, session) {
             group,
             source,
             settings,
+            run_key = run_key,
             stratum = stratum,
             progress_callback = function(message, detail = NULL) {
               stability_text <- detail$stability %||% ""
@@ -11268,13 +11320,20 @@ server <- function(input, output, session) {
 	    }
 	    server <- selected_geo_remote_server()
 	    matrix_source <- geo_matrix_source_value(input$geo_matrix_source %||% "processed")
+	    loaded_remote_job_id <- if (is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")) {
+	      geo_remote_pipeline_job_id() %||% ""
+	    } else {
+	      ""
+	    }
 	    list(
 	      runner = "ugplot_run_geo_pipeline_job",
 	      type = "geo",
-	      job_name = paste("GEO", accession, matrix_source),
+	      job_name = paste("GEO", accession, matrix_source, "rho", input$geo_transcript_absrho_threshold %||% 0.8),
 	      accession = accession,
 	      matrix_source = matrix_source,
 	      target_column = target_column,
+	      resume_cached_geo = TRUE,
+	      resume_from_job_id = loaded_remote_job_id,
 	      spearman_max_cpgs = input$geo_spearman_max_cpgs %||% 0,
 	      spearman_min_samples_pct = input$geo_spearman_min_samples %||% 80,
 	      transcript_absrho_threshold = input$geo_transcript_absrho_threshold %||% 0.8,

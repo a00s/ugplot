@@ -72,14 +72,32 @@ ugplot_geo_transcript_group_paths <- function(cache_dir, target_column, threshol
   )
 }
 
-ugplot_geo_transcript_ml_dir <- function(cache_dir, source = "processed") {
+ugplot_geo_transcript_ml_run_key <- function(target_column, threshold, min_samples_pct) {
+  safe_target <- ugplot_geo_safe_token(target_column)
+  safe_threshold <- ugplot_geo_safe_token(format(threshold, trim = TRUE, scientific = FALSE))
+  safe_min_samples <- ugplot_geo_safe_token(format(min_samples_pct, trim = TRUE, scientific = FALSE))
+  safe_missing <- ugplot_geo_safe_token(paste(ugplot_geo_transcript_missing_definition(), collapse = "_"))
+  paste0(
+    "target_", safe_target,
+    "_", ugplot_geo_transcript_cache_version(),
+    "_absrho_", safe_threshold,
+    "_minsamples_", safe_min_samples,
+    "_missing_", safe_missing
+  )
+}
+
+ugplot_geo_transcript_ml_dir <- function(cache_dir, source = "processed", run_key = NULL) {
   path <- file.path(ugplot_geo_analysis_dir(cache_dir, source), "transcript_ml_pipeline")
+  run_key <- as.character(run_key %||% "")
+  if (nzchar(run_key)) {
+    path <- file.path(path, ugplot_geo_safe_token(run_key))
+  }
   dir.create(path, recursive = TRUE, showWarnings = FALSE)
   path
 }
 
-ugplot_geo_transcript_ml_group_dir <- function(cache_dir, source, group_id) {
-  path <- file.path(ugplot_geo_transcript_ml_dir(cache_dir, source), ugplot_geo_safe_token(group_id))
+ugplot_geo_transcript_ml_group_dir <- function(cache_dir, source, group_id, run_key = NULL) {
+  path <- file.path(ugplot_geo_transcript_ml_dir(cache_dir, source, run_key), ugplot_geo_safe_token(group_id))
   dir.create(path, recursive = TRUE, showWarnings = FALSE)
   path
 }
@@ -818,7 +836,8 @@ ugplot_geo_run_transcript_ml_remote <- function(groups, cache_dir, source = "pro
   parallel_enabled <- isTRUE(config$parallel_enabled)
   restart_parallel_each_model <- isTRUE(config$restart_parallel_each_model %||% TRUE)
   retry_parallel_connection_errors <- isTRUE(config$retry_parallel_connection_errors %||% TRUE)
-  pipeline_dir <- ugplot_geo_transcript_ml_dir(cache_dir, source)
+  run_key <- as.character(config$geo_transcript_ml_run_key %||% "")
+  pipeline_dir <- ugplot_geo_transcript_ml_dir(cache_dir, source, run_key)
   summary_path <- file.path(pipeline_dir, "screening_summary.csv")
   summaries <- if (file.exists(summary_path)) {
     tryCatch(utils::read.csv(summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
@@ -833,7 +852,7 @@ ugplot_geo_run_transcript_ml_remote <- function(groups, cache_dir, source = "pro
       next
     }
     dataset_info <- ugplot_geo_ml_group_dataset(group)
-    group_dir <- ugplot_geo_transcript_ml_group_dir(cache_dir, source, group_id)
+    group_dir <- ugplot_geo_transcript_ml_group_dir(cache_dir, source, group_id, run_key)
     screen_path <- file.path(group_dir, "screen_result.rds")
     screen_config <- ugplot_geo_ml_pipeline_config(
       models,
@@ -947,7 +966,8 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
   parallel_enabled <- isTRUE(config$parallel_enabled)
   restart_parallel_each_model <- isTRUE(config$restart_parallel_each_model %||% TRUE)
   retry_parallel_connection_errors <- isTRUE(config$retry_parallel_connection_errors %||% TRUE)
-  pipeline_dir <- ugplot_geo_transcript_ml_dir(cache_dir, source)
+  run_key <- as.character(config$geo_transcript_ml_run_key %||% "")
+  pipeline_dir <- ugplot_geo_transcript_ml_dir(cache_dir, source, run_key)
   stratum_column <- as.character(config$geo_ml_stability_group_column %||% "")
   strata <- if (nzchar(stratum_column)) {
     ugplot_geo_ml_stability_strata(metadata, stratum_column)
@@ -995,7 +1015,7 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
       }
       dataset_info <- ugplot_geo_ml_group_dataset(row, sample_ids = sample_ids)
       dataset <- dataset_info$dataset
-      group_dir <- ugplot_geo_transcript_ml_group_dir(cache_dir, source, group_id)
+      group_dir <- ugplot_geo_transcript_ml_group_dir(cache_dir, source, group_id, run_key)
       if (nzchar(stratum$StratumColumn[[1]])) {
         group_dir <- file.path(group_dir, "stability_by", ugplot_geo_safe_token(stratum$StratumColumn[[1]]), ugplot_geo_safe_token(stratum$StratumValue[[1]]))
         dir.create(group_dir, recursive = TRUE, showWarnings = FALSE)
@@ -1191,7 +1211,9 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
   dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
   resume_result_path <- as.character(config$resume_result_path %||% "")
   resume_mode <- nzchar(resume_result_path) ||
-    (is.list(config$resume_result) && identical(config$resume_result$kind %||% "", "geo_pipeline"))
+    (is.list(config$resume_result) && identical(config$resume_result$kind %||% "", "geo_pipeline")) ||
+    isTRUE(config$resume_cached_geo) ||
+    isTRUE(config$use_cached_geo)
   read_cached_csv <- function(path) {
     if (nzchar(path %||% "") && file.exists(path)) {
       tryCatch(utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
@@ -1383,6 +1405,14 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
       transcript_absrho_threshold = threshold,
       transcript_min_samples = min_transcript_samples
     ))
+    transcript_ml_run_key <- ugplot_geo_transcript_ml_run_key(target_column, threshold, min_transcript_samples)
+    config$geo_transcript_ml_run_key <- transcript_ml_run_key
+    transcript_ml_dir <- ugplot_geo_transcript_ml_dir(cache_dir, source, transcript_ml_run_key)
+    result$settings <- c(result$settings %||% list(), list(
+      transcript_ml_run_key = transcript_ml_run_key,
+      resume_cached_geo = isTRUE(config$resume_cached_geo) || isTRUE(config$use_cached_geo)
+    ))
+    result$paths$transcript_ml_dir <- transcript_ml_dir
     publish(0.86, paste0("Building transcript ML datasets for |rho| >= ", threshold), force = TRUE)
     candidates_path <- file.path(
       ugplot_geo_analysis_dir(cache_dir, source),
@@ -1433,7 +1463,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
           config = config,
           progress_callback = function(value, message) publish(0.93 + 0.04 * value, message)
         )
-        result$paths$transcript_ml_screening_summary <- file.path(ugplot_geo_transcript_ml_dir(cache_dir, source), "screening_summary.csv")
+        result$paths$transcript_ml_screening_summary <- file.path(transcript_ml_dir, "screening_summary.csv")
         result$tables$transcript_ml_screening <- screen_summary
         result$tables$transcript_ml_importance <- ugplot_geo_collect_ml_importance_remote(screen_summary)
         result$tables$transcript_ml_final <- ugplot_geo_paper_summary_remote(
@@ -1453,9 +1483,9 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
           )
           stability_group_column <- as.character(config$geo_ml_stability_group_column %||% "")
           result$paths$transcript_ml_summary <- if (nzchar(stability_group_column)) {
-            file.path(ugplot_geo_transcript_ml_dir(cache_dir, source), paste0("summary_by_", ugplot_geo_safe_token(stability_group_column), ".csv"))
+            file.path(transcript_ml_dir, paste0("summary_by_", ugplot_geo_safe_token(stability_group_column), ".csv"))
           } else {
-            file.path(ugplot_geo_transcript_ml_dir(cache_dir, source), "summary.csv")
+            file.path(transcript_ml_dir, "summary.csv")
           }
           result$tables$transcript_ml_summary <- stability_summary
           result$tables$transcript_ml_final <- ugplot_geo_paper_summary_remote(
