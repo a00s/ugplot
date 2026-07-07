@@ -2953,14 +2953,11 @@ server <- function(input, output, session) {
           "Open transcript ML results",
           uiOutput("geo_transcript_ml_table_title"),
           tagList(
+            uiOutput("geo_transcript_ml_final_table_title"),
+            DT::DTOutput("geo_transcript_ml_final_table"),
             uiOutput("geo_transcript_ml_class_compare_title"),
             uiOutput("geo_transcript_ml_class_order_control"),
             tabsetPanel(
-              tabPanel(
-                "Final",
-                uiOutput("geo_transcript_ml_final_table_title"),
-                DT::DTOutput("geo_transcript_ml_final_table")
-              ),
               tabPanel(
                 "R2",
                 plotlyOutput("geo_transcript_ml_class_rank_plot", height = "420px"),
@@ -5450,7 +5447,7 @@ server <- function(input, output, session) {
       return(NULL)
     }
     tags$div(
-      tags$h4("Paper-style transcript summary"),
+      tags$h4("Transcript summary"),
       tags$p(class = "geo-step-note", "Result marks whether the strongest loaded evidence is ML-centered or CpG-centered. wB R2 and Shuffle max R2 are filled only when those analyses already exist in the loaded result.")
     )
   })
