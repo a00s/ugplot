@@ -3294,7 +3294,13 @@ server <- function(input, output, session) {
         ),
         tags$p(style = "margin: 0 0 8px 0; font-weight: 700;", action_title),
         tags$p(style = "margin: 0 0 8px 0;", action_text),
-        actionButton("geo_continue_remote_pipeline", if (isTRUE(threshold_changed)) "Start cached remote run" else "Continue remote pipeline", class = "btn-success btn-sm")
+        tags$button(
+          type = "button",
+          id = "geo_continue_remote_pipeline",
+          class = "btn btn-success btn-sm",
+          onclick = "if (window.Shiny) Shiny.setInputValue('geo_continue_remote_pipeline_click', Date.now(), {priority: 'event'});",
+          if (isTRUE(threshold_changed)) "Start cached remote run" else "Continue remote pipeline"
+        )
       )
     }
     threshold_warning <- NULL
@@ -11297,30 +11303,40 @@ server <- function(input, output, session) {
 	  }
 
 	  build_remote_geo_config <- function() {
+	    remote_result <- remote_job_preview_result()
+	    remote_loaded <- is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")
 	    accession <- trimws(input$geo_accession %||% "")
+	    if (!nzchar(accession) && isTRUE(remote_loaded)) {
+	      accession <- trimws(as.character(remote_result$accession %||% ""))
+	    }
 	    if (!nzchar(accession)) {
 	      stop("Enter a GEO accession before starting a remote GEO pipeline.", call. = FALSE)
 	    }
 	    metadata <- geo_sample_metadata()
-	    if (!is.data.frame(metadata) || nrow(metadata) == 0) {
+	    if ((!is.data.frame(metadata) || nrow(metadata) == 0) && !isTRUE(remote_loaded)) {
 	      stop("Fetch sample metadata locally before starting a remote GEO pipeline.", call. = FALSE)
 	    }
-	    candidates <- ugplot_geo_target_candidates(metadata)
+	    candidates <- if (is.data.frame(metadata) && nrow(metadata) > 0) ugplot_geo_target_candidates(metadata) else character(0)
 	    target_column <- trimws(input$geo_target_column %||% "")
-	    remote_result <- remote_job_preview_result()
-	    if ((!nzchar(target_column) || !(target_column %in% candidates)) &&
-	        is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")) {
+	    if ((!nzchar(target_column) || (length(candidates) > 0 && !(target_column %in% candidates))) &&
+	        isTRUE(remote_loaded)) {
 	      remote_target <- trimws(as.character(remote_result$target_column %||% ""))
-	      if (nzchar(remote_target) && remote_target %in% candidates) {
+	      if (nzchar(remote_target) && (length(candidates) == 0 || remote_target %in% candidates)) {
 	        target_column <- remote_target
 	      }
 	    }
-	    if (!nzchar(target_column) || !(target_column %in% candidates)) {
+	    if (!nzchar(target_column) || (length(candidates) > 0 && !(target_column %in% candidates))) {
 	      stop("Choose a metadata field locally before starting a remote GEO pipeline.", call. = FALSE)
 	    }
 	    server <- selected_geo_remote_server()
 	    matrix_source <- geo_matrix_source_value(input$geo_matrix_source %||% "processed")
-	    loaded_remote_job_id <- if (is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")) {
+	    if (isTRUE(remote_loaded)) {
+	      remote_source <- as.character(remote_result$matrix_source %||% "")
+	      if (nzchar(remote_source)) {
+	        matrix_source <- geo_matrix_source_value(remote_source)
+	      }
+	    }
+	    loaded_remote_job_id <- if (isTRUE(remote_loaded)) {
 	      geo_remote_pipeline_job_id() %||% ""
 	    } else {
 	      ""
@@ -11645,9 +11661,21 @@ server <- function(input, output, session) {
 	    invisible(status)
 	  }
 
-	  submit_remote_geo_pipeline <- function() {
+	  submit_remote_geo_pipeline <- function(mode = "start") {
 	    config <- build_remote_geo_config()
 	    server <- selected_geo_remote_server()
+	    submit_message <- if (identical(mode, "cached_continue")) {
+	      paste0(
+	        "Submitting cached GEO continuation on ", server$name[[1]],
+	        " for ", config$accession,
+	        " with |rho| >= ", config$transcript_absrho_threshold, "."
+	      )
+	    } else {
+	      paste0("Submitting remote GEO pipeline on ", server$name[[1]], ".")
+	    }
+	    geo_remote_pipeline_status(submit_message)
+	    remote_job_status_text(submit_message)
+	    showNotification(submit_message, type = "message", duration = 5)
 	    started <- ugplot_remote_create_job(
 	      server_url = server$url,
 	      dataset = data.frame(geo_pipeline = TRUE),
@@ -11662,8 +11690,12 @@ server <- function(input, output, session) {
 	    refresh_geo_remote_server_inputs(selected = server$name[[1]])
 	    geo_remote_pipeline_status(paste("Remote GEO pipeline submitted:", job_id))
 	    remote_job_status_text(geo_remote_pipeline_status())
-	    refresh_remote_jobs()
-	    updateTabsetPanel(session, "tabs", selected = "JOBS")
+	    showNotification(paste("Remote GEO pipeline submitted:", job_id), type = "message", duration = 8)
+	    tryCatch(
+	      refresh_remote_jobs(),
+	      error = function(e) remote_job_status_text(paste("Remote GEO pipeline submitted:", job_id, "- job list refresh failed:", conditionMessage(e)))
+	    )
+	    try(updateTabsetPanel(session, "tabs", selected = "JOBS"), silent = TRUE)
 	    invisible(started)
 	  }
 
@@ -12291,15 +12323,17 @@ server <- function(input, output, session) {
 	    }, error = function(e) {
 	      geo_remote_pipeline_status(paste("Remote GEO submit failed:", conditionMessage(e)))
 	      remote_job_status_text(geo_remote_pipeline_status())
+	      showNotification(geo_remote_pipeline_status(), type = "error", duration = 10)
 	    })
 	  })
 
-	  observeEvent(input$geo_continue_remote_pipeline, {
+	  observeEvent(input$geo_continue_remote_pipeline_click, {
 	    tryCatch({
-	      submit_remote_geo_pipeline()
+	      submit_remote_geo_pipeline(mode = "cached_continue")
 	    }, error = function(e) {
 	      geo_remote_pipeline_status(paste("Remote GEO continue failed:", conditionMessage(e)))
 	      remote_job_status_text(geo_remote_pipeline_status())
+	      showNotification(geo_remote_pipeline_status(), type = "error", duration = 10)
 	    })
 	  })
 
