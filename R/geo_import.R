@@ -566,6 +566,15 @@ ugplot_geo_expand_probe_annotation <- function(annotation, platform_id, source_p
   }
   gene_col <- ugplot_first_existing_col(annotation, c("UCSC_RefGene_Name", "Gene", "gene", "gene_symbol"))
   transcript_col <- ugplot_first_existing_col(annotation, c("UCSC_RefGene_Accession", "Transcript", "transcript_id"))
+  ensembl_transcript_col <- ugplot_first_existing_col(
+    annotation,
+    c(
+      "EnsemblTranscript", "EnsemblTranscriptID", "Ensembl_Transcript_ID",
+      "ensembl_transcript_id", "TranscriptENST", "ENST",
+      "GencodeBasicV12_NAME", "GencodeBasicV12_Accession",
+      "GencodeCompV12_NAME", "GencodeCompV12_Accession"
+    )
+  )
   group_col <- ugplot_first_existing_col(annotation, c("UCSC_RefGene_Group", "Relation_to_Gene", "gene_group"))
   chr_col <- ugplot_first_existing_col(annotation, c("chr", "CHR", "Chromosome"))
   pos_col <- ugplot_first_existing_col(annotation, c("pos", "MAPINFO", "mapinfo", "Position"))
@@ -583,8 +592,9 @@ ugplot_geo_expand_probe_annotation <- function(annotation, platform_id, source_p
 
   genes_split <- split_annotation_col(gene_col)
   transcripts_split <- split_annotation_col(transcript_col)
+  ensembl_transcripts_split <- split_annotation_col(ensembl_transcript_col)
   groups_split <- split_annotation_col(group_col)
-  max_links <- pmax(lengths(genes_split), lengths(transcripts_split), lengths(groups_split), 1L)
+  max_links <- pmax(lengths(genes_split), lengths(transcripts_split), lengths(ensembl_transcripts_split), lengths(groups_split), 1L)
   expand_split_values <- function(values_split) {
     base::unlist(Map(function(values, n_links) {
       if (length(values) == 0) {
@@ -601,6 +611,7 @@ ugplot_geo_expand_probe_annotation <- function(annotation, platform_id, source_p
     CpG = rep(cpg_ids, max_links),
     Gene = expand_split_values(genes_split),
     Transcript = expand_split_values(transcripts_split),
+    EnsemblTranscript = expand_split_values(ensembl_transcripts_split),
     GeneRegion = expand_split_values(groups_split),
     Chr = if (!is.na(chr_col)) rep(as.character(annotation[[chr_col]]), max_links) else NA_character_,
     Position = if (!is.na(pos_col)) rep(suppressWarnings(as.numeric(annotation[[pos_col]])), max_links) else NA_real_,

@@ -344,6 +344,14 @@ ugplot_job_result_preview <- function(result) {
   if (!is.list(result)) {
     return(result)
   }
+  if (identical(result$kind %||% "", "geo_pipeline")) {
+    preview <- result
+    if (is.list(preview$tables) && is.list(preview$tables$transcript_group_datasets)) {
+      preview$tables$transcript_group_datasets <- NULL
+      preview$tables$transcript_group_datasets_omitted <- TRUE
+    }
+    return(preview)
+  }
   preview <- list(
     results_table = result$results_table %||% data.frame(),
     final_summary = result$final_summary %||% NULL,

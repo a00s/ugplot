@@ -2957,6 +2957,11 @@ server <- function(input, output, session) {
             uiOutput("geo_transcript_ml_class_order_control"),
             tabsetPanel(
               tabPanel(
+                "Final",
+                uiOutput("geo_transcript_ml_final_table_title"),
+                DT::DTOutput("geo_transcript_ml_final_table")
+              ),
+              tabPanel(
                 "R2",
                 plotlyOutput("geo_transcript_ml_class_rank_plot", height = "420px"),
                 DT::DTOutput("geo_transcript_ml_class_compare_table"),
@@ -3613,7 +3618,7 @@ server <- function(input, output, session) {
   }
 
   geo_transcript_cache_version <- function() {
-    "reader_v3"
+    "reader_v4"
   }
 
   geo_transcript_group_cache_paths <- function(cache_dir, target_column, threshold, min_samples_pct, source = NULL, create = TRUE) {
@@ -4076,6 +4081,11 @@ server <- function(input, output, session) {
       GroupID = group$GroupID[[1]],
       PrincipalTranscript = group$PrincipalTranscript[[1]],
       Gene = group$Gene[[1]],
+      Columns = group$Columns[[1]],
+      Samples = group$Samples[[1]],
+      TranscriptCount = group$TranscriptCount[[1]],
+      ExtraTranscripts = group$ExtraTranscripts[[1]] %||% "",
+      CpGs = group$CpGs[[1]] %||% "",
       TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
       TriggerBestCpG = if ("TriggerBestCpG" %in% names(group)) as.character(group$TriggerBestCpG[[1]]) else "",
       TriggerBestRho = if ("TriggerBestRho" %in% names(group)) suppressWarnings(as.numeric(group$TriggerBestRho[[1]])) else NA_real_,
@@ -4208,6 +4218,11 @@ server <- function(input, output, session) {
       GroupID = group$GroupID[[1]],
       PrincipalTranscript = group$PrincipalTranscript[[1]],
       Gene = group$Gene[[1]],
+      Columns = group$Columns[[1]],
+      Samples = group$Samples[[1]],
+      TranscriptCount = group$TranscriptCount[[1]],
+      ExtraTranscripts = group$ExtraTranscripts[[1]] %||% "",
+      CpGs = group$CpGs[[1]] %||% "",
       TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
       TriggerBestCpG = if ("TriggerBestCpG" %in% names(group)) as.character(group$TriggerBestCpG[[1]]) else "",
       TriggerBestRho = if ("TriggerBestRho" %in% names(group)) suppressWarnings(as.numeric(group$TriggerBestRho[[1]])) else NA_real_,
@@ -5110,6 +5125,349 @@ server <- function(input, output, session) {
       input$geo_ml_class_change_reference_combined,
       input$geo_ml_class_change_comparison_combined
     ))
+  })
+
+  geo_transcript_ml_final_rows <- reactive({
+    normalize_paper_final <- function(final) {
+      if (!is.data.frame(final) || nrow(final) == 0) {
+        return(data.frame())
+      }
+      rename_map <- c(
+        GroupID = "Group ID",
+        Transcripts = "Transcript(s)",
+        MedianR2 = "Median R2",
+        MinR2 = "Min R2",
+        MaxR2 = "Max R2",
+        MedianMAE = "Median MAE",
+        WBR2 = "wB R2",
+        ShuffleMaxR2 = "Shuffle max R2",
+        BestSource = "Best source"
+      )
+      for (old_name in intersect(names(rename_map), names(final))) {
+        names(final)[names(final) == old_name] <- rename_map[[old_name]]
+      }
+      final
+    }
+    remote_result <- remote_job_preview_result()
+    if (geo_remote_mode_active() && is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline") &&
+        is.data.frame(remote_result$tables$transcript_ml_final) && nrow(remote_result$tables$transcript_ml_final) > 0) {
+      return(normalize_paper_final(remote_result$tables$transcript_ml_final))
+    }
+    results <- geo_transcript_ml_results_current()
+    if (!is.data.frame(results) || nrow(results) == 0 || !"GroupID" %in% names(results)) {
+      return(data.frame())
+    }
+    details <- geo_transcript_group_details_current()
+    result_cache <- new.env(parent = emptyenv())
+    flatten_values <- function(values) {
+      values <- unlist(values, recursive = TRUE, use.names = FALSE)
+      if (is.null(values)) {
+        return(character(0))
+      }
+      values
+    }
+    trim_nonempty <- function(values) {
+      values <- flatten_values(values)
+      values <- unique(trimws(as.character(stats::na.omit(values))))
+      values[nzchar(values)]
+    }
+    first_text <- function(row, columns, default = "") {
+      hit <- intersect(columns, names(row))
+      if (length(hit) == 0) {
+        return(default)
+      }
+      values <- trim_nonempty(row[[hit[[1]]]][[1]])
+      value <- if (length(values) > 0) values[[1]] else default
+      if (is.na(value)) default else value
+    }
+    first_number <- function(row, columns) {
+      hit <- intersect(columns, names(row))
+      if (length(hit) == 0) {
+        return(NA_real_)
+      }
+      values <- flatten_values(row[[hit[[1]]]][[1]])
+      value <- suppressWarnings(as.numeric(values))
+      value <- value[is.finite(value)]
+      if (length(value) > 0) value[[1]] else NA_real_
+    }
+    metric_vector <- function(df, columns) {
+      hit <- intersect(columns, names(df))
+      if (length(hit) == 0) {
+        return(rep(NA_real_, nrow(df)))
+      }
+      vapply(seq_len(nrow(df)), function(i) {
+        value <- suppressWarnings(as.numeric(flatten_values(df[[hit[[1]]]][[i]])))
+        value <- value[is.finite(value)]
+        if (length(value) > 0) value[[1]] else NA_real_
+      }, numeric(1))
+    }
+    result_object_for_row <- function(row) {
+      path <- first_text(row, c("StabilityResultPath", "ScreenResultPath", "ResultPath"))
+      if (!nzchar(path) || !file.exists(path)) {
+        return(NULL)
+      }
+      cache_key <- normalizePath(path, winslash = "/", mustWork = FALSE)
+      if (exists(cache_key, envir = result_cache, inherits = FALSE)) {
+        return(get(cache_key, envir = result_cache, inherits = FALSE))
+      }
+      result <- tryCatch(readRDS(path), error = function(e) NULL)
+      assign(cache_key, result, envir = result_cache)
+      result
+    }
+    summary_number <- function(row, result, columns, summary_fields = character(0)) {
+      value <- first_number(row, columns)
+      if (is.finite(value)) {
+        return(value)
+      }
+      if (is.list(result) && is.list(result$final_summary)) {
+        for (field in summary_fields) {
+          value <- suppressWarnings(as.numeric(flatten_values(result$final_summary[[field]] %||% NA_real_)))
+          value <- value[is.finite(value)]
+          if (length(value) > 0) {
+            return(value[[1]])
+          }
+        }
+      }
+      NA_real_
+    }
+    cpg_label <- function(cpg, method, value) {
+      if (!is.finite(value)) {
+        return(cpg)
+      }
+      paste0(cpg, " ", method, "=", signif(value, 5))
+    }
+    best_cpgs_for_group <- function(group_id, summary_row, limit = 5L) {
+      group_details <- if (is.data.frame(details) && nrow(details) > 0 && "GroupID" %in% names(details)) {
+        details[as.character(details$GroupID) == group_id, , drop = FALSE]
+      } else {
+        data.frame()
+      }
+      if (!is.data.frame(group_details) || nrow(group_details) == 0 || !"CpG" %in% names(group_details)) {
+        cpg <- first_text(summary_row, c("TriggerBestCpG", "BestCpG"))
+        rho <- first_number(summary_row, c("TriggerBestRho", "BestRho"))
+        method <- if (is.finite(rho)) "spearman" else ""
+        return(list(
+          labels = if (nzchar(cpg)) cpg_label(cpg, method, rho) else "",
+          best_method = method,
+          best_value = abs(rho)
+        ))
+      }
+      spearman <- metric_vector(group_details, c("SpearmanRho", "TriggerBestRho", "BestRho"))
+      spearman_abs <- metric_vector(group_details, c("AbsRho", "TriggerMaxAbsRho", "MaxAbsRho"))
+      spearman_abs[!is.finite(spearman_abs)] <- abs(spearman[!is.finite(spearman_abs)])
+      pearson <- metric_vector(group_details, c("PearsonR", "PearsonRho", "PearsonCorrelation", "PearsonCorr", "Pearson"))
+      pearson_abs <- metric_vector(group_details, c("AbsPearsonR", "PearsonAbsR", "AbsPearsonRho", "PearsonAbsRho"))
+      pearson_abs[!is.finite(pearson_abs)] <- abs(pearson[!is.finite(pearson_abs)])
+      use_pearson <- is.finite(pearson_abs) & (!is.finite(spearman_abs) | pearson_abs > spearman_abs)
+      chosen_abs <- ifelse(use_pearson, pearson_abs, spearman_abs)
+      chosen_value <- ifelse(use_pearson, pearson, spearman)
+      chosen_method <- ifelse(use_pearson, "pearson", "spearman")
+      valid <- is.finite(chosen_abs) & nzchar(as.character(group_details$CpG))
+      if (!any(valid)) {
+        cpgs <- trim_nonempty(group_details$CpG)
+        return(list(
+          labels = paste(utils::head(cpgs, limit), collapse = "; "),
+          best_method = "",
+          best_value = NA_real_
+        ))
+      }
+      cpg_rows <- data.frame(
+        CpG = as.character(group_details$CpG[valid]),
+        Method = chosen_method[valid],
+        Value = chosen_value[valid],
+        AbsValue = chosen_abs[valid],
+        stringsAsFactors = FALSE
+      )
+      cpg_rows <- cpg_rows[order(-cpg_rows$AbsValue, cpg_rows$CpG), , drop = FALSE]
+      cpg_rows <- cpg_rows[!duplicated(cpg_rows$CpG), , drop = FALSE]
+      top_rows <- utils::head(cpg_rows, limit)
+      list(
+        labels = paste(vapply(seq_len(nrow(top_rows)), function(i) {
+          cpg_label(top_rows$CpG[[i]], top_rows$Method[[i]], top_rows$Value[[i]])
+        }, character(1)), collapse = "; "),
+        best_method = top_rows$Method[[1]],
+        best_value = top_rows$AbsValue[[1]]
+      )
+    }
+    cpg_count_for_group <- function(group_id, row) {
+      dataset_path <- first_text(row, c("DatasetPath"))
+      if (nzchar(dataset_path) && file.exists(dataset_path)) {
+        dataset <- tryCatch(utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE, nrows = 2), error = function(e) data.frame())
+        if (is.data.frame(dataset) && ncol(dataset) > 0) {
+          cpg_cols <- setdiff(names(dataset), c("sample_id", "target", "EpigeneticClass"))
+          return(length(cpg_cols))
+        }
+      }
+      group_details <- if (is.data.frame(details) && nrow(details) > 0 && "GroupID" %in% names(details)) {
+        details[as.character(details$GroupID) == group_id, , drop = FALSE]
+      } else {
+        data.frame()
+      }
+      if (is.data.frame(group_details) && nrow(group_details) > 0 && "CpG" %in% names(group_details)) {
+        if ("CpGKeptForML" %in% names(group_details)) {
+          kept <- as.logical(group_details$CpGKeptForML)
+          kept[is.na(kept)] <- FALSE
+          if (any(kept)) {
+            return(length(trim_nonempty(group_details$CpG[kept])))
+          }
+        }
+        return(length(trim_nonempty(group_details$CpG)))
+      }
+      count <- first_number(row, c("CpGs", "Columns", "NCpGs"))
+      if (is.finite(count)) as.integer(count) else NA_integer_
+    }
+    sample_count_for_row <- function(row) {
+      stratum_samples <- first_number(row, c("StratumSamples"))
+      if (is.finite(stratum_samples)) {
+        return(as.integer(stratum_samples))
+      }
+      dataset_path <- first_text(row, c("DatasetPath"))
+      if (nzchar(dataset_path) && file.exists(dataset_path)) {
+        dataset <- tryCatch(utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+        if (is.data.frame(dataset) && nrow(dataset) > 0) {
+          return(nrow(dataset))
+        }
+      }
+      samples <- first_number(row, c("Samples", "N"))
+      if (is.finite(samples)) as.integer(samples) else NA_integer_
+    }
+    transcripts_for_group <- function(group_id, row) {
+      group_details <- if (is.data.frame(details) && nrow(details) > 0 && all(c("GroupID", "Transcript") %in% names(details))) {
+        details[as.character(details$GroupID) == group_id, , drop = FALSE]
+      } else {
+        data.frame()
+      }
+      enst_columns <- intersect(
+        c("EnsemblTranscript", "EnsemblTranscriptID", "TranscriptENST", "ENST", "ensembl_transcript_id", "Ensembl_Transcript_ID"),
+        names(group_details)
+      )
+      transcripts <- trim_nonempty(if (length(enst_columns) > 0) group_details[[enst_columns[[1]]]] else character(0))
+      if (length(transcripts) == 0 && is.data.frame(group_details) && nrow(group_details) > 0) {
+        all_transcripts <- trim_nonempty(group_details$Transcript)
+        enst_transcripts <- grep("^ENST", all_transcripts, value = TRUE)
+        transcripts <- if (length(enst_transcripts) > 0) enst_transcripts else all_transcripts
+      }
+      if (length(transcripts) == 0) {
+        all_transcripts <- trim_nonempty(c(
+          first_text(row, c("PrincipalTranscript", "Transcript")),
+          unlist(strsplit(first_text(row, c("ExtraTranscripts")), ";", fixed = TRUE), use.names = FALSE)
+        ))
+        enst_transcripts <- grep("^ENST", all_transcripts, value = TRUE)
+        transcripts <- if (length(enst_transcripts) > 0) enst_transcripts else all_transcripts
+      }
+      paste(transcripts, collapse = "; ")
+    }
+    winner_for_row <- function(row, cpg_info) {
+      metric_name <- first_text(row, c("MetricName"), "model")
+      model_mean <- first_number(row, c("MedianMetric", "MeanMetric", "BestMetric"))
+      lower_is_better <- grepl("rmse|mae|mse|error|loss|deviance", metric_name, ignore.case = TRUE)
+      candidates <- numeric(0)
+      if (is.finite(model_mean) && !isTRUE(lower_is_better)) {
+        candidates[["ML"]] <- model_mean
+      }
+      if (is.finite(cpg_info$best_value)) {
+        method <- cpg_info$best_method
+        if (!nzchar(method)) {
+          method <- "spearman"
+        }
+        candidates[[paste0("CpG-", method)]] <- cpg_info$best_value
+      }
+      if (length(candidates) == 0) {
+        return("")
+      }
+      best <- max(candidates, na.rm = TRUE)
+      winners <- names(candidates)[abs(candidates - best) < 1e-12]
+      if (all(grepl("^CpG-", winners))) {
+        "CpG"
+      } else if (all(identical(winners, "ML"))) {
+        "ML"
+      } else {
+        paste(winners, collapse = " + ")
+      }
+    }
+    rows <- lapply(seq_len(nrow(results)), function(i) {
+      row <- results[i, , drop = FALSE]
+      group_id <- as.character(row$GroupID[[1]] %||% "")
+      cpg_info <- best_cpgs_for_group(group_id, row)
+      result <- result_object_for_row(row)
+      data.frame(
+        Result = winner_for_row(row, cpg_info),
+        Gene = first_text(row, c("Gene")),
+        `Group ID` = group_id,
+        `Transcript(s)` = transcripts_for_group(group_id, row),
+        Correlation = cpg_info$labels,
+        CpGs = cpg_count_for_group(group_id, row),
+        Samples = sample_count_for_row(row),
+        Model = first_text(row, c("BestModel")),
+        `Median R2` = summary_number(row, result, c("MedianR2", "MedianMetric"), c("best_model_median")),
+        `Min R2` = summary_number(row, result, c("MinR2", "MinMetric"), c("best_model_min")),
+        `Max R2` = summary_number(row, result, c("MaxR2", "MaxMetric", "BestMetric"), c("best_model_max")),
+        `Median MAE` = summary_number(row, result, c("MedianMAE", "MAEMedian"), c("best_model_mae_median")),
+        `wB R2` = summary_number(row, result, c("WBR2", "BloodAdjustedR2", "WithBloodR2", "R2WithBlood"), c("wb_r2", "blood_adjusted_r2")),
+        `Shuffle max R2` = summary_number(row, result, c("ShuffleMaxR2", "ScrambleMaxR2", "AgeShuffleMaxR2"), c("shuffle_max_r2", "scramble_max_r2")),
+        `Best source` = if (identical(winner_for_row(row, cpg_info), "ML")) "model" else cpg_info$best_method,
+        `Correlation abs` = cpg_info$best_value,
+        `Metric name` = first_text(row, c("MetricName"), "R2"),
+        Source = first_text(row, c("Source")),
+        Phase = first_text(row, c("Phase")),
+        StratumColumn = first_text(row, c("StratumColumn")),
+        StratumValue = first_text(row, c("StratumValue")),
+        stringsAsFactors = FALSE,
+        check.names = FALSE
+      )
+    })
+    final <- bind_summary_rows(rows)
+    if (!is.data.frame(final) || nrow(final) == 0) {
+      return(data.frame())
+    }
+    if (all(c("Source", "Group ID", "StratumColumn", "StratumValue", "Phase") %in% names(final))) {
+      key <- paste(final$Source, final$`Group ID`, final$StratumColumn, final$StratumValue, sep = "\r")
+      stability_keys <- unique(key[as.character(final$Phase) == "stability"])
+      final <- final[!(key %in% stability_keys & as.character(final$Phase) != "stability"), , drop = FALSE]
+    }
+    if ("Phase" %in% names(final)) {
+      final$PhaseOrder <- ifelse(as.character(final$Phase) == "stability", 0L, 1L)
+    } else {
+      final$PhaseOrder <- 1L
+    }
+    final <- final[order(
+      final$PhaseOrder,
+      final$Source,
+      final$StratumColumn,
+      final$StratumValue,
+      -suppressWarnings(as.numeric(final$`Median R2`)),
+      -suppressWarnings(as.numeric(final$`Correlation abs`)),
+      final$`Group ID`
+    ), , drop = FALSE]
+    final$PhaseOrder <- NULL
+    rownames(final) <- NULL
+    final
+  })
+
+  output$geo_transcript_ml_final_table_title <- renderUI({
+    final <- geo_transcript_ml_final_rows()
+    if (!is.data.frame(final) || nrow(final) == 0) {
+      return(NULL)
+    }
+    tags$div(
+      tags$h4("Paper-style transcript summary"),
+      tags$p(class = "geo-step-note", "Result marks whether the strongest loaded evidence is ML-centered or CpG-centered. wB R2 and Shuffle max R2 are filled only when those analyses already exist in the loaded result.")
+    )
+  })
+
+  output$geo_transcript_ml_final_table <- DT::renderDT({
+    final <- geo_transcript_ml_final_rows()
+    req(is.data.frame(final), nrow(final) > 0)
+    display_cols <- c(
+      "Result", "Gene", "Group ID", "Transcript(s)", "Correlation", "CpGs", "Samples",
+      "Model", "Median R2", "Min R2", "Max R2", "Median MAE", "wB R2", "Shuffle max R2",
+      "Best source", "Source", "Phase", "StratumColumn", "StratumValue"
+    )
+    display <- final[, intersect(display_cols, names(final)), drop = FALSE]
+    for (metric_col in intersect(c("Median R2", "Min R2", "Max R2", "Median MAE", "wB R2", "Shuffle max R2"), names(display))) {
+      display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
+    }
+    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single")
   })
 
   output$geo_transcript_ml_table <- DT::renderDT({
@@ -6529,7 +6887,7 @@ server <- function(input, output, session) {
     }
     display <- details[details$GroupID == group_id, , drop = FALSE]
     display_cols <- intersect(
-      c("Transcript", "Gene", "CpG", "CpGKeptForML", "GeneRegion", "Chr", "Position", "Strand", "CpGIslandRelation", "RegulatoryFeature", "ProbeType", "SpearmanRho", "AbsRho", "PValue"),
+      c("Transcript", "EnsemblTranscript", "Gene", "CpG", "CpGKeptForML", "GeneRegion", "Chr", "Position", "Strand", "CpGIslandRelation", "RegulatoryFeature", "ProbeType", "SpearmanRho", "AbsRho", "PValue"),
       names(display)
     )
     display <- display[, display_cols, drop = FALSE]
