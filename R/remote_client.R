@@ -126,6 +126,23 @@ ugplot_remote_geo_cpg_summary <- function(server_url, job_id, threshold,
   ugplot_remote_parse(response)
 }
 
+ugplot_remote_geo_cpg_lookup <- function(server_url, job_id, cpg, threshold,
+                                         spearman_min_samples_pct = 80,
+                                         token = "") {
+  query <- paste0(
+    "cpg=", utils::URLencode(as.character(cpg), reserved = TRUE),
+    "&threshold=", utils::URLencode(as.character(threshold), reserved = TRUE),
+    "&spearman_min_samples_pct=", utils::URLencode(as.character(spearman_min_samples_pct), reserved = TRUE)
+  )
+  request <- ugplot_remote_request(
+    server_url,
+    paste0("jobs/", job_id, "/geo-cpg-lookup?", query),
+    token
+  )
+  response <- httr::GET(request$url, request$headers)
+  ugplot_remote_parse(response)
+}
+
 ugplot_remote_stop_job <- function(server_url, job_id, token = "") {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/stop"), token)
   response <- httr::POST(request$url, request$headers)

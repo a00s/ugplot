@@ -292,6 +292,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_job_log",
     "ugplot_remote_job_resources",
     "ugplot_remote_geo_cpg_summary",
+    "ugplot_remote_geo_cpg_lookup",
     "ugplot_remote_stop_job",
     "ugplot_remote_resume_job",
     "ugplot_remote_delete_job",
@@ -2525,6 +2526,7 @@ server <- function(input, output, session) {
   geo_transcript_ml_focus_group <- reactiveVal("")
   geo_transcript_ml_focus_stratum <- reactiveVal(list(column = "", value = ""))
   geo_remote_cpg_summary <- reactiveVal(list(key = "", data = NULL, status = "idle", message = ""))
+  geo_cpg_lookup_state <- reactiveVal(list(key = "", data = NULL, status = "idle", message = ""))
   geo_idat_qc_report <- reactiveVal(data.frame())
   geo_idat_qc_progress <- reactiveVal(list(
     phase = "idle",
@@ -2852,6 +2854,13 @@ server <- function(input, output, session) {
             numericInput("geo_spearman_min_samples", "Minimum samples per CpG for Spearman (%):", value = min_spearman_samples_value, min = 0, max = 100, step = 1),
             numericInput("geo_transcript_absrho_threshold", "Transcript CpG threshold |rho|:", value = threshold_value, min = 0, max = 1, step = 0.01),
             uiOutput("geo_spearman_summary"),
+            tags$div(
+              style = "margin-top: 10px; padding: 10px 12px; border: 1px solid #dbe7f3; background: #f8fbff; border-radius: 4px;",
+              tags$p(style = "margin: 0 0 8px 0; font-weight: 700;", "CpG lookup"),
+              textInput("geo_cpg_lookup_id", "CpG id:", value = "", placeholder = "cg04193160"),
+              actionButton("geo_cpg_lookup_run", "Lookup CpG", class = "btn btn-default btn-sm"),
+              uiOutput("geo_cpg_lookup_ui")
+            ),
             if (length(matrix_files) > 0) {
 	              if (!run_remote) actionButton("geo_run_spearman", if (spearman_done) "Re-run CpG Spearman scan" else "Run CpG Spearman scan") else NULL
             } else {
@@ -3353,6 +3362,185 @@ server <- function(input, output, session) {
       ))
     })
   }, ignoreInit = FALSE)
+
+  geo_lookup_rows <- function(value) {
+    if (is.data.frame(value)) {
+      return(value)
+    }
+    if (is.list(value) && length(value) > 0) {
+      out <- tryCatch(as.data.frame(value, stringsAsFactors = FALSE), error = function(e) data.frame())
+      return(out)
+    }
+    data.frame()
+  }
+
+  geo_local_cpg_lookup <- function(cpg, threshold) {
+    results <- geo_spearman_raw_results()
+    annotation_map <- geo_cpg_annotation()
+    cpg <- trimws(as.character(cpg %||% ""))
+    raw <- if (is.data.frame(results) && nrow(results) > 0 && "CpG" %in% names(results)) {
+      results[tolower(as.character(results$CpG)) == tolower(cpg), , drop = FALSE]
+    } else {
+      data.frame()
+    }
+    rownames(raw) <- NULL
+    min_samples <- NA_integer_
+    if (is.data.frame(results) && nrow(results) > 0 && "N" %in% names(results)) {
+      n_values <- suppressWarnings(as.numeric(results$N))
+      max_n <- suppressWarnings(max(n_values, na.rm = TRUE))
+      if (is.finite(max_n) && max_n > 0) {
+        min_samples <- max(3L, ceiling(max_n * geo_spearman_min_samples_pct() / 100))
+      }
+    }
+    if (nrow(raw) > 0) {
+      raw_n <- suppressWarnings(as.numeric(raw$N %||% NA_real_))
+      raw_absrho <- suppressWarnings(as.numeric(raw$AbsRho %||% NA_real_))
+      raw$PassesSampleFilter <- is.finite(raw_n) & is.finite(min_samples) & raw_n >= min_samples
+      raw$PassesCurrentThreshold <- is.finite(raw_absrho) & raw_absrho >= threshold
+      raw$PassesLoadedThreshold <- raw$PassesCurrentThreshold
+    }
+    annotated <- if (is.data.frame(annotation_map) && nrow(annotation_map) > 0 && "CpG" %in% names(annotation_map)) {
+      annotation_map[tolower(as.character(annotation_map$CpG)) == tolower(cpg), , drop = FALSE]
+    } else {
+      data.frame()
+    }
+    rownames(annotated) <- NULL
+    genes <- if (is.data.frame(annotated) && nrow(annotated) > 0 && "Gene" %in% names(annotated)) {
+      sort(unique(trimws(as.character(stats::na.omit(annotated$Gene)))))
+    } else {
+      character(0)
+    }
+    genes <- genes[nzchar(genes)]
+    transcripts <- if (is.data.frame(annotated) && nrow(annotated) > 0 && "Transcript" %in% names(annotated)) {
+      sort(unique(trimws(as.character(stats::na.omit(annotated$Transcript)))))
+    } else {
+      character(0)
+    }
+    transcripts <- transcripts[nzchar(transcripts)]
+    list(
+      kind = "geo_cpg_lookup",
+      cpg = cpg,
+      threshold = threshold,
+      loaded_threshold = threshold,
+      min_samples = min_samples,
+      present_in_spearman = nrow(raw) > 0,
+      present_in_annotation = nrow(annotated) > 0,
+      present_in_transcript_groups = FALSE,
+      genes = genes,
+      transcripts = transcripts,
+      raw = raw,
+      annotated = annotated,
+      transcript_group_details = data.frame()
+    )
+  }
+
+  observeEvent(input$geo_cpg_lookup_run, {
+    cpg <- trimws(as.character(input$geo_cpg_lookup_id %||% ""))
+    if (!nzchar(cpg)) {
+      geo_cpg_lookup_state(list(key = "", data = NULL, status = "failed", message = "Enter a CpG id."))
+      return()
+    }
+    threshold <- suppressWarnings(as.numeric(input$geo_transcript_absrho_threshold %||% 0.8))
+    if (!is.finite(threshold)) {
+      threshold <- 0.8
+    }
+    spearman_min_samples <- suppressWarnings(as.numeric(input$geo_spearman_min_samples %||% 80))
+    if (!is.finite(spearman_min_samples)) {
+      spearman_min_samples <- 80
+    }
+    remote_result <- remote_job_preview_result()
+    remote_loaded <- identical(geo_run_target_state(), "remote") &&
+      is.list(remote_result) &&
+      identical(remote_result$kind %||% "", "geo_pipeline")
+    if (isTRUE(remote_loaded)) {
+      context <- remote_geo_cpg_summary_context(threshold)
+      key <- paste(context$key, tolower(cpg), sep = "\r")
+      geo_cpg_lookup_state(list(key = key, data = NULL, status = "loading", message = "Loading CpG lookup..."))
+      tryCatch({
+        lookup <- ugplot_remote_geo_cpg_lookup(
+          server_url = context$server$url,
+          job_id = context$job_id,
+          cpg = cpg,
+          threshold = threshold,
+          spearman_min_samples_pct = spearman_min_samples,
+          token = context$server$token %||% ""
+        )
+        geo_cpg_lookup_state(list(key = key, data = lookup, status = "complete", message = "CpG lookup loaded."))
+      }, error = function(e) {
+        geo_cpg_lookup_state(list(key = key, data = NULL, status = "failed", message = conditionMessage(e)))
+      })
+    } else {
+      lookup <- geo_local_cpg_lookup(cpg, threshold)
+      geo_cpg_lookup_state(list(key = paste("local", tolower(cpg), threshold, sep = "\r"), data = lookup, status = "complete", message = "CpG lookup loaded."))
+    }
+  }, ignoreInit = TRUE)
+
+  output$geo_cpg_lookup_ui <- renderUI({
+    state <- geo_cpg_lookup_state()
+    status <- state$status %||% "idle"
+    if (identical(status, "idle")) {
+      return(tags$p(class = "geo-step-note", "Enter a CpG id to inspect its Spearman value, annotation, and transcript-group status."))
+    }
+    if (identical(status, "loading")) {
+      return(tags$p(class = "geo-step-note", state$message %||% "Loading CpG lookup..."))
+    }
+    if (identical(status, "failed")) {
+      return(tags$p(class = "geo-step-note", paste0("CpG lookup failed: ", state$message %||% "unknown error")))
+    }
+    lookup <- state$data
+    if (!is.list(lookup)) {
+      return(tags$p(class = "geo-step-note", "CpG lookup returned no data."))
+    }
+    raw <- geo_lookup_rows(lookup$raw)
+    annotated <- geo_lookup_rows(lookup$annotated)
+    group_details <- geo_lookup_rows(lookup$transcript_group_details)
+    genes <- as.character(unlist(lookup$genes %||% character(0), use.names = FALSE))
+    genes <- genes[nzchar(genes)]
+    transcripts <- as.character(unlist(lookup$transcripts %||% character(0), use.names = FALSE))
+    transcripts <- transcripts[nzchar(transcripts)]
+    raw_line <- if (nrow(raw) > 0) {
+      raw_value <- function(column, default = NA) {
+        if (column %in% names(raw) && length(raw[[column]]) > 0) raw[[column]][[1]] else default
+      }
+      rho <- suppressWarnings(as.numeric(raw_value("SpearmanRho", NA_real_)))
+      absrho <- suppressWarnings(as.numeric(raw_value("AbsRho", NA_real_)))
+      n_value <- suppressWarnings(as.numeric(raw_value("N", NA_real_)))
+      paste0(
+        "Spearman rho=", if (is.finite(rho)) signif(rho, 5) else "NA",
+        "; |rho|=", if (is.finite(absrho)) signif(absrho, 5) else "NA",
+        "; N=", if (is.finite(n_value)) format(n_value, big.mark = ",") else "NA",
+        "; sample filter=", if (isTRUE(raw_value("PassesSampleFilter", FALSE))) "pass" else "fail",
+        "; current threshold=", if (isTRUE(raw_value("PassesCurrentThreshold", FALSE))) "pass" else "fail",
+        "; loaded threshold=", if (isTRUE(raw_value("PassesLoadedThreshold", FALSE))) "pass" else "fail",
+        "."
+      )
+    } else {
+      "CpG was not found in the loaded Spearman cache."
+    }
+    group_line <- if (nrow(group_details) > 0) {
+      group_ids <- if ("GroupID" %in% names(group_details)) unique(as.character(group_details$GroupID)) else character(0)
+      group_ids <- group_ids[nzchar(group_ids)]
+      if (length(group_ids) > 0) {
+        paste0("Present in transcript group details: ", paste(group_ids, collapse = ", "), ".")
+      } else {
+        "Present in transcript group details."
+      }
+    } else {
+      "Not present in the loaded transcript group details."
+    }
+    tags$div(
+      style = "margin-top: 8px;",
+      tags$p(style = "margin: 0 0 4px 0;", tags$strong(as.character(lookup$cpg %||% "")), ": ", raw_line),
+      tags$p(style = "margin: 0 0 4px 0;", "Genes: ", if (length(genes) > 0) paste(utils::head(genes, 12), collapse = "; ") else "none in loaded annotation"),
+      tags$p(style = "margin: 0 0 4px 0;", "Transcripts: ", if (length(transcripts) > 0) paste(utils::head(transcripts, 12), collapse = "; ") else "none in loaded annotation"),
+      tags$p(style = "margin: 0 0 4px 0;", group_line),
+      if (nrow(annotated) > 0) {
+        tags$p(class = "geo-step-note", paste0("Annotation rows for this CpG: ", nrow(annotated), "."))
+      } else {
+        NULL
+      }
+    )
+  })
 
   output$geo_spearman_summary <- renderUI({
     results <- geo_spearman_raw_results()

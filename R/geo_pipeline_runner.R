@@ -229,6 +229,161 @@ ugplot_geo_cpg_summary_for_job <- function(job_id, jobs_dir, threshold,
   )
 }
 
+ugplot_geo_cpg_lookup_for_job <- function(job_id, jobs_dir, cpg,
+                                          threshold = NULL,
+                                          spearman_min_samples_pct = 80) {
+  if (!exists("ugplot_job_dir", mode = "function", inherits = TRUE)) {
+    stop("Job store helpers are not available.", call. = FALSE)
+  }
+  cpg <- trimws(as.character(cpg %||% ""))
+  if (!nzchar(cpg)) {
+    stop("CpG id is required.", call. = FALSE)
+  }
+  job_dir <- ugplot_job_dir(job_id, jobs_dir)
+  config_path <- file.path(job_dir, "config.rds")
+  if (!file.exists(config_path)) {
+    stop("Job config is not available for job: ", job_id, call. = FALSE)
+  }
+  config <- readRDS(config_path)
+  status <- tryCatch(ugplot_read_job_status(job_id, jobs_dir), error = function(e) list())
+  result_path <- status$result_path %||% status$partial_result_path %||% ""
+  result <- if (nzchar(result_path) && file.exists(result_path)) {
+    tryCatch(readRDS(result_path), error = function(e) list())
+  } else {
+    list()
+  }
+
+  accession <- trimws(as.character(config$accession %||% result$accession %||% ""))
+  source <- as.character(config$matrix_source %||% result$matrix_source %||% "processed")
+  source <- if (identical(source, "raw_sesame")) "raw_sesame" else "processed"
+  target_column <- trimws(as.character(config$target_column %||% result$target_column %||% ""))
+  if (!nzchar(accession) || !nzchar(target_column)) {
+    stop("The selected GEO job does not include accession/target metadata.", call. = FALSE)
+  }
+  threshold <- suppressWarnings(as.numeric(threshold %||% config$transcript_absrho_threshold %||% result$settings$transcript_absrho_threshold %||% 0.8))
+  if (!is.finite(threshold)) {
+    threshold <- 0.8
+  }
+  loaded_threshold <- suppressWarnings(as.numeric(config$transcript_absrho_threshold %||% result$settings$transcript_absrho_threshold %||% threshold))
+  if (!is.finite(loaded_threshold)) {
+    loaded_threshold <- threshold
+  }
+  spearman_min_samples_pct <- suppressWarnings(as.numeric(spearman_min_samples_pct %||% config$spearman_min_samples_pct %||% result$settings$spearman_min_samples_pct %||% 80))
+  if (!is.finite(spearman_min_samples_pct)) {
+    spearman_min_samples_pct <- 80
+  }
+  spearman_min_samples_pct <- max(0, min(100, spearman_min_samples_pct))
+
+  cache_dir <- as.character(result$cache_dir %||% ugplot_geo_cache_dir(accession))
+  spearman_paths <- ugplot_geo_spearman_paths(cache_dir, target_column, source = source, create = FALSE)
+  if (!file.exists(spearman_paths$raw)) {
+    stop("Full cached Spearman file is not available on the server for this GEO job.", call. = FALSE)
+  }
+
+  match_cpg_rows <- function(path) {
+    if (!nzchar(path %||% "") || !file.exists(path)) {
+      return(data.frame())
+    }
+    df <- utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+    if (!is.data.frame(df) || nrow(df) == 0 || !"CpG" %in% names(df)) {
+      return(data.frame())
+    }
+    out <- df[tolower(as.character(df$CpG)) == tolower(cpg), , drop = FALSE]
+    rownames(out) <- NULL
+    out
+  }
+
+  spearman_results <- utils::read.csv(spearman_paths$raw, stringsAsFactors = FALSE, check.names = FALSE)
+  raw <- if ("CpG" %in% names(spearman_results)) {
+    spearman_results[tolower(as.character(spearman_results$CpG)) == tolower(cpg), , drop = FALSE]
+  } else {
+    data.frame()
+  }
+  rownames(raw) <- NULL
+  min_samples <- NA_integer_
+  if (nrow(spearman_results) > 0 && "N" %in% names(spearman_results)) {
+    n_values <- suppressWarnings(as.numeric(spearman_results$N))
+    max_n <- suppressWarnings(max(n_values, na.rm = TRUE))
+    if (is.finite(max_n) && max_n > 0) {
+      min_samples <- max(3L, ceiling(max_n * spearman_min_samples_pct / 100))
+    }
+  }
+  if (nrow(raw) > 0) {
+    raw_n <- suppressWarnings(as.numeric(raw$N %||% NA_real_))
+    raw_absrho <- suppressWarnings(as.numeric(raw$AbsRho %||% NA_real_))
+    raw$PassesSampleFilter <- is.finite(raw_n) & is.finite(min_samples) & raw_n >= min_samples
+    raw$PassesCurrentThreshold <- is.finite(raw_absrho) & raw_absrho >= threshold
+    raw$PassesLoadedThreshold <- is.finite(raw_absrho) & raw_absrho >= loaded_threshold
+  }
+
+  annotated <- match_cpg_rows(spearman_paths$annotated)
+  group_details_path <- as.character(result$paths$transcript_group_details %||% "")
+  group_details <- match_cpg_rows(group_details_path)
+
+  genes <- character(0)
+  transcripts <- character(0)
+  if (is.data.frame(annotated) && nrow(annotated) > 0) {
+    if ("Gene" %in% names(annotated)) {
+      genes <- sort(unique(trimws(as.character(stats::na.omit(annotated$Gene)))))
+      genes <- genes[nzchar(genes)]
+    }
+    if ("Transcript" %in% names(annotated)) {
+      transcripts <- sort(unique(trimws(as.character(stats::na.omit(annotated$Transcript)))))
+      transcripts <- transcripts[nzchar(transcripts)]
+    }
+  }
+
+  gene_summary <- data.frame()
+  if (file.exists(spearman_paths$by_gene) && length(genes) > 0) {
+    by_gene <- utils::read.csv(spearman_paths$by_gene, stringsAsFactors = FALSE, check.names = FALSE)
+    group_col <- if ("Group" %in% names(by_gene)) "Group" else if ("Gene" %in% names(by_gene)) "Gene" else ""
+    if (nzchar(group_col)) {
+      gene_summary <- by_gene[as.character(by_gene[[group_col]]) %in% genes, , drop = FALSE]
+      rownames(gene_summary) <- NULL
+    }
+  }
+
+  transcript_summary <- data.frame()
+  if (file.exists(spearman_paths$by_transcript) && length(transcripts) > 0) {
+    by_transcript <- utils::read.csv(spearman_paths$by_transcript, stringsAsFactors = FALSE, check.names = FALSE)
+    group_col <- if ("Group" %in% names(by_transcript)) "Group" else if ("Transcript" %in% names(by_transcript)) "Transcript" else ""
+    if (nzchar(group_col)) {
+      transcript_summary <- by_transcript[as.character(by_transcript[[group_col]]) %in% transcripts, , drop = FALSE]
+      rownames(transcript_summary) <- NULL
+    }
+  }
+
+  list(
+    kind = "geo_cpg_lookup",
+    job_id = job_id,
+    accession = accession,
+    source = source,
+    target_column = target_column,
+    cpg = cpg,
+    threshold = threshold,
+    loaded_threshold = loaded_threshold,
+    spearman_min_samples_pct = spearman_min_samples_pct,
+    min_samples = min_samples,
+    present_in_spearman = nrow(raw) > 0,
+    present_in_annotation = nrow(annotated) > 0,
+    present_in_transcript_groups = nrow(group_details) > 0,
+    genes = genes,
+    transcripts = transcripts,
+    raw = raw,
+    annotated = annotated,
+    gene_summary = gene_summary,
+    transcript_summary = transcript_summary,
+    transcript_group_details = group_details,
+    paths = list(
+      spearman_raw = spearman_paths$raw,
+      spearman_annotated = spearman_paths$annotated,
+      spearman_by_gene = spearman_paths$by_gene,
+      spearman_by_transcript = spearman_paths$by_transcript,
+      transcript_group_details = group_details_path
+    )
+  )
+}
+
 ugplot_geo_bind_rows <- function(rows) {
   rows <- rows[vapply(rows, is.data.frame, logical(1))]
   rows <- rows[vapply(rows, nrow, integer(1)) > 0]

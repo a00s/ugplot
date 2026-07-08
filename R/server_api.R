@@ -184,7 +184,8 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         job_config_summary = TRUE,
         job_resource_monitor = !is.null(auto_resume_process),
         geo_pipeline = TRUE,
-        geo_cpg_summary = TRUE
+        geo_cpg_summary = TRUE,
+        geo_cpg_lookup = TRUE
       )
     )
   })
@@ -251,6 +252,25 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         threshold = threshold,
         spearman_min_samples_pct = spearman_min_samples_pct,
         bin_width = bin_width
+      )
+    }, error = function(e) {
+      res$status <- 400
+      list(error = conditionMessage(e))
+    })
+  })
+
+  pr$handle("GET", "/jobs/<job_id>/geo-cpg-lookup", function(job_id, req, res) {
+    tryCatch({
+      query <- req$argsQuery %||% list()
+      cpg <- as.character(query$cpg %||% "")
+      threshold <- suppressWarnings(as.numeric(query$threshold %||% NA_real_))
+      spearman_min_samples_pct <- suppressWarnings(as.numeric(query$spearman_min_samples_pct %||% 80))
+      ugplot_geo_cpg_lookup_for_job(
+        job_id = job_id,
+        jobs_dir = jobs_dir,
+        cpg = cpg,
+        threshold = threshold,
+        spearman_min_samples_pct = spearman_min_samples_pct
       )
     }, error = function(e) {
       res$status <- 400
