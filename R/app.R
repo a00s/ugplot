@@ -291,6 +291,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_job_status",
     "ugplot_remote_job_log",
     "ugplot_remote_job_resources",
+    "ugplot_remote_geo_threshold_summary",
     "ugplot_remote_stop_job",
     "ugplot_remote_resume_job",
     "ugplot_remote_delete_job",
@@ -2523,6 +2524,7 @@ server <- function(input, output, session) {
   geo_transcript_ml_results <- reactiveVal(data.frame())
   geo_transcript_ml_focus_group <- reactiveVal("")
   geo_transcript_ml_focus_stratum <- reactiveVal(list(column = "", value = ""))
+  geo_remote_threshold_summary <- reactiveVal(list(key = "", data = NULL, status = "idle", message = ""))
   geo_idat_qc_report <- reactiveVal(data.frame())
   geo_idat_qc_progress <- reactiveVal(list(
     phase = "idle",
@@ -3215,6 +3217,43 @@ server <- function(input, output, session) {
     )
   })
 
+  remote_geo_threshold_summary_context <- function(threshold = NULL) {
+    job_id <- geo_remote_pipeline_job_id() %||% input$remote_job_id %||% ""
+    threshold <- suppressWarnings(as.numeric(threshold %||% input$geo_transcript_absrho_threshold %||% 0.8))
+    if (!is.finite(threshold)) threshold <- 0.8
+    transcript_min_samples <- suppressWarnings(as.numeric(input$geo_transcript_min_samples %||% 80))
+    if (!is.finite(transcript_min_samples)) transcript_min_samples <- 80
+    spearman_min_samples <- suppressWarnings(as.numeric(input$geo_spearman_min_samples %||% 80))
+    if (!is.finite(spearman_min_samples)) spearman_min_samples <- 80
+    server <- selected_geo_remote_server()
+    list(
+      key = paste(server$url[[1]], job_id, threshold, transcript_min_samples, spearman_min_samples, sep = "\r"),
+      job_id = job_id,
+      threshold = threshold,
+      transcript_min_samples = transcript_min_samples,
+      spearman_min_samples = spearman_min_samples,
+      server = server
+    )
+  }
+
+  fetch_remote_geo_threshold_summary <- function() {
+    context <- remote_geo_threshold_summary_context()
+    if (!nzchar(context$job_id %||% "")) {
+      stop("No remote GEO job is selected.", call. = FALSE)
+    }
+    geo_remote_threshold_summary(list(key = context$key, data = NULL, status = "running", message = "Fetching exact server group count..."))
+    summary <- ugplot_remote_geo_threshold_summary(
+      server_url = context$server$url,
+      job_id = context$job_id,
+      threshold = context$threshold,
+      transcript_min_samples = context$transcript_min_samples,
+      spearman_min_samples_pct = context$spearman_min_samples,
+      token = context$server$token %||% ""
+    )
+    geo_remote_threshold_summary(list(key = context$key, data = summary, status = "complete", message = "Exact server group count loaded."))
+    summary
+  }
+
   output$geo_spearman_summary <- renderUI({
     results <- geo_spearman_raw_results()
     if (!is.data.frame(results) || nrow(results) == 0) {
@@ -3247,6 +3286,13 @@ server <- function(input, output, session) {
     remote_spearman_preview <- isTRUE(remote_loaded) &&
       is.data.frame(remote_result$tables$spearman_preview) &&
       nrow(remote_result$tables$spearman_preview) == nrow(results)
+    exact_context <- remote_geo_threshold_summary_context(threshold)
+    exact_state <- geo_remote_threshold_summary()
+    exact_summary <- if (is.list(exact_state) && identical(exact_state$key %||% "", exact_context$key) && is.list(exact_state$data)) {
+      exact_state$data
+    } else {
+      NULL
+    }
     preview_prefix <- if (isTRUE(remote_spearman_preview)) "In the loaded Spearman preview" else "At current threshold"
     if (is.data.frame(annotation_map) && nrow(annotation_map) > 0 && nrow(trigger_rows) > 0) {
       annotated <- annotation_map[
@@ -3281,11 +3327,19 @@ server <- function(input, output, session) {
         is.finite(threshold) &&
         !isTRUE(all.equal(remote_threshold, threshold, tolerance = 1e-8))
       action_title <- if (isTRUE(threshold_changed)) "Start cached threshold run" else "Ready to continue transcript pipeline"
-      count_label <- if (isTRUE(remote_spearman_preview)) {
+      count_label <- if (is.list(exact_summary)) {
+        paste0(
+          "the server reports ", format(as.integer(exact_summary$groups %||% 0L), big.mark = ","),
+          " TG group(s) from ", format(as.integer(exact_summary$compatible_transcripts %||% exact_summary$candidate_transcripts %||% 0L), big.mark = ","),
+          " compatible transcript(s), ", format(as.integer(exact_summary$candidate_transcripts %||% 0L), big.mark = ","),
+          " candidate transcript(s), and ", format(as.integer(exact_summary$threshold_cpgs %||% 0L), big.mark = ","),
+          " CpG(s)."
+        )
+      } else if (isTRUE(remote_spearman_preview)) {
         paste0(
           "the loaded preview contains ", format(transcript_candidate_count, big.mark = ","),
           if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) " transcript candidate(s)" else " CpG(s)",
-          ". The new remote job will evaluate the full cached Spearman file on the server."
+          ". Fetch the exact server group count to see the real TG count before starting."
         )
       } else {
         paste0(
@@ -3315,6 +3369,19 @@ server <- function(input, output, session) {
         ),
         tags$p(style = "margin: 0 0 8px 0; font-weight: 700;", action_title),
         tags$p(style = "margin: 0 0 8px 0;", action_text),
+        if (isTRUE(remote_spearman_preview) && !is.list(exact_summary)) {
+          tags$button(
+            type = "button",
+            id = "geo_fetch_remote_threshold_summary",
+            class = "btn btn-default btn-sm",
+            style = "margin: 0 8px 8px 0;",
+            onclick = "if (window.Shiny) Shiny.setInputValue('geo_fetch_remote_threshold_summary_click', Date.now(), {priority: 'event'});",
+            "Fetch exact server group count"
+          )
+        } else NULL,
+        if (is.list(exact_state) && identical(exact_state$key %||% "", exact_context$key) && nzchar(exact_state$message %||% "")) {
+          tags$p(style = "margin: 0 0 8px 0; font-size: 13px;", exact_state$message)
+        } else NULL,
         tags$button(
           type = "button",
           id = "geo_continue_remote_pipeline",
@@ -12411,6 +12478,27 @@ server <- function(input, output, session) {
 	      geo_remote_pipeline_status(paste("Remote GEO continue failed:", conditionMessage(e)))
 	      remote_job_status_text(geo_remote_pipeline_status())
 	      showNotification(geo_remote_pipeline_status(), type = "error", duration = 10)
+	    })
+	  })
+
+	  observeEvent(input$geo_fetch_remote_threshold_summary_click, {
+	    tryCatch({
+	      summary <- fetch_remote_geo_threshold_summary()
+	      message <- paste0(
+	        "Exact server count: ", summary$groups %||% 0L,
+	        " TG group(s), ", summary$compatible_transcripts %||% summary$candidate_transcripts %||% 0L,
+	        " compatible transcript(s), ", summary$candidate_transcripts %||% 0L,
+	        " candidate transcript(s)."
+	      )
+	      geo_remote_pipeline_status(message)
+	      remote_job_status_text(message)
+	      showNotification(message, type = "message", duration = 8)
+	    }, error = function(e) {
+	      context <- remote_geo_threshold_summary_context()
+	      geo_remote_threshold_summary(list(key = context$key, data = NULL, status = "failed", message = conditionMessage(e)))
+	      geo_remote_pipeline_status(paste("Remote GEO threshold count failed:", conditionMessage(e)))
+	      remote_job_status_text(geo_remote_pipeline_status())
+	      showNotification(geo_remote_pipeline_status(), type = "error", duration = 12)
 	    })
 	  })
 

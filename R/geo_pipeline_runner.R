@@ -102,6 +102,141 @@ ugplot_geo_transcript_ml_group_dir <- function(cache_dir, source, group_id, run_
   path
 }
 
+ugplot_geo_filter_spearman_min_samples_remote <- function(results, min_samples_pct = 80) {
+  if (!is.data.frame(results) || nrow(results) == 0 || !"N" %in% names(results)) {
+    return(results)
+  }
+  min_samples_pct <- suppressWarnings(as.numeric(min_samples_pct %||% 80))
+  if (!is.finite(min_samples_pct)) {
+    min_samples_pct <- 80
+  }
+  min_samples_pct <- max(0, min(100, min_samples_pct))
+  n_values <- suppressWarnings(as.numeric(results$N))
+  max_n <- suppressWarnings(max(n_values, na.rm = TRUE))
+  if (!is.finite(max_n) || max_n <= 0) {
+    return(results)
+  }
+  min_samples <- max(3L, ceiling(max_n * min_samples_pct / 100))
+  filtered <- results[n_values >= min_samples, , drop = FALSE]
+  rownames(filtered) <- NULL
+  filtered
+}
+
+ugplot_geo_threshold_summary_for_job <- function(job_id, jobs_dir, threshold,
+                                                 transcript_min_samples = 80,
+                                                 spearman_min_samples_pct = 80) {
+  if (!exists("ugplot_job_dir", mode = "function", inherits = TRUE)) {
+    stop("Job store helpers are not available.", call. = FALSE)
+  }
+  job_dir <- ugplot_job_dir(job_id, jobs_dir)
+  config_path <- file.path(job_dir, "config.rds")
+  if (!file.exists(config_path)) {
+    stop("Job config is not available for job: ", job_id, call. = FALSE)
+  }
+  config <- readRDS(config_path)
+  status <- tryCatch(ugplot_read_job_status(job_id, jobs_dir), error = function(e) list())
+  result_path <- status$result_path %||% status$partial_result_path %||% ""
+  result <- if (nzchar(result_path) && file.exists(result_path)) {
+    tryCatch(readRDS(result_path), error = function(e) list())
+  } else {
+    list()
+  }
+
+  accession <- trimws(as.character(config$accession %||% result$accession %||% ""))
+  source <- as.character(config$matrix_source %||% result$matrix_source %||% "processed")
+  source <- if (identical(source, "raw_sesame")) "raw_sesame" else "processed"
+  target_column <- trimws(as.character(config$target_column %||% result$target_column %||% ""))
+  if (!nzchar(accession) || !nzchar(target_column)) {
+    stop("The selected GEO job does not include accession/target metadata.", call. = FALSE)
+  }
+  threshold <- suppressWarnings(as.numeric(threshold %||% config$transcript_absrho_threshold %||% result$settings$transcript_absrho_threshold %||% 0.8))
+  if (!is.finite(threshold)) {
+    threshold <- 0.8
+  }
+  transcript_min_samples <- suppressWarnings(as.numeric(transcript_min_samples %||% config$transcript_min_samples %||% result$settings$transcript_min_samples %||% 80))
+  if (!is.finite(transcript_min_samples)) {
+    transcript_min_samples <- 80
+  }
+  spearman_min_samples_pct <- suppressWarnings(as.numeric(spearman_min_samples_pct %||% config$spearman_min_samples_pct %||% result$settings$spearman_min_samples_pct %||% 80))
+  if (!is.finite(spearman_min_samples_pct)) {
+    spearman_min_samples_pct <- 80
+  }
+
+  cache_dir <- as.character(result$cache_dir %||% ugplot_geo_cache_dir(accession))
+  spearman_paths <- ugplot_geo_spearman_paths(cache_dir, target_column, source = source, create = FALSE)
+  if (!file.exists(spearman_paths$raw)) {
+    stop("Full cached Spearman file is not available on the server for this GEO job.", call. = FALSE)
+  }
+  spearman_results <- utils::read.csv(spearman_paths$raw, stringsAsFactors = FALSE, check.names = FALSE)
+  filtered <- ugplot_geo_filter_spearman_min_samples_remote(spearman_results, spearman_min_samples_pct)
+  absrho <- suppressWarnings(as.numeric(filtered$AbsRho))
+  rho <- suppressWarnings(as.numeric(filtered$SpearmanRho))
+  trigger_rows <- filtered[is.finite(absrho) & absrho >= threshold, , drop = FALSE]
+
+  metadata <- ugplot_geo_fetch_sample_metadata(accession, cache_dir)
+  annotation_map <- ugplot_geo_build_annotation_cache(ugplot_geo_detect_platform(metadata))
+  candidates <- ugplot_geo_transcript_candidates(filtered, annotation_map, threshold)
+  group_paths <- ugplot_geo_transcript_group_paths(cache_dir, target_column, threshold, transcript_min_samples, source = source)
+  group_result <- if (file.exists(group_paths$summary) && file.exists(group_paths$details)) {
+    list(
+      summary = utils::read.csv(group_paths$summary, stringsAsFactors = FALSE, check.names = FALSE),
+      details = utils::read.csv(group_paths$details, stringsAsFactors = FALSE, check.names = FALSE),
+      paths = group_paths,
+      progress = if (file.exists(group_paths$progress)) tryCatch(readRDS(group_paths$progress), error = function(e) data.frame()) else data.frame()
+    )
+  } else if (is.data.frame(candidates) && nrow(candidates) > 0) {
+    matrix_files <- ugplot_geo_matrix_files(cache_dir, source = source)
+    if (length(matrix_files) == 0) {
+      stop("Matrix files are not available on the server for exact transcript grouping.", call. = FALSE)
+    }
+    ugplot_geo_build_transcript_groups_remote(
+      candidates = candidates,
+      matrix_files = matrix_files,
+      metadata = metadata,
+      cache_dir = cache_dir,
+      target_column = target_column,
+      threshold = threshold,
+      min_samples_pct = transcript_min_samples,
+      source = source
+    )
+  } else {
+    list(summary = data.frame(), details = data.frame(), paths = group_paths, progress = data.frame())
+  }
+  compatible_transcripts <- if (is.data.frame(group_result$progress) && "Status" %in% names(group_result$progress)) {
+    sum(as.character(group_result$progress$Status) == "compatible", na.rm = TRUE)
+  } else if (is.data.frame(group_result$details) && "Transcript" %in% names(group_result$details)) {
+    length(unique(as.character(group_result$details$Transcript)))
+  } else {
+    NA_integer_
+  }
+
+  list(
+    job_id = job_id,
+    accession = accession,
+    source = source,
+    target_column = target_column,
+    threshold = threshold,
+    transcript_min_samples = transcript_min_samples,
+    spearman_min_samples_pct = spearman_min_samples_pct,
+    spearman_total_cpgs = nrow(spearman_results),
+    spearman_pass_filter_cpgs = nrow(filtered),
+    threshold_cpgs = nrow(trigger_rows),
+    positive_cpgs = sum(is.finite(rho) & rho >= threshold, na.rm = TRUE),
+    negative_cpgs = sum(is.finite(rho) & rho <= -threshold, na.rm = TRUE),
+    annotated_cpgs = if (is.data.frame(candidates) && "CpG" %in% names(candidates)) length(unique(as.character(candidates$CpG))) else 0L,
+    cpg_transcript_links = if (is.data.frame(candidates)) nrow(candidates) else 0L,
+    candidate_transcripts = if (is.data.frame(candidates) && "Transcript" %in% names(candidates)) length(unique(as.character(candidates$Transcript))) else 0L,
+    compatible_transcripts = compatible_transcripts,
+    groups = if (is.data.frame(group_result$summary)) nrow(group_result$summary) else 0L,
+    group_details = if (is.data.frame(group_result$details)) nrow(group_result$details) else 0L,
+    group_summary_path = group_paths$summary,
+    group_details_path = group_paths$details,
+    spearman_path = spearman_paths$raw,
+    cache_dir = cache_dir,
+    cached_groups = file.exists(group_paths$summary)
+  )
+}
+
 ugplot_geo_bind_rows <- function(rows) {
   rows <- rows[vapply(rows, is.data.frame, logical(1))]
   rows <- rows[vapply(rows, nrow, integer(1)) > 0]
