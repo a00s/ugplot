@@ -3427,6 +3427,41 @@ server <- function(input, output, session) {
         paste0("Full server CpG counts unavailable: ", cpg_summary_state$message %||% "unknown error", ". Showing loaded preview.")
       )
     }
+    remote_threshold <- if (is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")) {
+      suppressWarnings(as.numeric(remote_result$settings$transcript_absrho_threshold %||% NA_real_))
+    } else {
+      NA_real_
+    }
+    loaded_threshold <- cpg_summary_number("loaded_threshold", remote_threshold)
+    threshold_changed <- is.finite(loaded_threshold) &&
+      is.finite(threshold) &&
+      !isTRUE(all.equal(loaded_threshold, threshold, tolerance = 1e-8))
+    loaded_threshold_count <- cpg_summary_count("loaded_threshold_cpgs", if (isTRUE(threshold_changed)) NA_integer_ else trigger_count)
+    newly_included_count <- cpg_summary_count("newly_included_cpgs", NA_integer_)
+    excluded_loaded_count <- cpg_summary_count("excluded_loaded_cpgs", NA_integer_)
+    threshold_delta_note <- NULL
+    if (isTRUE(has_full_cpg_summary) && is.finite(loaded_threshold) && is.finite(loaded_threshold_count)) {
+      if (isTRUE(threshold_changed) && threshold < loaded_threshold) {
+        threshold_delta_note <- tags$p(paste0(
+          "Loaded threshold |rho| >= ", loaded_threshold, " covers ",
+          format(loaded_threshold_count, big.mark = ","), " CpG(s); current threshold |rho| >= ",
+          threshold, " contains ", format(trigger_count, big.mark = ","),
+          " CpG(s), adding ", format(newly_included_count, big.mark = ","), " new CpG(s)."
+        ))
+      } else if (isTRUE(threshold_changed) && threshold > loaded_threshold) {
+        threshold_delta_note <- tags$p(paste0(
+          "Loaded threshold |rho| >= ", loaded_threshold, " covers ",
+          format(loaded_threshold_count, big.mark = ","), " CpG(s); current threshold |rho| >= ",
+          threshold, " keeps ", format(trigger_count, big.mark = ","),
+          " CpG(s), excluding ", format(excluded_loaded_count, big.mark = ","), " CpG(s) from the loaded threshold."
+        ))
+      } else {
+        threshold_delta_note <- tags$p(paste0(
+          "Loaded threshold |rho| >= ", loaded_threshold, " covers ",
+          format(loaded_threshold_count, big.mark = ","), " CpG(s)."
+        ))
+      }
+    }
     preview_prefix <- if (isTRUE(remote_spearman_preview)) "In the loaded Spearman preview" else "At current threshold"
     if (is.data.frame(annotation_map) && nrow(annotation_map) > 0 && nrow(trigger_rows) > 0) {
       annotated <- annotation_map[
@@ -3453,21 +3488,26 @@ server <- function(input, output, session) {
       trigger_count
     }
     if (isTRUE(run_remote) && transcript_candidate_count > 0) {
-      remote_result <- remote_job_preview_result()
-      remote_threshold <- if (is.list(remote_result) && identical(remote_result$kind %||% "", "geo_pipeline")) {
-        suppressWarnings(as.numeric(remote_result$settings$transcript_absrho_threshold %||% NA_real_))
-      } else {
-        NA_real_
-      }
-      threshold_changed <- is.finite(remote_threshold) &&
-        is.finite(threshold) &&
-        !isTRUE(all.equal(remote_threshold, threshold, tolerance = 1e-8))
       action_title <- if (isTRUE(threshold_changed)) "Start cached threshold run" else "Ready to continue transcript pipeline"
       count_label <- if (isTRUE(has_full_cpg_summary)) {
-        paste0(
-          "the full server cache contains ", format(trigger_count, big.mark = ","),
-          " CpG(s) at this threshold."
-        )
+        if (isTRUE(threshold_changed) && threshold < loaded_threshold && is.finite(loaded_threshold_count)) {
+          paste0(
+            "the loaded threshold covers ", format(loaded_threshold_count, big.mark = ","),
+            " CpG(s); the current threshold contains ", format(trigger_count, big.mark = ","),
+            " CpG(s), adding ", format(newly_included_count, big.mark = ","), " new CpG(s)."
+          )
+        } else if (isTRUE(threshold_changed) && threshold > loaded_threshold && is.finite(loaded_threshold_count)) {
+          paste0(
+            "the loaded threshold covers ", format(loaded_threshold_count, big.mark = ","),
+            " CpG(s); the current threshold keeps ", format(trigger_count, big.mark = ","),
+            " CpG(s), excluding ", format(excluded_loaded_count, big.mark = ","), " CpG(s)."
+          )
+        } else {
+          paste0(
+            "the full server cache contains ", format(trigger_count, big.mark = ","),
+            " CpG(s) at this threshold."
+          )
+        }
       } else if (isTRUE(remote_spearman_preview)) {
         paste0(
           "the loaded preview contains ", format(trigger_count, big.mark = ","),
@@ -3481,7 +3521,7 @@ server <- function(input, output, session) {
       }
       action_text <- if (isTRUE(threshold_changed)) {
         paste0(
-          "Loaded job used |rho| >= ", remote_threshold,
+          "Loaded job used |rho| >= ", loaded_threshold,
           "; current threshold is |rho| >= ", threshold,
           " and ", count_label,
           " This will create a new remote job and leave the loaded job unchanged."
@@ -3557,6 +3597,7 @@ server <- function(input, output, session) {
         totals_suffix
       )),
       cpg_summary_note,
+      threshold_delta_note,
       geo_cpg_distribution_ui(absrho, threshold, histogram = cpg_summary$histogram %||% NULL),
       threshold_warning,
       continue_action,

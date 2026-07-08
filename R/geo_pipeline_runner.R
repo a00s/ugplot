@@ -153,6 +153,10 @@ ugplot_geo_cpg_summary_for_job <- function(job_id, jobs_dir, threshold,
   if (!is.finite(threshold)) {
     threshold <- 0.8
   }
+  loaded_threshold <- suppressWarnings(as.numeric(config$transcript_absrho_threshold %||% result$settings$transcript_absrho_threshold %||% threshold))
+  if (!is.finite(loaded_threshold)) {
+    loaded_threshold <- threshold
+  }
   spearman_min_samples_pct <- suppressWarnings(as.numeric(spearman_min_samples_pct %||% config$spearman_min_samples_pct %||% result$settings$spearman_min_samples_pct %||% 80))
   if (!is.finite(spearman_min_samples_pct)) {
     spearman_min_samples_pct <- 80
@@ -185,6 +189,18 @@ ugplot_geo_cpg_summary_for_job <- function(job_id, jobs_dir, threshold,
     stringsAsFactors = FALSE
   )
   histogram$Active <- histogram$BinMax >= threshold
+  current_threshold_cpgs <- sum(is.finite(absrho) & absrho >= threshold, na.rm = TRUE)
+  loaded_threshold_cpgs <- sum(is.finite(absrho) & absrho >= loaded_threshold, na.rm = TRUE)
+  newly_included_cpgs <- if (threshold < loaded_threshold) {
+    sum(is.finite(absrho) & absrho >= threshold & absrho < loaded_threshold, na.rm = TRUE)
+  } else {
+    0L
+  }
+  excluded_loaded_cpgs <- if (threshold > loaded_threshold) {
+    sum(is.finite(absrho) & absrho >= loaded_threshold & absrho < threshold, na.rm = TRUE)
+  } else {
+    0L
+  }
   list(
     kind = "geo_cpg_summary",
     job_id = job_id,
@@ -192,11 +208,16 @@ ugplot_geo_cpg_summary_for_job <- function(job_id, jobs_dir, threshold,
     source = source,
     target_column = target_column,
     threshold = threshold,
+    loaded_threshold = loaded_threshold,
     spearman_min_samples_pct = spearman_min_samples_pct,
     bin_width = bin_width,
     spearman_total_cpgs = nrow(spearman_results),
     spearman_pass_filter_cpgs = nrow(filtered),
-    threshold_cpgs = sum(is.finite(absrho) & absrho >= threshold, na.rm = TRUE),
+    threshold_cpgs = current_threshold_cpgs,
+    loaded_threshold_cpgs = loaded_threshold_cpgs,
+    newly_included_cpgs = newly_included_cpgs,
+    excluded_loaded_cpgs = excluded_loaded_cpgs,
+    threshold_delta_cpgs = current_threshold_cpgs - loaded_threshold_cpgs,
     positive_cpgs = sum(is.finite(rho) & rho >= threshold, na.rm = TRUE),
     negative_cpgs = sum(is.finite(rho) & rho <= -threshold, na.rm = TRUE),
     max_absrho = if (length(valid_absrho) > 0) max(valid_absrho) else NA_real_,
