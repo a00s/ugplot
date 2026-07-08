@@ -3239,6 +3239,15 @@ server <- function(input, output, session) {
     annotation_map <- geo_cpg_annotation()
     annotation_line <- NULL
     annotated <- data.frame()
+    run_remote <- identical(geo_run_target_state(), "remote")
+    remote_result <- remote_job_preview_result()
+    remote_loaded <- isTRUE(run_remote) &&
+      is.list(remote_result) &&
+      identical(remote_result$kind %||% "", "geo_pipeline")
+    remote_spearman_preview <- isTRUE(remote_loaded) &&
+      is.data.frame(remote_result$tables$spearman_preview) &&
+      nrow(remote_result$tables$spearman_preview) == nrow(results)
+    preview_prefix <- if (isTRUE(remote_spearman_preview)) "In the loaded Spearman preview" else "At current threshold"
     if (is.data.frame(annotation_map) && nrow(annotation_map) > 0 && nrow(trigger_rows) > 0) {
       annotated <- annotation_map[
         annotation_map$CpG %in% unique(trigger_rows$CpG) &
@@ -3248,14 +3257,13 @@ server <- function(input, output, session) {
         drop = FALSE
       ]
       annotation_line <- tags$p(paste0(
-        "At current threshold: ", length(unique(annotated$CpG)), " annotated CpG(s), ",
+        preview_prefix, ": ", length(unique(annotated$CpG)), " annotated CpG(s), ",
         nrow(annotated), " CpG-transcript link(s), ",
         length(unique(annotated$Transcript)), " transcript(s)."
       ))
     } else if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
-      annotation_line <- tags$p("At current threshold: 0 annotated CpGs/transcripts.")
+      annotation_line <- tags$p(paste0(preview_prefix, ": 0 annotated CpGs/transcripts."))
     }
-    run_remote <- identical(geo_run_target_state(), "remote")
     continue_action <- NULL
     transcript_candidate_count <- if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
       length(unique(as.character(annotated$Transcript %||% character(0))))
@@ -3273,18 +3281,31 @@ server <- function(input, output, session) {
         is.finite(threshold) &&
         !isTRUE(all.equal(remote_threshold, threshold, tolerance = 1e-8))
       action_title <- if (isTRUE(threshold_changed)) "Start cached threshold run" else "Ready to continue transcript pipeline"
+      count_label <- if (isTRUE(remote_spearman_preview)) {
+        paste0(
+          "the loaded preview contains ", format(transcript_candidate_count, big.mark = ","),
+          if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) " transcript candidate(s)" else " CpG(s)",
+          ". The new remote job will evaluate the full cached Spearman file on the server."
+        )
+      } else {
+        paste0(
+          "keeps ", format(transcript_candidate_count, big.mark = ","),
+          " transcript candidate(s)."
+        )
+      }
       action_text <- if (isTRUE(threshold_changed)) {
         paste0(
           "Loaded job used |rho| >= ", remote_threshold,
           "; current threshold is |rho| >= ", threshold,
-          " and keeps ", format(transcript_candidate_count, big.mark = ","),
-          " transcript candidate(s). This will create a new remote job and leave the loaded job unchanged."
+          " and ", count_label,
+          " This will create a new remote job and leave the loaded job unchanged."
         )
       } else {
         paste0(
           "Current threshold |rho| >= ", threshold,
-          " keeps ", format(transcript_candidate_count, big.mark = ","),
-          " transcript candidate(s). Continue will reuse the remote GEO cache where available."
+          if (isTRUE(remote_spearman_preview)) "; " else " ",
+          count_label,
+          " Continue will reuse the remote GEO cache where available."
         )
       }
       continue_action <- tags$div(
@@ -3329,10 +3350,17 @@ server <- function(input, output, session) {
         )
       )
     }
+    totals_label <- if (isTRUE(remote_spearman_preview)) "Spearman preview: " else "Spearman totals: "
+    totals_suffix <- if (isTRUE(remote_spearman_preview)) {
+      " shown from the loaded remote result; full cached Spearman is evaluated on the remote server when you continue."
+    } else {
+      ""
+    }
     tags$div(class = "geo-step-status",
-      tags$p(tags$strong("Spearman totals: "), paste0(
+      tags$p(tags$strong(totals_label), paste0(
         format(nrow(results), big.mark = ","), " CpG(s) scanned; ",
-        format(nrow(filtered), big.mark = ","), " pass the sample filter; max |rho| ", max_text, "."
+        format(nrow(filtered), big.mark = ","), " pass the sample filter; max |rho| ", max_text, ".",
+        totals_suffix
       )),
       threshold_warning,
       continue_action,
