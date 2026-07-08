@@ -183,7 +183,8 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         job_preview = TRUE,
         job_config_summary = TRUE,
         job_resource_monitor = !is.null(auto_resume_process),
-        geo_pipeline = TRUE
+        geo_pipeline = TRUE,
+        geo_cpg_summary = TRUE
       )
     )
   })
@@ -234,6 +235,25 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
       list(resources = ugplot_read_job_resources(job_id, jobs_dir, max_lines = max_lines))
     }, error = function(e) {
       res$status <- 404
+      list(error = conditionMessage(e))
+    })
+  })
+
+  pr$handle("GET", "/jobs/<job_id>/geo-cpg-summary", function(job_id, req, res) {
+    tryCatch({
+      query <- req$argsQuery %||% list()
+      threshold <- suppressWarnings(as.numeric(query$threshold %||% NA_real_))
+      spearman_min_samples_pct <- suppressWarnings(as.numeric(query$spearman_min_samples_pct %||% 80))
+      bin_width <- suppressWarnings(as.numeric(query$bin_width %||% 0.05))
+      ugplot_geo_cpg_summary_for_job(
+        job_id = job_id,
+        jobs_dir = jobs_dir,
+        threshold = threshold,
+        spearman_min_samples_pct = spearman_min_samples_pct,
+        bin_width = bin_width
+      )
+    }, error = function(e) {
+      res$status <- 400
       list(error = conditionMessage(e))
     })
   })

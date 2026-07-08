@@ -291,6 +291,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_job_status",
     "ugplot_remote_job_log",
     "ugplot_remote_job_resources",
+    "ugplot_remote_geo_cpg_summary",
     "ugplot_remote_stop_job",
     "ugplot_remote_resume_job",
     "ugplot_remote_delete_job",
@@ -2523,6 +2524,7 @@ server <- function(input, output, session) {
   geo_transcript_ml_results <- reactiveVal(data.frame())
   geo_transcript_ml_focus_group <- reactiveVal("")
   geo_transcript_ml_focus_stratum <- reactiveVal(list(column = "", value = ""))
+  geo_remote_cpg_summary <- reactiveVal(list(key = "", data = NULL, status = "idle", message = ""))
   geo_idat_qc_report <- reactiveVal(data.frame())
   geo_idat_qc_progress <- reactiveVal(list(
     phase = "idle",
@@ -3215,15 +3217,23 @@ server <- function(input, output, session) {
     )
   })
 
-  geo_cpg_distribution_ui <- function(absrho, threshold) {
-    absrho <- suppressWarnings(as.numeric(absrho))
-    absrho <- absrho[is.finite(absrho)]
-    if (length(absrho) == 0) {
-      return(NULL)
+  geo_cpg_distribution_ui <- function(absrho = NULL, threshold, histogram = NULL) {
+    if (is.data.frame(histogram) && nrow(histogram) > 0 && all(c("BinMin", "BinMax", "Count") %in% names(histogram))) {
+      bin_min <- suppressWarnings(as.numeric(histogram$BinMin))
+      bin_max <- suppressWarnings(as.numeric(histogram$BinMax))
+      counts <- suppressWarnings(as.integer(histogram$Count))
+    } else {
+      absrho <- suppressWarnings(as.numeric(absrho))
+      absrho <- absrho[is.finite(absrho)]
+      if (length(absrho) == 0) {
+        return(NULL)
+      }
+      breaks <- seq(0, 1, by = 0.05)
+      bins <- cut(pmax(0, pmin(1, absrho)), breaks = breaks, include.lowest = TRUE, right = TRUE)
+      counts <- as.integer(table(factor(bins, levels = levels(bins))))
+      bin_min <- utils::head(breaks, -1)
+      bin_max <- utils::tail(breaks, -1)
     }
-    breaks <- seq(0, 1, by = 0.1)
-    bins <- cut(pmax(0, pmin(1, absrho)), breaks = breaks, include.lowest = TRUE, right = TRUE)
-    counts <- as.integer(table(factor(bins, levels = levels(bins))))
     max_count <- max(counts, na.rm = TRUE)
     if (!is.finite(max_count) || max_count <= 0) {
       max_count <- 1L
@@ -3233,27 +3243,116 @@ server <- function(input, output, session) {
       threshold <- 0.8
     }
     bars <- lapply(seq_along(counts), function(i) {
-      bin_min <- breaks[[i]]
-      bin_max <- breaks[[i + 1L]]
-      active <- bin_max >= threshold
+      current_min <- bin_min[[i]]
+      current_max <- bin_max[[i]]
+      active <- current_max >= threshold
       height <- max(4, round(58 * counts[[i]] / max_count))
       tags$div(
-        title = paste0(format(bin_min, nsmall = 1), "-", format(bin_max, nsmall = 1), ": ", counts[[i]], " CpG(s)"),
-        style = "display: flex; flex-direction: column; align-items: center; justify-content: flex-end; width: 9%; min-width: 18px;",
+        title = paste0(sprintf("%.2f", current_min), "-", sprintf("%.2f", current_max), ": ", counts[[i]], " CpG(s)"),
+        style = "display: flex; flex-direction: column; align-items: center; justify-content: flex-end; flex: 1 1 0; min-width: 8px;",
         tags$div(style = paste0(
           "width: 100%; height: ", height, "px; border-radius: 3px 3px 0 0; ",
           "background: ", if (isTRUE(active)) "#2e9d4d" else "#b8c7d9", ";"
         )),
-        tags$span(style = "font-size: 10px; color: #5d6b7a; margin-top: 3px;", sprintf("%.1f", bin_min))
+        if (abs(round(current_min * 10) - current_min * 10) < 1e-8) {
+          tags$span(style = "font-size: 9px; color: #5d6b7a; margin-top: 3px;", sprintf("%.1f", current_min))
+        } else {
+          tags$span(style = "font-size: 9px; color: transparent; margin-top: 3px;", ".")
+        }
       )
     })
     tags$div(
       style = "margin: 10px 0 12px 0; padding: 8px 10px; border: 1px solid #dbe7f3; background: #f8fbff; border-radius: 4px;",
       tags$p(style = "margin: 0 0 6px 0; font-weight: 700;", "CpG |rho| distribution"),
       tags$div(style = "height: 82px; display: flex; align-items: flex-end; gap: 4px;", bars),
-      tags$p(style = "margin: 4px 0 0 0; font-size: 12px; color: #5d6b7a;", "Bars at or above the selected threshold are highlighted.")
+      tags$p(style = "margin: 4px 0 0 0; font-size: 12px; color: #5d6b7a;", "Bin width is 0.05. Bars at or above the selected threshold are highlighted.")
     )
   }
+
+  remote_geo_cpg_summary_context <- function(threshold = NULL) {
+    job_id <- trimws(as.character(geo_remote_pipeline_job_id() %||% input$remote_job_id %||% ""))
+    threshold <- suppressWarnings(as.numeric(threshold %||% input$geo_transcript_absrho_threshold %||% 0.8))
+    if (!is.finite(threshold)) {
+      threshold <- 0.8
+    }
+    spearman_min_samples <- suppressWarnings(as.numeric(input$geo_spearman_min_samples %||% 80))
+    if (!is.finite(spearman_min_samples)) {
+      spearman_min_samples <- 80
+    }
+    spearman_min_samples <- max(0, min(100, spearman_min_samples))
+    server <- selected_geo_remote_server()
+    server_url <- as.character(server$url[[1]] %||% "")
+    list(
+      key = paste(server_url, job_id, threshold, spearman_min_samples, sep = "\r"),
+      job_id = job_id,
+      threshold = threshold,
+      spearman_min_samples = spearman_min_samples,
+      server = server
+    )
+  }
+
+  remote_geo_cpg_summary_key <- reactive({
+    remote_result <- remote_job_preview_result()
+    remote_loaded <- identical(geo_run_target_state(), "remote") &&
+      is.list(remote_result) &&
+      identical(remote_result$kind %||% "", "geo_pipeline")
+    if (!isTRUE(remote_loaded)) {
+      return("")
+    }
+    context <- remote_geo_cpg_summary_context()
+    if (!nzchar(context$job_id)) {
+      return("")
+    }
+    context$key
+  })
+
+  remote_geo_cpg_summary_key_debounced <- shiny::debounce(remote_geo_cpg_summary_key, 800)
+
+  observeEvent(remote_geo_cpg_summary_key_debounced(), {
+    key <- remote_geo_cpg_summary_key_debounced()
+    if (!nzchar(key)) {
+      return()
+    }
+    state <- geo_remote_cpg_summary()
+    if (is.list(state) &&
+        identical(state$key %||% "", key) &&
+        ((state$status %||% "") %in% c("loading", "complete", "failed"))) {
+      return()
+    }
+    context <- remote_geo_cpg_summary_context()
+    if (!nzchar(context$job_id)) {
+      return()
+    }
+    geo_remote_cpg_summary(list(
+      key = key,
+      data = NULL,
+      status = "loading",
+      message = "Loading full server CpG counts..."
+    ))
+    tryCatch({
+      summary <- ugplot_remote_geo_cpg_summary(
+        server_url = context$server$url,
+        job_id = context$job_id,
+        threshold = context$threshold,
+        spearman_min_samples_pct = context$spearman_min_samples,
+        bin_width = 0.05,
+        token = context$server$token %||% ""
+      )
+      geo_remote_cpg_summary(list(
+        key = key,
+        data = summary,
+        status = "complete",
+        message = "Full server CpG counts loaded."
+      ))
+    }, error = function(e) {
+      geo_remote_cpg_summary(list(
+        key = key,
+        data = NULL,
+        status = "failed",
+        message = conditionMessage(e)
+      ))
+    })
+  }, ignoreInit = FALSE)
 
   output$geo_spearman_summary <- renderUI({
     results <- geo_spearman_raw_results()
@@ -3270,12 +3369,6 @@ server <- function(input, output, session) {
     trigger_rows <- filtered[is.finite(absrho) & absrho >= threshold, , drop = FALSE]
     positive_rows <- filtered[is.finite(rho) & rho >= threshold, , drop = FALSE]
     negative_rows <- filtered[is.finite(rho) & rho <= -threshold, , drop = FALSE]
-    max_absrho <- suppressWarnings(max(absrho, na.rm = TRUE))
-    max_text <- if (is.finite(max_absrho)) signif(max_absrho, 4) else "NA"
-    max_pos <- suppressWarnings(max(rho, na.rm = TRUE))
-    min_neg <- suppressWarnings(min(rho, na.rm = TRUE))
-    max_pos_text <- if (is.finite(max_pos)) signif(max_pos, 4) else "NA"
-    min_neg_text <- if (is.finite(min_neg)) signif(min_neg, 4) else "NA"
     annotation_map <- geo_cpg_annotation()
     annotation_line <- NULL
     annotated <- data.frame()
@@ -3287,6 +3380,53 @@ server <- function(input, output, session) {
     remote_spearman_preview <- isTRUE(remote_loaded) &&
       is.data.frame(remote_result$tables$spearman_preview) &&
       nrow(remote_result$tables$spearman_preview) == nrow(results)
+    cpg_summary_context <- if (isTRUE(remote_loaded)) remote_geo_cpg_summary_context(threshold) else list(key = "")
+    cpg_summary_state <- geo_remote_cpg_summary()
+    cpg_summary_status <- if (is.list(cpg_summary_state) && identical(cpg_summary_state$key %||% "", cpg_summary_context$key)) {
+      cpg_summary_state$status %||% "idle"
+    } else {
+      "idle"
+    }
+    cpg_summary <- if (identical(cpg_summary_status, "complete") && is.list(cpg_summary_state$data)) {
+      cpg_summary_state$data
+    } else {
+      NULL
+    }
+    has_full_cpg_summary <- is.list(cpg_summary) && identical(cpg_summary$kind %||% "", "geo_cpg_summary")
+    cpg_summary_count <- function(field, fallback) {
+      value <- suppressWarnings(as.numeric(cpg_summary[[field]] %||% NA_real_))
+      if (isTRUE(has_full_cpg_summary) && length(value) > 0 && is.finite(value[[1]])) {
+        return(as.integer(round(value[[1]])))
+      }
+      fallback
+    }
+    cpg_summary_number <- function(field, fallback) {
+      value <- suppressWarnings(as.numeric(cpg_summary[[field]] %||% NA_real_))
+      if (isTRUE(has_full_cpg_summary) && length(value) > 0 && is.finite(value[[1]])) {
+        return(value[[1]])
+      }
+      fallback
+    }
+    scanned_count <- cpg_summary_count("spearman_total_cpgs", nrow(results))
+    filtered_count <- cpg_summary_count("spearman_pass_filter_cpgs", nrow(filtered))
+    trigger_count <- cpg_summary_count("threshold_cpgs", nrow(trigger_rows))
+    positive_count <- cpg_summary_count("positive_cpgs", nrow(positive_rows))
+    negative_count <- cpg_summary_count("negative_cpgs", nrow(negative_rows))
+    max_absrho <- cpg_summary_number("max_absrho", suppressWarnings(max(absrho, na.rm = TRUE)))
+    max_text <- if (is.finite(max_absrho)) signif(max_absrho, 4) else "NA"
+    max_pos <- cpg_summary_number("max_rho", suppressWarnings(max(rho, na.rm = TRUE)))
+    min_neg <- cpg_summary_number("min_rho", suppressWarnings(min(rho, na.rm = TRUE)))
+    max_pos_text <- if (is.finite(max_pos)) signif(max_pos, 4) else "NA"
+    min_neg_text <- if (is.finite(min_neg)) signif(min_neg, 4) else "NA"
+    cpg_summary_note <- NULL
+    if (identical(cpg_summary_status, "loading")) {
+      cpg_summary_note <- tags$p(class = "geo-step-note", "Loading full server CpG counts...")
+    } else if (identical(cpg_summary_status, "failed")) {
+      cpg_summary_note <- tags$p(
+        class = "geo-step-note",
+        paste0("Full server CpG counts unavailable: ", cpg_summary_state$message %||% "unknown error", ". Showing loaded preview.")
+      )
+    }
     preview_prefix <- if (isTRUE(remote_spearman_preview)) "In the loaded Spearman preview" else "At current threshold"
     if (is.data.frame(annotation_map) && nrow(annotation_map) > 0 && nrow(trigger_rows) > 0) {
       annotated <- annotation_map[
@@ -3305,10 +3445,12 @@ server <- function(input, output, session) {
       annotation_line <- tags$p(paste0(preview_prefix, ": 0 annotated CpGs/transcripts."))
     }
     continue_action <- NULL
-    transcript_candidate_count <- if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
+    transcript_candidate_count <- if (isTRUE(has_full_cpg_summary)) {
+      trigger_count
+    } else if (is.data.frame(annotation_map) && nrow(annotation_map) > 0) {
       length(unique(as.character(annotated$Transcript %||% character(0))))
     } else {
-      nrow(trigger_rows)
+      trigger_count
     }
     if (isTRUE(run_remote) && transcript_candidate_count > 0) {
       remote_result <- remote_job_preview_result()
@@ -3321,14 +3463,19 @@ server <- function(input, output, session) {
         is.finite(threshold) &&
         !isTRUE(all.equal(remote_threshold, threshold, tolerance = 1e-8))
       action_title <- if (isTRUE(threshold_changed)) "Start cached threshold run" else "Ready to continue transcript pipeline"
-      count_label <- if (isTRUE(remote_spearman_preview)) {
+      count_label <- if (isTRUE(has_full_cpg_summary)) {
         paste0(
-          "the loaded preview contains ", format(nrow(trigger_rows), big.mark = ","),
+          "the full server cache contains ", format(trigger_count, big.mark = ","),
+          " CpG(s) at this threshold."
+        )
+      } else if (isTRUE(remote_spearman_preview)) {
+        paste0(
+          "the loaded preview contains ", format(trigger_count, big.mark = ","),
           " CpG(s) at this threshold. The new remote run will use the full cached Spearman file."
         )
       } else {
         paste0(
-          "keeps ", format(nrow(trigger_rows), big.mark = ","),
+          "keeps ", format(trigger_count, big.mark = ","),
           " CpG(s)."
         )
       }
@@ -3364,8 +3511,8 @@ server <- function(input, output, session) {
       )
     }
     threshold_warning <- NULL
-    if (nrow(filtered) > 0 && transcript_candidate_count == 0) {
-      no_candidate_message <- if (nrow(trigger_rows) == 0) {
+    if (filtered_count > 0 && transcript_candidate_count == 0) {
+      no_candidate_message <- if (trigger_count == 0) {
         paste0(
           "Current threshold |rho| >= ", threshold,
           " is above the observed range. Max |rho| is ", max_text,
@@ -3389,28 +3536,37 @@ server <- function(input, output, session) {
         )
       )
     }
-    totals_label <- if (isTRUE(remote_spearman_preview)) "Spearman preview: " else "Spearman totals: "
-    totals_suffix <- if (isTRUE(remote_spearman_preview)) {
+    totals_label <- if (isTRUE(has_full_cpg_summary)) {
+      "Spearman full cache: "
+    } else if (isTRUE(remote_spearman_preview)) {
+      "Spearman preview: "
+    } else {
+      "Spearman totals: "
+    }
+    totals_suffix <- if (isTRUE(has_full_cpg_summary)) {
+      ""
+    } else if (isTRUE(remote_spearman_preview)) {
       " shown from the loaded remote result; full cached Spearman is evaluated on the remote server when you continue."
     } else {
       ""
     }
     tags$div(class = "geo-step-status",
       tags$p(tags$strong(totals_label), paste0(
-        format(nrow(results), big.mark = ","), " CpG(s) scanned; ",
-        format(nrow(filtered), big.mark = ","), " pass the sample filter; max |rho| ", max_text, ".",
+        format(scanned_count, big.mark = ","), " CpG(s) scanned; ",
+        format(filtered_count, big.mark = ","), " pass the sample filter; max |rho| ", max_text, ".",
         totals_suffix
       )),
-      geo_cpg_distribution_ui(absrho, threshold),
+      cpg_summary_note,
+      geo_cpg_distribution_ui(absrho, threshold, histogram = cpg_summary$histogram %||% NULL),
       threshold_warning,
       continue_action,
       tags$p(paste0(
         "|rho| >= ", threshold, ": ",
-        format(nrow(trigger_rows), big.mark = ","), " CpG(s)."
+        format(trigger_count, big.mark = ","), " CpG(s)."
       )),
       tags$p(paste0(
-        "rho >= +", threshold, ": ", format(nrow(positive_rows), big.mark = ","),
-        " CpG(s); rho <= -", threshold, ": ", format(nrow(negative_rows), big.mark = ","),
+        "rho >= +", threshold, ": ", format(positive_count, big.mark = ","),
+        " CpG(s); rho <= -", threshold, ": ", format(negative_count, big.mark = ","),
         " CpG(s). Range: ", min_neg_text, " to +", max_pos_text, "."
       )),
       annotation_line
