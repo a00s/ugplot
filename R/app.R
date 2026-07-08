@@ -5175,6 +5175,47 @@ server <- function(input, output, session) {
   })
 
   geo_transcript_ml_final_rows <- reactive({
+    short_correlation_method <- function(method) {
+      method <- tolower(trimws(as.character(method %||% "")))
+      if (identical(method, "pearson")) return("P")
+      if (identical(method, "spearman")) return("S")
+      if (nzchar(method)) return(toupper(substr(method, 1, 1)))
+      "R"
+    }
+    format_cpg_correlation_label <- function(cpg, method, value) {
+      if (!is.finite(value)) {
+        return(cpg)
+      }
+      paste0(cpg, "(", short_correlation_method(method), "=", sprintf("%.2f", value), ")")
+    }
+    reformat_correlation_cell <- function(value) {
+      value <- trimws(as.character(value %||% ""))
+      if (!nzchar(value)) {
+        return("")
+      }
+      parts <- unlist(strsplit(value, "[;\n]+"), use.names = FALSE)
+      parts <- trimws(parts)
+      parts <- parts[nzchar(parts)]
+      if (length(parts) == 0) {
+        return("")
+      }
+      formatted <- vapply(parts, function(part) {
+        match <- regexec("^([^[:space:]]+)\\s+([[:alpha:]]+)=([-+0-9.eE]+)$", part)
+        pieces <- regmatches(part, match)[[1]]
+        if (length(pieces) == 4) {
+          parsed <- suppressWarnings(as.numeric(pieces[[4]]))
+          return(format_cpg_correlation_label(pieces[[2]], pieces[[3]], parsed))
+        }
+        match_compact <- regexec("^([^()]+)\\(([[:alpha:]])=([-+0-9.eE]+)\\)$", part)
+        compact <- regmatches(part, match_compact)[[1]]
+        if (length(compact) == 4) {
+          parsed <- suppressWarnings(as.numeric(compact[[4]]))
+          return(format_cpg_correlation_label(compact[[2]], compact[[3]], parsed))
+        }
+        part
+      }, character(1))
+      paste(formatted, collapse = "\n")
+    }
     normalize_paper_final <- function(final) {
       if (!is.data.frame(final) || nrow(final) == 0) {
         return(data.frame())
@@ -5192,6 +5233,9 @@ server <- function(input, output, session) {
       )
       for (old_name in intersect(names(rename_map), names(final))) {
         names(final)[names(final) == old_name] <- rename_map[[old_name]]
+      }
+      if ("Correlation" %in% names(final)) {
+        final$Correlation <- vapply(final$Correlation, reformat_correlation_cell, character(1))
       }
       final
     }
@@ -5281,7 +5325,7 @@ server <- function(input, output, session) {
       if (!is.finite(value)) {
         return(cpg)
       }
-      paste0(cpg, " ", method, "=", signif(value, 5))
+      format_cpg_correlation_label(cpg, method, value)
     }
     best_cpgs_for_group <- function(group_id, summary_row, limit = 5L) {
       group_details <- if (is.data.frame(details) && nrow(details) > 0 && "GroupID" %in% names(details)) {
@@ -5313,7 +5357,7 @@ server <- function(input, output, session) {
       if (!any(valid)) {
         cpgs <- trim_nonempty(group_details$CpG)
         return(list(
-          labels = paste(utils::head(cpgs, limit), collapse = "; "),
+          labels = paste(utils::head(cpgs, limit), collapse = "\n"),
           best_method = "",
           best_value = NA_real_
         ))
@@ -5331,7 +5375,7 @@ server <- function(input, output, session) {
       list(
         labels = paste(vapply(seq_len(nrow(top_rows)), function(i) {
           cpg_label(top_rows$CpG[[i]], top_rows$Method[[i]], top_rows$Value[[i]])
-        }, character(1)), collapse = "; "),
+        }, character(1)), collapse = "\n"),
         best_method = top_rows$Method[[1]],
         best_value = top_rows$AbsValue[[1]]
       )
@@ -5514,7 +5558,11 @@ server <- function(input, output, session) {
     for (metric_col in intersect(c("Median R2", "Min R2", "Max R2", "Median MAE", "wB R2", "Shuffle max R2"), names(display))) {
       display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
     }
-    DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single")
+    table <- DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single")
+    if ("Correlation" %in% names(display)) {
+      table <- DT::formatStyle(table, "Correlation", whiteSpace = "pre-line")
+    }
+    table
   })
 
   output$geo_transcript_ml_table <- DT::renderDT({

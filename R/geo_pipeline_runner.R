@@ -492,7 +492,10 @@ ugplot_geo_paper_summary_remote <- function(summary, details = data.frame()) {
   }
   cpg_label <- function(cpg, method, value) {
     if (!is.finite(value)) return(cpg)
-    paste0(cpg, " ", method, "=", signif(value, 5))
+    method_label <- tolower(as.character(method %||% ""))
+    method_label <- if (identical(method_label, "pearson")) "P" else if (identical(method_label, "spearman")) "S" else toupper(substr(method_label, 1, 1))
+    if (!nzchar(method_label)) method_label <- "R"
+    paste0(cpg, "(", method_label, "=", sprintf("%.2f", value), ")")
   }
   best_cpgs_for_group <- function(group_id, row, limit = 5L) {
     group_details <- if (is.data.frame(details) && nrow(details) > 0 && "GroupID" %in% names(details)) {
@@ -522,7 +525,7 @@ ugplot_geo_paper_summary_remote <- function(summary, details = data.frame()) {
     valid <- is.finite(chosen_abs) & nzchar(as.character(group_details$CpG))
     if (!any(valid)) {
       cpgs <- trim_nonempty(group_details$CpG)
-      return(list(labels = paste(utils::head(cpgs, limit), collapse = "; "), best_method = "", best_value = NA_real_))
+      return(list(labels = paste(utils::head(cpgs, limit), collapse = "\n"), best_method = "", best_value = NA_real_))
     }
     cpg_rows <- data.frame(
       CpG = as.character(group_details$CpG[valid]),
@@ -537,7 +540,7 @@ ugplot_geo_paper_summary_remote <- function(summary, details = data.frame()) {
     list(
       labels = paste(vapply(seq_len(nrow(top_rows)), function(i) {
         cpg_label(top_rows$CpG[[i]], top_rows$Method[[i]], top_rows$Value[[i]])
-      }, character(1)), collapse = "; "),
+      }, character(1)), collapse = "\n"),
       best_method = top_rows$Method[[1]],
       best_value = top_rows$AbsValue[[1]]
     )
