@@ -108,7 +108,7 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
   })
 }
 
-ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir(), wait_for_startup = TRUE) {
+ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
   if (!requireNamespace("callr", quietly = TRUE)) {
     stop("Package 'callr' is required to start background jobs.", call. = FALSE)
   }
@@ -169,9 +169,6 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
     pid = process$get_pid(),
     message = "Started background process"
   )
-  if (!isTRUE(wait_for_startup)) {
-    return(list(job = ugplot_read_job_status(job_id, jobs_dir), process = process))
-  }
   startup_deadline <- Sys.time() + 60
   repeat {
     startup_status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
@@ -188,8 +185,7 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
 
 ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugplot_default_jobs_dir()) {
   status <- ugplot_create_job(dataset = dataset, config = config, jobs_dir = jobs_dir, type = config$type %||% "ml")
-  wait_for_startup <- !isTRUE(config$async_submit)
-  ugplot_launch_background_job(status$id, jobs_dir, wait_for_startup = wait_for_startup)
+  ugplot_launch_background_job(status$id, jobs_dir)
 }
 
 ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
