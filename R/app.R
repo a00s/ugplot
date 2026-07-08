@@ -5542,7 +5542,7 @@ server <- function(input, output, session) {
     }
     tags$div(
       tags$h4("Transcript summary"),
-      tags$p(class = "geo-step-note", "Result marks whether the strongest loaded evidence is ML-centered or CpG-centered. wB R2 and Shuffle max R2 are filled only when those analyses already exist in the loaded result.")
+      tags$p(class = "geo-step-note", "Result marks whether the strongest loaded evidence is ML-centered or CpG-centered.")
     )
   })
 
@@ -5551,11 +5551,10 @@ server <- function(input, output, session) {
     req(is.data.frame(final), nrow(final) > 0)
     display_cols <- c(
       "Result", "Gene", "Group ID", "Transcript(s)", "Correlation", "CpGs", "Samples",
-      "Model", "Median R2", "Min R2", "Max R2", "Median MAE", "wB R2", "Shuffle max R2",
-      "Best source", "Source", "Phase", "StratumColumn", "StratumValue"
+      "Model", "Median R2", "Min R2", "Max R2", "Median MAE"
     )
     display <- final[, intersect(display_cols, names(final)), drop = FALSE]
-    for (metric_col in intersect(c("Median R2", "Min R2", "Max R2", "Median MAE", "wB R2", "Shuffle max R2"), names(display))) {
+    for (metric_col in intersect(c("Median R2", "Min R2", "Max R2", "Median MAE"), names(display))) {
       display[[metric_col]] <- signif(suppressWarnings(as.numeric(display[[metric_col]])), 5)
     }
     table <- DT::datatable(display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE, selection = "single")
