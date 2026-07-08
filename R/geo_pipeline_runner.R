@@ -124,7 +124,13 @@ ugplot_geo_filter_spearman_min_samples_remote <- function(results, min_samples_p
 
 ugplot_geo_threshold_summary_for_job <- function(job_id, jobs_dir, threshold,
                                                  transcript_min_samples = 80,
-                                                 spearman_min_samples_pct = 80) {
+                                                 spearman_min_samples_pct = 80,
+                                                 progress_callback = NULL) {
+  publish <- function(progress, message) {
+    if (!is.null(progress_callback)) {
+      progress_callback(progress = progress, message = message)
+    }
+  }
   if (!exists("ugplot_job_dir", mode = "function", inherits = TRUE)) {
     stop("Job store helpers are not available.", call. = FALSE)
   }
@@ -163,6 +169,7 @@ ugplot_geo_threshold_summary_for_job <- function(job_id, jobs_dir, threshold,
   }
 
   cache_dir <- as.character(result$cache_dir %||% ugplot_geo_cache_dir(accession))
+  publish(0.05, paste0("Reading cached Spearman for ", accession, " / ", target_column))
   spearman_paths <- ugplot_geo_spearman_paths(cache_dir, target_column, source = source, create = FALSE)
   if (!file.exists(spearman_paths$raw)) {
     stop("Full cached Spearman file is not available on the server for this GEO job.", call. = FALSE)
@@ -173,11 +180,13 @@ ugplot_geo_threshold_summary_for_job <- function(job_id, jobs_dir, threshold,
   rho <- suppressWarnings(as.numeric(filtered$SpearmanRho))
   trigger_rows <- filtered[is.finite(absrho) & absrho >= threshold, , drop = FALSE]
 
+  publish(0.15, paste0("Building annotation candidates for |rho| >= ", threshold))
   metadata <- ugplot_geo_fetch_sample_metadata(accession, cache_dir)
   annotation_map <- ugplot_geo_build_annotation_cache(ugplot_geo_detect_platform(metadata))
   candidates <- ugplot_geo_transcript_candidates(filtered, annotation_map, threshold)
   group_paths <- ugplot_geo_transcript_group_paths(cache_dir, target_column, threshold, transcript_min_samples, source = source)
   group_result <- if (file.exists(group_paths$summary) && file.exists(group_paths$details)) {
+    publish(0.85, "Loading cached transcript TG groups")
     list(
       summary = utils::read.csv(group_paths$summary, stringsAsFactors = FALSE, check.names = FALSE),
       details = utils::read.csv(group_paths$details, stringsAsFactors = FALSE, check.names = FALSE),
@@ -189,6 +198,7 @@ ugplot_geo_threshold_summary_for_job <- function(job_id, jobs_dir, threshold,
     if (length(matrix_files) == 0) {
       stop("Matrix files are not available on the server for exact transcript grouping.", call. = FALSE)
     }
+    publish(0.2, paste0("Building exact transcript TG groups for ", length(unique(as.character(candidates$Transcript))), " candidate transcript(s)"))
     ugplot_geo_build_transcript_groups_remote(
       candidates = candidates,
       matrix_files = matrix_files,
@@ -197,9 +207,13 @@ ugplot_geo_threshold_summary_for_job <- function(job_id, jobs_dir, threshold,
       target_column = target_column,
       threshold = threshold,
       min_samples_pct = transcript_min_samples,
-      source = source
+      source = source,
+      progress_callback = function(value, message) {
+        publish(0.2 + 0.75 * value, message)
+      }
     )
   } else {
+    publish(0.9, "No transcript candidates found for this threshold")
     list(summary = data.frame(), details = data.frame(), paths = group_paths, progress = data.frame())
   }
   compatible_transcripts <- if (is.data.frame(group_result$progress) && "Status" %in% names(group_result$progress)) {
@@ -210,7 +224,9 @@ ugplot_geo_threshold_summary_for_job <- function(job_id, jobs_dir, threshold,
     NA_integer_
   }
 
+  publish(1, "Exact remote GEO threshold group count finished")
   list(
+    kind = "geo_threshold_summary",
     job_id = job_id,
     accession = accession,
     source = source,
@@ -235,6 +251,27 @@ ugplot_geo_threshold_summary_for_job <- function(job_id, jobs_dir, threshold,
     cache_dir = cache_dir,
     cached_groups = file.exists(group_paths$summary)
   )
+}
+
+ugplot_run_geo_threshold_summary_job <- function(dataset, config = list(), progress_callback = function(...) NULL,
+                                                 partial_callback = NULL) {
+  source_job_id <- as.character(config$source_job_id %||% config$job_id %||% "")
+  if (!nzchar(source_job_id)) {
+    stop("source_job_id is required for GEO threshold summary jobs.", call. = FALSE)
+  }
+  jobs_dir <- as.character(config$jobs_dir %||% ugplot_default_jobs_dir())
+  result <- ugplot_geo_threshold_summary_for_job(
+    job_id = source_job_id,
+    jobs_dir = jobs_dir,
+    threshold = config$threshold %||% config$transcript_absrho_threshold %||% 0.8,
+    transcript_min_samples = config$transcript_min_samples %||% 80,
+    spearman_min_samples_pct = config$spearman_min_samples_pct %||% 80,
+    progress_callback = progress_callback
+  )
+  if (!is.null(partial_callback)) {
+    partial_callback(result)
+  }
+  result
 }
 
 ugplot_geo_bind_rows <- function(rows) {

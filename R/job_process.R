@@ -28,6 +28,7 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
   job_dir <- ugplot_job_dir(job_id, jobs_dir)
   dataset <- readRDS(file.path(job_dir, "dataset.rds"))
   config <- readRDS(file.path(job_dir, "config.rds"))
+  config$jobs_dir <- jobs_dir
   config$job_dir <- job_dir
   config$model_log_dir <- file.path(job_dir, "model-logs")
   runner <- config$runner %||% "ugplot_run_placeholder_job"
