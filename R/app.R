@@ -3249,6 +3249,7 @@ server <- function(input, output, session) {
       threshold = context$threshold,
       transcript_min_samples = context$transcript_min_samples,
       spearman_min_samples_pct = context$spearman_min_samples,
+      async_submit = TRUE,
       timeout = 0
     )
     started <- ugplot_remote_create_job(
@@ -3267,7 +3268,7 @@ server <- function(input, output, session) {
       server_name = as.character(context$server$name[[1]]),
       server_url = as.character(context$server$url[[1]])
     ))
-    refresh_remote_jobs()
+    add_remote_job_placeholder(context$server, started, config)
     started
   }
 
@@ -3298,7 +3299,7 @@ server <- function(input, output, session) {
         message = "Exact server group count loaded.",
         progress = 1
       )))
-      refresh_remote_jobs()
+      tryCatch(refresh_remote_jobs(), error = function(e) NULL)
       return(invisible(result))
     }
     if (identical(job_state, "failed")) {
@@ -3307,7 +3308,7 @@ server <- function(input, output, session) {
         message = paste("Exact server group count failed:", status$error %||% message),
         progress = progress
       )))
-      refresh_remote_jobs()
+      tryCatch(refresh_remote_jobs(), error = function(e) NULL)
       return(invisible(status))
     }
     geo_remote_threshold_summary(c(state, list(
@@ -11523,6 +11524,45 @@ server <- function(input, output, session) {
     remote_server_connection_state(if (length(server_connection_rows) > 0) do.call(rbind, server_connection_rows) else data.frame())
 	    remote_jobs(jobs)
 	    invisible(jobs)
+	  }
+
+	  add_remote_job_placeholder <- function(server, job, config = list()) {
+	    job_id <- as.character(job$id %||% "")
+	    if (!nzchar(job_id)) {
+	      return(invisible(FALSE))
+	    }
+	    existing <- remote_jobs()
+	    if (!is.data.frame(existing)) {
+	      existing <- data.frame()
+	    }
+	    if ("id" %in% names(existing) && job_id %in% as.character(existing$id)) {
+	      return(invisible(TRUE))
+	    }
+	    now <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+	    row <- data.frame(
+	      server = as.character(server$name[[1]] %||% ""),
+	      id = job_id,
+	      name = as.character(config$job_name %||% job$name %||% ""),
+	      type = as.character(config$type %||% job$type %||% ""),
+	      state = as.character(job$state %||% "queued"),
+	      progress = suppressWarnings(as.numeric(job$progress %||% 0)),
+	      message = as.character(job$message %||% "Submitted"),
+	      target = as.character(config$source_job_id %||% ""),
+	      models = paste0("threshold |rho| >= ", config$threshold %||% ""),
+	      created_at = as.character(job$created_at %||% now),
+	      updated_at = as.character(job$updated_at %||% now),
+	      pid = suppressWarnings(as.integer(job$pid %||% NA_integer_)),
+	      stringsAsFactors = FALSE
+	    )
+	    all_columns <- unique(c(names(existing), names(row)))
+	    for (column_name in setdiff(all_columns, names(existing))) {
+	      existing[[column_name]] <- NA
+	    }
+	    for (column_name in setdiff(all_columns, names(row))) {
+	      row[[column_name]] <- NA
+	    }
+	    remote_jobs(rbind(row[, all_columns, drop = FALSE], existing[, all_columns, drop = FALSE]))
+	    invisible(TRUE)
 	  }
 
 	  build_remote_geo_config <- function() {
