@@ -7443,7 +7443,7 @@ server <- function(input, output, session) {
       if (!is.data.frame(geo_sample_metadata()) || nrow(geo_sample_metadata()) == 0 ||
           !is.data.frame(geo_spearman_raw_results()) || nrow(geo_spearman_raw_results()) == 0) {
         remote_geo_result_applying(TRUE)
-        try(apply_remote_geo_result(remote_result, geo_remote_pipeline_job_id()), silent = TRUE)
+        try(apply_remote_geo_result(remote_result, geo_remote_pipeline_job_id(), clear_existing = FALSE, update_inputs = FALSE), silent = TRUE)
         session$onFlushed(function() {
           session$onFlushed(function() {
             remote_geo_result_applying(FALSE)
@@ -11533,7 +11533,7 @@ server <- function(input, output, session) {
 	    invisible(TRUE)
 	  }
 
-	  apply_remote_geo_result <- function(result, job_id = "", clear_existing = TRUE) {
+	  apply_remote_geo_result <- function(result, job_id = "", clear_existing = TRUE, update_inputs = TRUE) {
 	    if (!is.list(result) || !identical(result$kind %||% "", "geo_pipeline")) {
 	      stop("Remote job result is not a GEO pipeline result.", call. = FALSE)
 	    }
@@ -11623,54 +11623,56 @@ server <- function(input, output, session) {
 	        qc_path = result$paths$sesame_qc %||% ""
 	      ))
 	    }
-	    accession <- result$accession %||% ""
-	    if (nzchar(accession)) {
-	      updateTextInput(session, "geo_accession", value = accession)
-	    }
-	    if (nzchar(result$matrix_source %||% "")) {
-	      updateSelectInput(session, "geo_matrix_source", selected = result$matrix_source)
-	    }
-	    if (nzchar(result$target_column %||% "")) {
-	      updateSelectInput(session, "geo_target_column", selected = result$target_column)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$transcript_absrho_threshold)) {
-	      updateNumericInput(session, "geo_transcript_absrho_threshold", value = result$settings$transcript_absrho_threshold)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$transcript_min_samples)) {
-	      updateNumericInput(session, "geo_transcript_min_samples", value = result$settings$transcript_min_samples)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$spearman_max_cpgs)) {
-	      updateNumericInput(session, "geo_spearman_max_cpgs", value = result$settings$spearman_max_cpgs)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$spearman_min_samples_pct)) {
-	      updateNumericInput(session, "geo_spearman_min_samples", value = result$settings$spearman_min_samples_pct)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_min_absrho)) {
-	      updateNumericInput(session, "geo_ml_min_absrho", value = result$settings$geo_ml_min_absrho)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_rank_limit)) {
-	      updateNumericInput(session, "geo_ml_rank_limit", value = result$settings$geo_ml_rank_limit)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_screen_seeds)) {
-	      updateNumericInput(session, "geo_ml_screen_seeds", value = result$settings$geo_ml_screen_seeds)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_timeout)) {
-	      updateNumericInput(session, "geo_ml_timeout", value = result$settings$geo_ml_timeout)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_min_stability_seeds)) {
-	      updateNumericInput(session, "geo_ml_min_stability_seeds", value = result$settings$geo_ml_min_stability_seeds)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_max_stability_seeds)) {
-	      updateNumericInput(session, "geo_ml_max_stability_seeds", value = result$settings$geo_ml_max_stability_seeds)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_stability_window)) {
-	      updateNumericInput(session, "geo_ml_stability_window", value = result$settings$geo_ml_stability_window)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_stability_tolerance)) {
-	      updateNumericInput(session, "geo_ml_stability_tolerance", value = result$settings$geo_ml_stability_tolerance)
-	    }
-	    if (is.list(result$settings) && !is.null(result$settings$geo_ml_stability_group_column)) {
-	      updateSelectInput(session, "geo_ml_stability_group_column", selected = as.character(result$settings$geo_ml_stability_group_column %||% ""))
+	    if (isTRUE(update_inputs)) {
+	      accession <- result$accession %||% ""
+	      if (nzchar(accession)) {
+	        updateTextInput(session, "geo_accession", value = accession)
+	      }
+	      if (nzchar(result$matrix_source %||% "")) {
+	        updateSelectInput(session, "geo_matrix_source", selected = result$matrix_source)
+	      }
+	      if (nzchar(result$target_column %||% "")) {
+	        updateSelectInput(session, "geo_target_column", selected = result$target_column)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$transcript_absrho_threshold)) {
+	        updateNumericInput(session, "geo_transcript_absrho_threshold", value = result$settings$transcript_absrho_threshold)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$transcript_min_samples)) {
+	        updateNumericInput(session, "geo_transcript_min_samples", value = result$settings$transcript_min_samples)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$spearman_max_cpgs)) {
+	        updateNumericInput(session, "geo_spearman_max_cpgs", value = result$settings$spearman_max_cpgs)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$spearman_min_samples_pct)) {
+	        updateNumericInput(session, "geo_spearman_min_samples", value = result$settings$spearman_min_samples_pct)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$geo_ml_min_absrho)) {
+	        updateNumericInput(session, "geo_ml_min_absrho", value = result$settings$geo_ml_min_absrho)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$geo_ml_rank_limit)) {
+	        updateNumericInput(session, "geo_ml_rank_limit", value = result$settings$geo_ml_rank_limit)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$geo_ml_screen_seeds)) {
+	        updateNumericInput(session, "geo_ml_screen_seeds", value = result$settings$geo_ml_screen_seeds)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$geo_ml_timeout)) {
+	        updateNumericInput(session, "geo_ml_timeout", value = result$settings$geo_ml_timeout)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$geo_ml_min_stability_seeds)) {
+	        updateNumericInput(session, "geo_ml_min_stability_seeds", value = result$settings$geo_ml_min_stability_seeds)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$geo_ml_max_stability_seeds)) {
+	        updateNumericInput(session, "geo_ml_max_stability_seeds", value = result$settings$geo_ml_max_stability_seeds)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$geo_ml_stability_window)) {
+	        updateNumericInput(session, "geo_ml_stability_window", value = result$settings$geo_ml_stability_window)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$geo_ml_stability_tolerance)) {
+	        updateNumericInput(session, "geo_ml_stability_tolerance", value = result$settings$geo_ml_stability_tolerance)
+	      }
+	      if (is.list(result$settings) && !is.null(result$settings$geo_ml_stability_group_column)) {
+	        updateSelectInput(session, "geo_ml_stability_group_column", selected = as.character(result$settings$geo_ml_stability_group_column %||% ""))
+	      }
 	    }
 	    geo_remote_pipeline_job_id(job_id %||% geo_remote_pipeline_job_id())
 	    geo_remote_pipeline_status(paste0(
