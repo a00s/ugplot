@@ -1306,6 +1306,26 @@ ugplot_geo_write_distributed_manifest <- function(manifest, path) {
   invisible(path)
 }
 
+ugplot_geo_transcript_group_cache_complete <- function(candidates, group_paths) {
+  if (!is.data.frame(candidates) || nrow(candidates) == 0 ||
+      !"Transcript" %in% names(candidates) ||
+      !file.exists(group_paths$summary) ||
+      !file.exists(group_paths$details) ||
+      !file.exists(group_paths$progress)) {
+    return(FALSE)
+  }
+  candidate_transcripts <- unique(trimws(as.character(stats::na.omit(candidates$Transcript))))
+  candidate_transcripts <- candidate_transcripts[nzchar(candidate_transcripts)]
+  progress <- tryCatch(readRDS(group_paths$progress), error = function(e) data.frame())
+  processed_transcripts <- if (is.data.frame(progress) && "Transcript" %in% names(progress)) {
+    unique(trimws(as.character(stats::na.omit(progress$Transcript))))
+  } else {
+    character(0)
+  }
+  length(candidate_transcripts) > 0 &&
+    all(candidate_transcripts %in% processed_transcripts)
+}
+
 ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summary_path,
                                                      pipeline_dir, cache_dir, source,
                                                      run_key, config, workers,
@@ -2193,7 +2213,9 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
       utils::write.csv(candidates, candidates_path, row.names = FALSE)
       result$paths$transcript_candidates <- candidates_path
       group_paths <- ugplot_geo_transcript_group_paths(cache_dir, target_column, threshold, min_transcript_samples, source = source)
-      group_result <- if (isTRUE(resume_mode) && file.exists(group_paths$summary) && file.exists(group_paths$details)) {
+      group_cache_complete <- isTRUE(resume_mode) &&
+        ugplot_geo_transcript_group_cache_complete(candidates, group_paths)
+      group_result <- if (isTRUE(group_cache_complete)) {
         publish(0.86, "Using cached transcript ML groups for resume", force = TRUE)
         list(
           summary = read_cached_csv(group_paths$summary),
@@ -2201,6 +2223,9 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
           paths = group_paths
         )
       } else {
+        if (isTRUE(resume_mode) && file.exists(group_paths$progress)) {
+          publish(0.86, "Completing transcript candidates missing from the cached group manifest", force = TRUE)
+        }
         ugplot_geo_build_transcript_groups_remote(
           candidates = candidates,
           matrix_files = matrix_files,

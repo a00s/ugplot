@@ -61,6 +61,30 @@ test_that("distributed worker config is normalized safely", {
   expect_equal(vapply(workers, `[[`, integer(1), "cpu_limit"), c(8L, 1L))
 })
 
+test_that("transcript group cache is complete only when every candidate was processed", {
+  cache_complete <- ugplot_test_internal("ugplot_geo_transcript_group_cache_complete")
+  root <- tempfile("transcript-group-cache-")
+  dir.create(root)
+  paths <- list(
+    summary = file.path(root, "summary.csv"),
+    details = file.path(root, "details.csv"),
+    progress = file.path(root, "progress.rds")
+  )
+  candidates <- data.frame(
+    Transcript = c("NM_001098623", "NM_052843"),
+    CpG = c("cg04193160", "cg04193160"),
+    stringsAsFactors = FALSE
+  )
+  utils::write.csv(data.frame(GroupID = "TG1"), paths$summary, row.names = FALSE)
+  utils::write.csv(data.frame(GroupID = "TG1"), paths$details, row.names = FALSE)
+  saveRDS(data.frame(Transcript = "NM_001098623"), paths$progress)
+
+  expect_false(cache_complete(candidates, paths))
+
+  saveRDS(data.frame(Transcript = c("NM_001098623", "NM_052843")), paths$progress)
+  expect_true(cache_complete(candidates, paths))
+})
+
 test_that("worker screening runner returns a portable group result", {
   ugplot_test_local_namespace_binding("ugplot_geo_screen_group", function(
       dataset, group, source, config, screen_path, importance_path,
