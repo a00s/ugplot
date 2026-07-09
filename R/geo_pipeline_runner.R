@@ -386,9 +386,15 @@ ugplot_geo_cpg_lookup_for_job <- function(job_id, jobs_dir, cpg,
     min_samples_pct = transcript_min_samples,
     source = source
   )
+  group_progress_path <- if (nzchar(group_details_path) &&
+                             grepl("_details\\.csv$", group_details_path)) {
+    sub("_details\\.csv$", "_progress.rds", group_details_path)
+  } else {
+    group_paths$progress
+  }
   transcript_progress <- data.frame()
-  if (file.exists(group_paths$progress) && length(transcripts) > 0) {
-    progress <- tryCatch(readRDS(group_paths$progress), error = function(e) data.frame())
+  if (file.exists(group_progress_path) && length(transcripts) > 0) {
+    progress <- tryCatch(readRDS(group_progress_path), error = function(e) data.frame())
     if (is.data.frame(progress) && "Transcript" %in% names(progress)) {
       transcript_progress <- progress[
         as.character(progress$Transcript) %in% transcripts,
@@ -447,7 +453,7 @@ ugplot_geo_cpg_lookup_for_job <- function(job_id, jobs_dir, cpg,
       spearman_by_transcript = spearman_paths$by_transcript,
       transcript_candidates = candidates_path,
       transcript_group_details = group_details_path,
-      transcript_group_progress = group_paths$progress
+      transcript_group_progress = group_progress_path
     )
   )
 }
