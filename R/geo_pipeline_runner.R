@@ -353,6 +353,69 @@ ugplot_geo_cpg_lookup_for_job <- function(job_id, jobs_dir, cpg,
     }
   }
 
+  transcript_min_samples <- suppressWarnings(as.numeric(
+    config$transcript_min_samples %||%
+      result$settings$transcript_min_samples %||%
+      80
+  ))
+  if (!is.finite(transcript_min_samples)) {
+    transcript_min_samples <- 80
+  }
+  candidate_rows <- data.frame()
+  candidates_path <- as.character(result$paths$transcript_candidates %||% "")
+  if (file.exists(candidates_path)) {
+    candidates <- utils::read.csv(candidates_path, stringsAsFactors = FALSE, check.names = FALSE)
+    if (is.data.frame(candidates) && nrow(candidates) > 0) {
+      candidate_match <- rep(FALSE, nrow(candidates))
+      if ("CpG" %in% names(candidates)) {
+        candidate_match <- candidate_match |
+          tolower(as.character(candidates$CpG)) == tolower(cpg)
+      }
+      if ("Transcript" %in% names(candidates) && length(transcripts) > 0) {
+        candidate_match <- candidate_match |
+          as.character(candidates$Transcript) %in% transcripts
+      }
+      candidate_rows <- candidates[candidate_match, , drop = FALSE]
+      rownames(candidate_rows) <- NULL
+    }
+  }
+  group_paths <- ugplot_geo_transcript_group_paths(
+    cache_dir = cache_dir,
+    target_column = target_column,
+    threshold = loaded_threshold,
+    min_samples_pct = transcript_min_samples,
+    source = source
+  )
+  transcript_progress <- data.frame()
+  if (file.exists(group_paths$progress) && length(transcripts) > 0) {
+    progress <- tryCatch(readRDS(group_paths$progress), error = function(e) data.frame())
+    if (is.data.frame(progress) && "Transcript" %in% names(progress)) {
+      transcript_progress <- progress[
+        as.character(progress$Transcript) %in% transcripts,
+        ,
+        drop = FALSE
+      ]
+      rownames(transcript_progress) <- NULL
+    }
+  }
+  transcript_diagnostic <- if (nrow(candidate_rows) == 0) {
+    "CpG/transcripts are absent from the cached transcript candidate file."
+  } else if (nrow(transcript_progress) == 0) {
+    "Candidate transcripts were not processed into transcript datasets."
+  } else if (any(as.character(transcript_progress$Status) != "compatible")) {
+    paste0(
+      "Transcript dataset filter: ",
+      paste(
+        paste0(transcript_progress$Transcript, "=", transcript_progress$Status),
+        collapse = "; "
+      )
+    )
+  } else if (nrow(group_details) == 0) {
+    "Transcript datasets are compatible, but the cached group details are stale or inconsistent."
+  } else {
+    "CpG is present in transcript group details."
+  }
+
   list(
     kind = "geo_cpg_lookup",
     job_id = job_id,
@@ -373,13 +436,18 @@ ugplot_geo_cpg_lookup_for_job <- function(job_id, jobs_dir, cpg,
     annotated = annotated,
     gene_summary = gene_summary,
     transcript_summary = transcript_summary,
+    transcript_candidate_rows = candidate_rows,
+    transcript_progress = transcript_progress,
+    transcript_diagnostic = transcript_diagnostic,
     transcript_group_details = group_details,
     paths = list(
       spearman_raw = spearman_paths$raw,
       spearman_annotated = spearman_paths$annotated,
       spearman_by_gene = spearman_paths$by_gene,
       spearman_by_transcript = spearman_paths$by_transcript,
-      transcript_group_details = group_details_path
+      transcript_candidates = candidates_path,
+      transcript_group_details = group_details_path,
+      transcript_group_progress = group_paths$progress
     )
   )
 }

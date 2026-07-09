@@ -3497,6 +3497,7 @@ server <- function(input, output, session) {
     raw <- geo_lookup_rows(lookup$raw)
     annotated <- geo_lookup_rows(lookup$annotated)
     group_details <- geo_lookup_rows(lookup$transcript_group_details)
+    transcript_progress <- geo_lookup_rows(lookup$transcript_progress)
     genes <- as.character(unlist(lookup$genes %||% character(0), use.names = FALSE))
     genes <- genes[nzchar(genes)]
     transcripts <- as.character(unlist(lookup$transcripts %||% character(0), use.names = FALSE))
@@ -3537,6 +3538,33 @@ server <- function(input, output, session) {
       tags$p(style = "margin: 0 0 4px 0;", "Genes: ", if (length(genes) > 0) paste(utils::head(genes, 12), collapse = "; ") else "none in loaded annotation"),
       tags$p(style = "margin: 0 0 4px 0;", "Transcripts: ", if (length(transcripts) > 0) paste(utils::head(transcripts, 12), collapse = "; ") else "none in loaded annotation"),
       tags$p(style = "margin: 0 0 4px 0;", group_line),
+      if (nzchar(as.character(lookup$transcript_diagnostic %||% ""))) {
+        tags$p(
+          style = "margin: 0 0 4px 0; font-weight: 600;",
+          "Transcript pipeline: ",
+          as.character(lookup$transcript_diagnostic)
+        )
+      } else {
+        NULL
+      },
+      if (nrow(transcript_progress) > 0) {
+        tags$p(
+          class = "geo-step-note",
+          paste(
+            apply(transcript_progress, 1, function(row) {
+              paste0(
+                row[["Transcript"]] %||% "",
+                ": status=", row[["Status"]] %||% "",
+                "; retained samples=", row[["Samples"]] %||% 0,
+                "; retained CpGs=", row[["Columns"]] %||% 0
+              )
+            }),
+            collapse = " | "
+          )
+        )
+      } else {
+        NULL
+      },
       if (nrow(annotated) > 0) {
         tags$p(class = "geo-step-note", paste0("Annotation rows for this CpG: ", nrow(annotated), "."))
       } else {
