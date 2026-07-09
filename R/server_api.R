@@ -93,6 +93,44 @@ ugplot_read_rds_base64 <- function(value) {
   readRDS(tmp_file)
 }
 
+ugplot_validate_remote_job_config <- function(config) {
+  runner <- as.character(config$runner %||% "ugplot_run_placeholder_job")
+  if (length(runner) != 1L || !nzchar(runner)) {
+    stop("Remote job runner must be a single function name.", call. = FALSE)
+  }
+  public_runners <- c(
+    "ugplot_run_placeholder_job",
+    "ugplot_run_ml_job",
+    "ugplot_run_geo_pipeline_job"
+  )
+  internal_runners <- c("ugplot_run_geo_screen_group_job")
+  allowed <- runner %in% public_runners ||
+    (runner %in% internal_runners && isTRUE(config$internal_worker_task))
+  if (!isTRUE(allowed)) {
+    stop("Remote job runner is not allowed: ", runner, call. = FALSE)
+  }
+  if (identical(runner, "ugplot_run_geo_pipeline_job")) {
+    accession <- toupper(trimws(as.character(config$accession %||% "")))
+    if (length(accession) != 1L || !grepl("^GSE[0-9]+$", accession)) {
+      stop("Remote GEO jobs require an accession such as GSE87571.", call. = FALSE)
+    }
+    config$accession <- accession
+  }
+  server_owned_fields <- c(
+    "jobs_dir",
+    "job_dir",
+    "model_log_dir",
+    "resume_result",
+    "resume_result_path",
+    "resume_completed_keys"
+  )
+  for (field in server_owned_fields) {
+    config[[field]] <- NULL
+  }
+  config$runner <- runner
+  config
+}
+
 #' Start a ugplot job server
 #'
 #' Starts an HTTP server that can receive datasets, run jobs in background R
@@ -101,7 +139,7 @@ ugplot_read_rds_base64 <- function(value) {
 #' @param host Interface to bind. Use `"0.0.0.0"` for remote access.
 #' @param port Port to listen on.
 #' @param jobs_dir Directory used to persist datasets, status and results.
-#' @param token Optional bearer token. Defaults to no authentication.
+#' @param token Bearer token. Required when listening on a non-local interface.
 #' @param name Local server handle name used by status/stop when the server is
 #'   started directly.
 #' @param register Whether to write a local state file for status/stop.
@@ -113,6 +151,10 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
                          jobs_dir = ugplot_default_jobs_dir(),
                          token = "", name = "default", register = TRUE,
                          auto_resume_interval = 30) {
+  local_hosts <- c("127.0.0.1", "::1", "localhost")
+  if (!(host %in% local_hosts) && !nzchar(token)) {
+    stop("A bearer token is required when ugPlotServer listens on a non-local interface.", call. = FALSE)
+  }
   ugplot_assert_server_system_deps()
   if (!requireNamespace("plumber", quietly = TRUE)) {
     stop("Package 'plumber' is required to start ugPlotServer(). Run ugPlotInstallServerDeps().", call. = FALSE)
@@ -185,7 +227,9 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         job_resource_monitor = !is.null(auto_resume_process),
         geo_pipeline = TRUE,
         geo_cpg_summary = TRUE,
-        geo_cpg_lookup = TRUE
+        geo_cpg_lookup = TRUE,
+        distributed_geo_screening = TRUE,
+        distributed_protocol_version = 1L
       )
     )
   })
@@ -314,6 +358,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
     tryCatch({
       dataset <- ugplot_request_dataset(req)
       config <- ugplot_request_config(req)
+      config <- ugplot_validate_remote_job_config(config)
       started <- ugplot_start_background_job(dataset, config, jobs_dir)
       res$status <- 202
       started$job

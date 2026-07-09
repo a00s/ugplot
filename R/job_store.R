@@ -415,10 +415,12 @@ ugplot_write_rds_atomic <- function(object, path) {
   ugplot_ensure_dir(dirname(path))
   tmp_path <- paste0(path, ".tmp-", Sys.getpid(), "-", as.integer(stats::runif(1, 1, 1e9)))
   saveRDS(object, tmp_path)
+  try(Sys.chmod(tmp_path, mode = "0600"), silent = TRUE)
   if (!file.rename(tmp_path, path)) {
     unlink(tmp_path)
     stop("Could not write file: ", path, call. = FALSE)
   }
+  try(Sys.chmod(path, mode = "0600"), silent = TRUE)
   invisible(path)
 }
 
@@ -477,6 +479,25 @@ ugplot_job_timeout_seconds <- function(status) {
   max(1, timeout)
 }
 
+ugplot_find_job_by_request_id <- function(request_id, jobs_dir = ugplot_default_jobs_dir()) {
+  request_id <- trimws(as.character(request_id %||% ""))
+  if (!nzchar(request_id) || !dir.exists(jobs_dir)) {
+    return(NULL)
+  }
+  job_dirs <- list.dirs(jobs_dir, full.names = TRUE, recursive = FALSE)
+  for (job_dir in job_dirs) {
+    config_path <- file.path(job_dir, "config.rds")
+    if (!file.exists(config_path)) {
+      next
+    }
+    config <- tryCatch(readRDS(config_path), error = function(e) NULL)
+    if (is.list(config) && identical(as.character(config$request_id %||% ""), request_id)) {
+      return(tryCatch(ugplot_read_job_status(basename(job_dir), jobs_dir), error = function(e) NULL))
+    }
+  }
+  NULL
+}
+
 ugplot_running_job_timed_out <- function(status) {
   if (!identical(status$state %||% "", "running")) {
     return(FALSE)
@@ -510,9 +531,13 @@ ugplot_create_job <- function(dataset, config = list(), jobs_dir = ugplot_defaul
   job_id <- ugplot_new_job_id()
   job_dir <- ugplot_job_dir(job_id, jobs_dir)
   ugplot_ensure_dir(job_dir)
+  try(Sys.chmod(job_dir, mode = "0700"), silent = TRUE)
 
-  saveRDS(dataset, file.path(job_dir, "dataset.rds"))
-  saveRDS(config, file.path(job_dir, "config.rds"))
+  dataset_path <- file.path(job_dir, "dataset.rds")
+  config_path <- file.path(job_dir, "config.rds")
+  saveRDS(dataset, dataset_path)
+  saveRDS(config, config_path)
+  try(Sys.chmod(c(dataset_path, config_path), mode = "0600"), silent = TRUE)
 
   status <- list(
     id = job_id,
@@ -530,6 +555,10 @@ ugplot_create_job <- function(dataset, config = list(), jobs_dir = ugplot_defaul
     timeout = suppressWarnings(as.numeric(config$timeout %||% NA_real_)),
     watchdog_timeout_multiplier = suppressWarnings(as.numeric(config$watchdog_timeout_multiplier %||% 3))
   )
+  status$internal_worker_task <- isTRUE(config$internal_worker_task)
+  status$parent_job_id <- as.character(config$parent_job_id %||% "")
+  status$worker_name <- as.character(config$worker_name %||% "")
+  status$request_id <- as.character(config$request_id %||% "")
   ugplot_write_job_status(job_id, status, jobs_dir)
   status
 }
@@ -649,11 +678,20 @@ ugplot_stop_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
 
   partial_path <- status$partial_result_path %||% ugplot_result_path(job_id, jobs_dir, partial = TRUE)
   has_partial <- !is.null(partial_path) && file.exists(partial_path)
+  distributed_active <- is.list(status$distributed_state) &&
+    suppressWarnings(as.integer(status$distributed_state$active %||% 0L)) > 0L
+  stop_message <- if (isTRUE(distributed_active)) {
+    "Coordinator stopped; active worker tasks may finish and will be collected on Resume"
+  } else if (has_partial) {
+    "Stopped; partial result is available"
+  } else {
+    "Stopped"
+  }
   ugplot_update_job_status(
     job_id,
     jobs_dir,
     state = "stopped",
-    message = if (has_partial) "Stopped; partial result is available" else "Stopped",
+    message = stop_message,
     error = NULL,
     result_path = if (has_partial) partial_path else status$result_path
   )
@@ -726,7 +764,7 @@ ugplot_refresh_job_status <- function(status, jobs_dir = ugplot_default_jobs_dir
   status
 }
 
-ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir()) {
+ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir(), include_internal = FALSE) {
   if (!dir.exists(jobs_dir)) {
     return(data.frame())
   }
@@ -735,6 +773,9 @@ ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir()) {
     tryCatch(ugplot_read_job_status(job_id, jobs_dir), error = function(e) NULL)
   })
   statuses <- Filter(Negate(is.null), statuses)
+  if (!isTRUE(include_internal)) {
+    statuses <- Filter(function(status) !isTRUE(status$internal_worker_task), statuses)
+  }
   if (length(statuses) == 0) {
     return(data.frame())
   }
@@ -751,6 +792,13 @@ ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir()) {
       created_at = status$created_at %||% NA_character_,
       updated_at = status$updated_at %||% NA_character_,
       pid = status$pid %||% NA_integer_,
+      execution = paste(status$distributed_state$workers %||% character(0), collapse = " + "),
+      tasks = if (is.list(status$distributed_state) &&
+                  is.finite(suppressWarnings(as.numeric(status$distributed_state$total %||% NA_real_)))) {
+        paste0(status$distributed_state$completed %||% 0L, "/", status$distributed_state$total)
+      } else {
+        ""
+      },
       resumable = isTRUE(status$resumable %||% ugplot_job_resumable(status, jobs_dir)),
       stringsAsFactors = FALSE
     )
@@ -799,6 +847,21 @@ ugplot_read_job_preview_result <- function(job_id, jobs_dir = ugplot_default_job
   ugplot_job_result_preview(ugplot_read_job_result(job_id, jobs_dir))
 }
 
+ugplot_redact_job_config <- function(config) {
+  if (!is.list(config)) {
+    return(config)
+  }
+  if (is.list(config$distributed_workers)) {
+    config$distributed_workers <- lapply(config$distributed_workers, function(worker) {
+      if (is.list(worker) && "token" %in% names(worker)) {
+        worker$token <- ""
+      }
+      worker
+    })
+  }
+  config
+}
+
 ugplot_read_job_bundle <- function(job_id, jobs_dir = ugplot_default_jobs_dir(), allow_active = FALSE) {
   job_dir <- ugplot_job_dir(job_id, jobs_dir)
   if (!dir.exists(job_dir)) {
@@ -817,7 +880,7 @@ ugplot_read_job_bundle <- function(job_id, jobs_dir = ugplot_default_jobs_dir(),
     id = job_id,
     status = status,
     dataset = readRDS(dataset_path),
-    config = readRDS(config_path),
+    config = ugplot_redact_job_config(readRDS(config_path)),
     result = tryCatch(ugplot_read_job_result(job_id, jobs_dir), error = function(e) NULL)
   )
 }

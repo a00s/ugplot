@@ -25,7 +25,7 @@ ugplot_remote_parse <- function(response) {
   httr::content(response, as = "parsed", simplifyVector = TRUE)
 }
 
-ugplot_remote_create_job <- function(server_url, dataset, config, token = "") {
+ugplot_remote_create_job <- function(server_url, dataset, config, token = "", timeout_seconds = 600) {
   request <- ugplot_remote_request(server_url, "jobs", token)
   dataset_file <- tempfile(fileext = ".rds")
   config_file <- tempfile(fileext = ".rds")
@@ -35,6 +35,7 @@ ugplot_remote_create_job <- function(server_url, dataset, config, token = "") {
   response <- httr::POST(
     request$url,
     request$headers,
+    httr::timeout(timeout_seconds),
     httr::content_type_json(),
     body = jsonlite::toJSON(
       list(
@@ -48,9 +49,9 @@ ugplot_remote_create_job <- function(server_url, dataset, config, token = "") {
   ugplot_remote_parse(response)
 }
 
-ugplot_remote_health <- function(server_url, token = "") {
+ugplot_remote_health <- function(server_url, token = "", timeout_seconds = 15) {
   request <- ugplot_remote_request(server_url, "health", token)
-  response <- httr::GET(request$url, request$headers)
+  response <- httr::GET(request$url, request$headers, httr::timeout(timeout_seconds))
   ugplot_remote_parse(response)
 }
 
@@ -73,9 +74,9 @@ ugplot_remote_model_deps <- function(server_url, token = "") {
   ugplot_remote_parse(response)
 }
 
-ugplot_remote_job_status <- function(server_url, job_id, token = "") {
+ugplot_remote_job_status <- function(server_url, job_id, token = "", timeout_seconds = 15) {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id), token)
-  response <- httr::GET(request$url, request$headers)
+  response <- httr::GET(request$url, request$headers, httr::timeout(timeout_seconds))
   ugplot_remote_parse(response)
 }
 
@@ -149,25 +150,26 @@ ugplot_remote_stop_job <- function(server_url, job_id, token = "") {
   ugplot_remote_parse(response)
 }
 
-ugplot_remote_resume_job <- function(server_url, job_id, token = "") {
+ugplot_remote_resume_job <- function(server_url, job_id, token = "", timeout_seconds = 30) {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/resume"), token)
-  response <- httr::POST(request$url, request$headers)
+  response <- httr::POST(request$url, request$headers, httr::timeout(timeout_seconds))
   ugplot_remote_parse(response)
 }
 
-ugplot_remote_delete_job <- function(server_url, job_id, token = "", force = FALSE) {
+ugplot_remote_delete_job <- function(server_url, job_id, token = "", force = FALSE,
+                                     timeout_seconds = 30) {
   path <- paste0("jobs/", job_id)
   if (isTRUE(force)) {
     path <- paste0(path, "?force=true")
   }
   request <- ugplot_remote_request(server_url, path, token)
-  response <- httr::DELETE(request$url, request$headers)
+  response <- httr::DELETE(request$url, request$headers, httr::timeout(timeout_seconds))
   ugplot_remote_parse(response)
 }
 
-ugplot_remote_get_result <- function(server_url, job_id, token = "") {
+ugplot_remote_get_result <- function(server_url, job_id, token = "", timeout_seconds = 600) {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/result-rds"), token)
-  response <- httr::GET(request$url, request$headers)
+  response <- httr::GET(request$url, request$headers, httr::timeout(timeout_seconds))
   parsed <- ugplot_remote_parse(response)
   content_base64 <- parsed$content_base64
   content_base64 <- as.character(unlist(content_base64, use.names = FALSE))

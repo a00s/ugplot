@@ -16,6 +16,49 @@ test_that("job store creates and lists jobs", {
   expect_equal(listed$id, status$id)
 })
 
+test_that("internal worker jobs are hidden and request ids are idempotent", {
+  jobs_dir <- tempfile("ugplot-worker-jobs-")
+  dir.create(jobs_dir)
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  list_jobs <- ugplot_test_internal("ugplot_list_jobs")
+  find_request <- ugplot_test_internal("ugplot_find_job_by_request_id")
+
+  public <- create_job(
+    data.frame(x = 1),
+    config = list(runner = "ugplot_run_placeholder_job"),
+    jobs_dir = jobs_dir
+  )
+  internal <- create_job(
+    data.frame(x = 2),
+    config = list(
+      runner = "ugplot_run_geo_screen_group_job",
+      internal_worker_task = TRUE,
+      parent_job_id = public$id,
+      worker_name = "Fy2",
+      request_id = "parent:screen:TG1"
+    ),
+    jobs_dir = jobs_dir,
+    type = "geo_worker"
+  )
+
+  expect_equal(list_jobs(jobs_dir)$id, public$id)
+  expect_setequal(list_jobs(jobs_dir, include_internal = TRUE)$id, c(public$id, internal$id))
+  expect_equal(find_request("parent:screen:TG1", jobs_dir)$id, internal$id)
+})
+
+test_that("job bundles redact distributed worker tokens", {
+  redact <- ugplot_test_internal("ugplot_redact_job_config")
+  config <- list(
+    distributed_workers = list(
+      list(name = "Fy2", url = "http://fy2:8080", token = "secret"),
+      list(name = "Fy3", url = "http://fy3:8080", token = "other")
+    )
+  )
+  redacted <- redact(config)
+  expect_equal(vapply(redacted$distributed_workers, `[[`, character(1), "token"), c("", ""))
+  expect_equal(vapply(config$distributed_workers, `[[`, character(1), "token"), c("secret", "other"))
+})
+
 test_that("job runner records progress and result", {
   jobs_dir <- tempfile("ugplot-jobs-")
   dataset <- data.frame(x = 1:4, y = 5:8)

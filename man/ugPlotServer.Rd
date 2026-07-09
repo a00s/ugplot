@@ -8,7 +8,8 @@ ugPlotServer(
   jobs_dir = ugplot_default_jobs_dir(),
   token = "",
   name = "default",
-  register = TRUE
+  register = TRUE,
+  auto_resume_interval = 30
 )
 }
 \arguments{
@@ -18,12 +19,15 @@ ugPlotServer(
 
 \item{jobs_dir}{Directory used to persist datasets, status and results.}
 
-\item{token}{Optional bearer token. Defaults to no authentication.}
+\item{token}{Bearer token. Required when listening on a non-local interface.}
 
 \item{name}{Local server handle name used by status/stop when the server is
 started directly.}
 
 \item{register}{Whether to write a local state file for status/stop.}
+
+\item{auto_resume_interval}{Seconds between automatic crashed-job resume
+checks. Use 0 to disable the background monitor.}
 }
 \value{
 The plumber server result.

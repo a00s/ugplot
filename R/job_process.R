@@ -47,7 +47,8 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
   }
   ugplot_append_job_log(job_id, paste0("Runner pid: ", Sys.getpid()), jobs_dir)
 
-  progress_callback <- function(progress = NULL, message = NULL, current_run = NULL) {
+  progress_callback <- function(progress = NULL, message = NULL, current_run = NULL,
+                                distributed_state = NULL) {
     updates <- list()
     if (!is.null(progress)) {
       updates$progress <- max(0, min(1, as.numeric(progress)))
@@ -70,6 +71,9 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
         updates$current_training_seed <- current_run$training_seed %||% NA_integer_
         updates$current_run_started_at <- current_run$started_at %||% NA_character_
       }
+    }
+    if (is.list(distributed_state)) {
+      updates$distributed_state <- distributed_state
     }
     do.call(ugplot_update_job_status, c(list(job_id = job_id, jobs_dir = jobs_dir), updates))
   }
@@ -184,6 +188,13 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
 }
 
 ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugplot_default_jobs_dir()) {
+  request_id <- as.character(config$request_id %||% "")
+  if (nzchar(request_id)) {
+    existing <- ugplot_find_job_by_request_id(request_id, jobs_dir)
+    if (is.list(existing)) {
+      return(list(job = existing, process = NULL, reused = TRUE))
+    }
+  }
   status <- ugplot_create_job(dataset = dataset, config = config, jobs_dir = jobs_dir, type = config$type %||% "ml")
   ugplot_launch_background_job(status$id, jobs_dir)
 }

@@ -1088,6 +1088,414 @@ ugplot_geo_ml_quick_models <- function(available) {
   unique(as.character(selected))
 }
 
+ugplot_geo_screen_group <- function(dataset, group, source, config, screen_path,
+                                    importance_path, progress_callback = NULL) {
+  if (!is.data.frame(dataset) || !is.data.frame(group) || nrow(group) != 1L) {
+    stop("A single transcript group and its dataset are required.", call. = FALSE)
+  }
+  models <- unique(as.character(config$models %||% character(0)))
+  models <- models[nzchar(models)]
+  if (length(models) == 0) {
+    models <- c("glmnet", "rpart")
+  }
+  if (isTRUE(config$geo_ml_quick_models)) {
+    models <- ugplot_geo_ml_quick_models(models)
+  }
+  screen_seeds <- max(1L, as.integer(config$geo_ml_screen_seeds %||% 3))
+  timeout <- max(1, as.numeric(config$geo_ml_timeout %||% 1200))
+  cpu_limit <- suppressWarnings(as.integer(config$cpu_limit %||% 1L))
+  if (is.na(cpu_limit) || cpu_limit < 1L) {
+    cpu_limit <- 1L
+  }
+  ugplot_ensure_dir(dirname(screen_path))
+  ugplot_ensure_dir(dirname(importance_path))
+  screen_config <- ugplot_geo_ml_pipeline_config(
+    models,
+    screen_seeds,
+    timeout,
+    cpu_limit = cpu_limit,
+    parallel_enabled = isTRUE(config$parallel_enabled),
+    restart_parallel_each_model = isTRUE(config$restart_parallel_each_model %||% TRUE),
+    retry_parallel_connection_errors = isTRUE(config$retry_parallel_connection_errors %||% TRUE)
+  )
+  screen_config$resume_result_path <- screen_path
+  screen_config$model_log_dir <- file.path(dirname(screen_path), "logs", "screen")
+  screen_result <- ugplot_run_ml_job(
+    dataset,
+    screen_config,
+    progress_callback = progress_callback %||% function(...) NULL,
+    partial_callback = function(partial) saveRDS(partial, screen_path)
+  )
+  saveRDS(screen_result, screen_path)
+  metric_values <- ugplot_geo_ml_metric_values(screen_result)
+  model_counts <- ugplot_geo_ml_model_run_counts(screen_result)
+  importance <- ugplot_geo_ml_importance_table(screen_result$best_model, group, source, "screening")
+  if (is.data.frame(importance) && nrow(importance) > 0) {
+    utils::write.csv(importance, importance_path, row.names = FALSE)
+  }
+  summary_row <- data.frame(
+    Source = source,
+    Phase = "screening",
+    GroupID = as.character(group$GroupID[[1]]),
+    PrincipalTranscript = group$PrincipalTranscript[[1]],
+    Gene = group$Gene[[1]],
+    Columns = group$Columns[[1]],
+    Samples = group$Samples[[1]],
+    TranscriptCount = group$TranscriptCount[[1]],
+    ExtraTranscripts = group$ExtraTranscripts[[1]] %||% "",
+    CpGs = group$CpGs[[1]] %||% "",
+    TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
+    TriggerBestCpG = group$TriggerBestCpG[[1]] %||% "",
+    TriggerBestRho = suppressWarnings(as.numeric(group$TriggerBestRho[[1]] %||% NA_real_)),
+    BestModel = screen_result$best_model_name %||% "",
+    MetricName = screen_result$final_summary$metric_name %||% "R2",
+    BestMetric = suppressWarnings(as.numeric(screen_result$final_summary$metric_value %||% NA_real_)),
+    MedianMetric = if (length(metric_values) > 0) stats::median(metric_values) else NA_real_,
+    MeanMetric = if (length(metric_values) > 0) mean(metric_values) else NA_real_,
+    SeedsRun = length(metric_values),
+    ModelsRun = model_counts[["ModelsRun"]],
+    ModelsOK = model_counts[["ModelsOK"]],
+    DatasetPath = as.character(config$coordinator_dataset_path %||% ""),
+    ScreenResultPath = screen_path,
+    ImportancePath = if (file.exists(importance_path)) importance_path else "",
+    stringsAsFactors = FALSE
+  )
+  list(summary = summary_row, screen_result = screen_result, importance = importance)
+}
+
+ugplot_run_geo_screen_group_job <- function(dataset, config = list(),
+                                            progress_callback = function(...) NULL,
+                                            partial_callback = NULL) {
+  group <- config$distributed_group
+  if (!is.data.frame(group) || nrow(group) != 1L) {
+    stop("Distributed screening config is missing its transcript group.", call. = FALSE)
+  }
+  task_dir <- as.character(config$job_dir %||% tempdir())
+  group_id <- as.character(group$GroupID[[1]])
+  result <- ugplot_geo_screen_group(
+    dataset = dataset,
+    group = group,
+    source = as.character(config$matrix_source %||% "processed"),
+    config = config,
+    screen_path = file.path(task_dir, "worker-screen-result.rds"),
+    importance_path = file.path(task_dir, "worker-screen-importance.csv"),
+    progress_callback = function(...) {
+      args <- list(...)
+      progress_callback(
+        progress = args$progress %||% NULL,
+        message = paste0("Worker screening ", group_id, ": ", args$message %||% "")
+      )
+    }
+  )
+  list(
+    kind = "geo_screen_group",
+    protocol_version = 1L,
+    parent_job_id = as.character(config$parent_job_id %||% ""),
+    worker_name = as.character(config$worker_name %||% ""),
+    group_id = group_id,
+    summary = result$summary,
+    screen_result = result$screen_result,
+    importance = result$importance
+  )
+}
+
+ugplot_geo_distributed_workers <- function(config) {
+  workers <- config$distributed_workers %||% list()
+  if (is.data.frame(workers)) {
+    workers <- lapply(seq_len(nrow(workers)), function(i) as.list(workers[i, , drop = FALSE]))
+  }
+  workers <- Filter(function(worker) {
+    is.list(worker) &&
+      nzchar(as.character(worker$name %||% "")) &&
+      nzchar(as.character(worker$url %||% ""))
+  }, workers)
+  lapply(workers, function(worker) {
+    cpu_limit <- suppressWarnings(as.integer(worker$cpu_limit %||% 1L))
+    if (is.na(cpu_limit) || cpu_limit < 1L) {
+      cpu_limit <- 1L
+    }
+    worker$cpu_limit <- cpu_limit
+    worker
+  })
+}
+
+ugplot_geo_distributed_manifest_path <- function(pipeline_dir) {
+  file.path(pipeline_dir, "distributed-screening.rds")
+}
+
+ugplot_geo_write_distributed_manifest <- function(manifest, path) {
+  if (exists("ugplot_write_rds_atomic", mode = "function", inherits = TRUE)) {
+    ugplot_write_rds_atomic(manifest, path)
+  } else {
+    saveRDS(manifest, path)
+  }
+  invisible(path)
+}
+
+ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summary_path,
+                                                     pipeline_dir, cache_dir, source,
+                                                     run_key, config, workers,
+                                                     progress_callback = NULL) {
+  manifest_path <- ugplot_geo_distributed_manifest_path(pipeline_dir)
+  manifest <- if (file.exists(manifest_path)) {
+    tryCatch(readRDS(manifest_path), error = function(e) data.frame())
+  } else {
+    data.frame()
+  }
+  required <- c("GroupID", "Worker", "JobID", "State", "Attempts", "PollFailures", "Error")
+  if (!is.data.frame(manifest)) {
+    manifest <- data.frame()
+  }
+  for (column_name in setdiff(required, names(manifest))) {
+    manifest[[column_name]] <- switch(
+      column_name,
+      Attempts = integer(nrow(manifest)),
+      PollFailures = integer(nrow(manifest)),
+      rep("", nrow(manifest))
+    )
+  }
+  manifest <- manifest[, required, drop = FALSE]
+  manifest$State[manifest$State == "dispatching"] <- "pending"
+  eligible_ids <- as.character(eligible$GroupID)
+  manifest <- manifest[as.character(manifest$GroupID) %in% eligible_ids, , drop = FALSE]
+  missing_ids <- setdiff(eligible_ids, as.character(manifest$GroupID))
+  if (length(missing_ids) > 0) {
+    manifest <- rbind(
+      manifest,
+      data.frame(
+        GroupID = missing_ids,
+        Worker = "",
+        JobID = "",
+        State = "pending",
+        Attempts = 0L,
+        PollFailures = 0L,
+        Error = "",
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+  processed <- if (is.data.frame(summaries) && "GroupID" %in% names(summaries)) {
+    unique(as.character(summaries$GroupID))
+  } else {
+    character(0)
+  }
+  manifest$State[manifest$GroupID %in% processed] <- "completed"
+  ugplot_geo_write_distributed_manifest(manifest, manifest_path)
+
+  worker_by_name <- function(name) {
+    matches <- Filter(function(worker) identical(as.character(worker$name), as.character(name)), workers)
+    if (length(matches) == 0) NULL else matches[[1]]
+  }
+  group_by_id <- function(group_id) {
+    eligible[as.character(eligible$GroupID) == as.character(group_id), , drop = FALSE][1, , drop = FALSE]
+  }
+  save_completed <- function(row_index, remote_result) {
+    group_id <- as.character(manifest$GroupID[[row_index]])
+    if (!is.list(remote_result) ||
+        !identical(remote_result$kind %||% "", "geo_screen_group") ||
+        !identical(as.character(remote_result$group_id %||% ""), group_id) ||
+        !is.data.frame(remote_result$summary) ||
+        nrow(remote_result$summary) != 1L) {
+      stop("Worker returned an invalid result for group ", group_id, ".", call. = FALSE)
+    }
+    group <- group_by_id(group_id)
+    dataset_info <- ugplot_geo_ml_group_dataset(group)
+    group_dir <- ugplot_geo_transcript_ml_group_dir(cache_dir, source, group_id, run_key)
+    screen_path <- file.path(group_dir, "screen_result.rds")
+    importance_path <- file.path(group_dir, "screen_importance.csv")
+    ugplot_ensure_dir(group_dir)
+    saveRDS(remote_result$screen_result, screen_path)
+    if (is.data.frame(remote_result$importance) && nrow(remote_result$importance) > 0) {
+      utils::write.csv(remote_result$importance, importance_path, row.names = FALSE)
+    }
+    summary_row <- remote_result$summary
+    summary_row$DatasetPath <- dataset_info$dataset_path
+    summary_row$ScreenResultPath <- screen_path
+    summary_row$ImportancePath <- if (file.exists(importance_path)) importance_path else ""
+    summaries <<- ugplot_geo_bind_rows(list(
+      summaries[as.character(summaries$GroupID) != group_id, , drop = FALSE],
+      summary_row
+    ))
+    summaries <<- ugplot_geo_ml_rank_summary(summaries)
+    utils::write.csv(summaries, summary_path, row.names = FALSE)
+    manifest$State[[row_index]] <<- "completed"
+    manifest$PollFailures[[row_index]] <<- 0L
+    manifest$Error[[row_index]] <<- ""
+    ugplot_geo_write_distributed_manifest(manifest, manifest_path)
+  }
+  report_progress <- function() {
+    done <- sum(manifest$State == "completed")
+    active_rows <- which(manifest$State %in% c("submitted", "running"))
+    active <- if (length(active_rows) > 0) {
+      paste0(manifest$Worker[active_rows], ":", manifest$GroupID[active_rows], collapse = ", ")
+    } else {
+      "waiting"
+    }
+    if (!is.null(progress_callback)) {
+      progress_callback(
+        done / max(1L, nrow(manifest)),
+        paste0(
+          "Distributed screening: ", done, "/", nrow(manifest),
+          " group(s); active ", active
+        ),
+        distributed_state = list(
+          phase = "screening",
+          workers = unique(vapply(workers, function(worker) as.character(worker$name), character(1))),
+          completed = done,
+          total = nrow(manifest),
+          active = length(active_rows)
+        )
+      )
+    }
+  }
+  max_attempts <- suppressWarnings(as.integer(config$distributed_max_attempts %||% 2L))
+  if (is.na(max_attempts) || max_attempts < 1L) {
+    max_attempts <- 2L
+  }
+  poll_seconds <- suppressWarnings(as.numeric(config$distributed_poll_seconds %||% 3))
+  if (is.na(poll_seconds) || poll_seconds < 1) {
+    poll_seconds <- 1
+  }
+  parent_job_id <- basename(as.character(config$job_dir %||% ""))
+
+  repeat {
+    if (all(manifest$State == "completed")) {
+      break
+    }
+
+    active_rows <- which(manifest$State %in% c("submitted", "running"))
+    for (row_index in active_rows) {
+      worker <- worker_by_name(manifest$Worker[[row_index]])
+      if (is.null(worker)) {
+        manifest$State[[row_index]] <- "pending"
+        manifest$JobID[[row_index]] <- ""
+        manifest$Error[[row_index]] <- "Worker is no longer configured."
+        next
+      }
+      status <- tryCatch(
+        ugplot_remote_job_status(worker$url, manifest$JobID[[row_index]], worker$token %||% ""),
+        error = function(e) e
+      )
+      if (inherits(status, "error")) {
+        manifest$PollFailures[[row_index]] <- manifest$PollFailures[[row_index]] + 1L
+        manifest$Error[[row_index]] <- conditionMessage(status)
+        if (manifest$PollFailures[[row_index]] >= 5L) {
+          manifest$State[[row_index]] <- "pending"
+          manifest$JobID[[row_index]] <- ""
+        }
+        next
+      }
+      manifest$PollFailures[[row_index]] <- 0L
+      remote_state <- as.character(status$state %||% "")
+      if (identical(remote_state, "finished")) {
+        remote_result <- ugplot_remote_get_result(
+          worker$url,
+          manifest$JobID[[row_index]],
+          worker$token %||% ""
+        )
+        save_completed(row_index, remote_result)
+        try(ugplot_remote_delete_job(
+          worker$url,
+          manifest$JobID[[row_index]],
+          worker$token %||% ""
+        ), silent = TRUE)
+      } else if (remote_state %in% c("failed", "stopped")) {
+        status_message <- as.character(status$message %||% "")
+        crashed <- identical(status_message, "Background process stopped before finishing") ||
+          grepl("^Timed out", status_message) ||
+          identical(remote_state, "stopped")
+        if (isTRUE(status$resumable) && isTRUE(crashed) &&
+            manifest$Attempts[[row_index]] <= max_attempts) {
+          resumed <- tryCatch(
+            ugplot_remote_resume_job(worker$url, manifest$JobID[[row_index]], worker$token %||% ""),
+            error = function(e) NULL
+          )
+          if (!is.null(resumed)) {
+            manifest$State[[row_index]] <- "running"
+            next
+          }
+        }
+        manifest$State[[row_index]] <- "pending"
+        manifest$JobID[[row_index]] <- ""
+        manifest$Error[[row_index]] <- as.character(status$error %||% status$message %||% "Worker task failed.")
+      } else {
+        manifest$State[[row_index]] <- "running"
+      }
+    }
+
+    busy_workers <- unique(manifest$Worker[manifest$State %in% c("submitted", "running")])
+    available_workers <- Filter(function(worker) !(as.character(worker$name) %in% busy_workers), workers)
+    pending_rows <- which(manifest$State == "pending" & manifest$Attempts < max_attempts)
+    dispatch_count <- min(length(available_workers), length(pending_rows))
+    if (dispatch_count > 0) {
+      for (dispatch_i in seq_len(dispatch_count)) {
+        row_index <- pending_rows[[1]]
+        previous_worker <- as.character(manifest$Worker[[row_index]] %||% "")
+        worker_names <- vapply(available_workers, function(worker) as.character(worker$name), character(1))
+        worker_candidates <- which(worker_names != previous_worker)
+        worker_index <- if (length(worker_candidates) > 0) worker_candidates[[1]] else 1L
+        worker <- available_workers[[worker_index]]
+        pending_rows <- pending_rows[-1]
+        available_workers <- available_workers[-worker_index]
+        group <- group_by_id(manifest$GroupID[[row_index]])
+        dataset_info <- ugplot_geo_ml_group_dataset(group)
+        task_config <- config
+        task_config$distributed_workers <- NULL
+        task_config$resume_result <- NULL
+        task_config$resume_result_path <- NULL
+        task_config$resume_completed_keys <- NULL
+        task_config$jobs_dir <- NULL
+        task_config$job_dir <- NULL
+        task_config$model_log_dir <- NULL
+        task_config$runner <- "ugplot_run_geo_screen_group_job"
+        task_config$type <- "geo_worker"
+        task_config$job_name <- paste0("Worker ", manifest$GroupID[[row_index]], " for ", parent_job_id)
+        task_config$internal_worker_task <- TRUE
+        task_config$parent_job_id <- parent_job_id
+        task_config$worker_name <- as.character(worker$name)
+        task_config$distributed_group <- group
+        task_config$matrix_source <- source
+        task_config$coordinator_dataset_path <- dataset_info$dataset_path
+        task_config$cpu_limit <- max(1L, suppressWarnings(as.integer(worker$cpu_limit %||% 1L)))
+        task_config$request_id <- paste(parent_job_id, "screen", manifest$GroupID[[row_index]], sep = ":")
+        manifest$Worker[[row_index]] <- as.character(worker$name)
+        manifest$State[[row_index]] <- "dispatching"
+        manifest$Attempts[[row_index]] <- manifest$Attempts[[row_index]] + 1L
+        manifest$Error[[row_index]] <- ""
+        ugplot_geo_write_distributed_manifest(manifest, manifest_path)
+        started <- tryCatch(
+          ugplot_remote_create_job(
+            worker$url,
+            dataset_info$dataset,
+            task_config,
+            worker$token %||% ""
+          ),
+          error = function(e) e
+        )
+        if (inherits(started, "error")) {
+          manifest$State[[row_index]] <- "pending"
+          manifest$Error[[row_index]] <- conditionMessage(started)
+        } else {
+          manifest$JobID[[row_index]] <- as.character(started$id %||% "")
+          manifest$State[[row_index]] <- "submitted"
+        }
+        ugplot_geo_write_distributed_manifest(manifest, manifest_path)
+      }
+    }
+
+    exhausted <- which(manifest$State != "completed" & manifest$Attempts >= max_attempts &
+                         !manifest$State %in% c("submitted", "running"))
+    if (length(exhausted) > 0) {
+      failed <- paste0(manifest$GroupID[exhausted], ": ", manifest$Error[exhausted], collapse = "; ")
+      stop("Distributed screening failed after retries: ", failed, call. = FALSE)
+    }
+    report_progress()
+    Sys.sleep(poll_seconds)
+  }
+  report_progress()
+  summaries
+}
+
 ugplot_geo_run_transcript_ml_remote <- function(groups, cache_dir, source = "processed", config = list(),
                                                 progress_callback = NULL) {
   if (!is.data.frame(groups) || nrow(groups) == 0) {
@@ -1129,6 +1537,27 @@ ugplot_geo_run_transcript_ml_remote <- function(groups, cache_dir, source = "pro
   } else {
     data.frame()
   }
+  workers <- ugplot_geo_distributed_workers(config)
+  if (length(workers) > 0) {
+    summaries <- ugplot_geo_run_transcript_ml_distributed(
+      eligible = eligible,
+      summaries = summaries,
+      summary_path = summary_path,
+      pipeline_dir = pipeline_dir,
+      cache_dir = cache_dir,
+      source = source,
+      run_key = run_key,
+      config = config,
+      workers = workers,
+      progress_callback = progress_callback
+    )
+    summaries <- ugplot_geo_enrich_ml_summary_remote(summaries, source = source, phase = "screening")
+    summaries <- ugplot_geo_ml_rank_summary(summaries)
+    if (is.data.frame(summaries) && nrow(summaries) > 0) {
+      utils::write.csv(summaries, summary_path, row.names = FALSE)
+    }
+    return(summaries)
+  }
   processed_groups <- if (is.data.frame(summaries) && "GroupID" %in% names(summaries)) unique(as.character(summaries$GroupID)) else character(0)
   for (group_i in seq_len(nrow(eligible))) {
     group <- eligible[group_i, , drop = FALSE]
@@ -1139,66 +1568,34 @@ ugplot_geo_run_transcript_ml_remote <- function(groups, cache_dir, source = "pro
     dataset_info <- ugplot_geo_ml_group_dataset(group)
     group_dir <- ugplot_geo_transcript_ml_group_dir(cache_dir, source, group_id, run_key)
     screen_path <- file.path(group_dir, "screen_result.rds")
-    screen_config <- ugplot_geo_ml_pipeline_config(
-      models,
-      screen_seeds,
-      timeout,
-      cpu_limit = cpu_limit,
-      parallel_enabled = parallel_enabled,
-      restart_parallel_each_model = restart_parallel_each_model,
-      retry_parallel_connection_errors = retry_parallel_connection_errors
-    )
-    screen_config$resume_result_path <- screen_path
-    screen_config$model_log_dir <- file.path(group_dir, "logs", "screen")
+    importance_path <- file.path(group_dir, "screen_importance.csv")
     if (!is.null(progress_callback)) {
       progress_callback((group_i - 1) / nrow(eligible), paste0("Screening ", group_id, " with ", length(models), " model(s)"))
     }
-    screen_result <- ugplot_run_ml_job(
-      dataset_info$dataset,
-      screen_config,
+    group_config <- config
+    group_config$models <- models
+    group_config$geo_ml_screen_seeds <- screen_seeds
+    group_config$geo_ml_timeout <- timeout
+    group_config$cpu_limit <- cpu_limit
+    group_config$parallel_enabled <- parallel_enabled
+    group_config$restart_parallel_each_model <- restart_parallel_each_model
+    group_config$retry_parallel_connection_errors <- retry_parallel_connection_errors
+    group_config$coordinator_dataset_path <- dataset_info$dataset_path
+    group_result <- ugplot_geo_screen_group(
+      dataset = dataset_info$dataset,
+      group = group,
+      source = source,
+      config = group_config,
+      screen_path = screen_path,
+      importance_path = importance_path,
       progress_callback = function(...) {
         args <- list(...)
         if (!is.null(progress_callback)) {
           progress_callback((group_i - 1) / nrow(eligible), paste0("Screening ", group_id, ": ", args$message %||% ""))
         }
-      },
-      partial_callback = function(partial) saveRDS(partial, screen_path)
+      }
     )
-    saveRDS(screen_result, screen_path)
-    metric_values <- ugplot_geo_ml_metric_values(screen_result)
-    model_counts <- ugplot_geo_ml_model_run_counts(screen_result)
-    importance_path <- file.path(group_dir, "screen_importance.csv")
-    importance <- ugplot_geo_ml_importance_table(screen_result$best_model, group, source, "screening")
-    if (is.data.frame(importance) && nrow(importance) > 0) {
-      utils::write.csv(importance, importance_path, row.names = FALSE)
-    }
-    summary_row <- data.frame(
-      Source = source,
-      Phase = "screening",
-      GroupID = group_id,
-      PrincipalTranscript = group$PrincipalTranscript[[1]],
-      Gene = group$Gene[[1]],
-      Columns = group$Columns[[1]],
-      Samples = group$Samples[[1]],
-      TranscriptCount = group$TranscriptCount[[1]],
-      ExtraTranscripts = group$ExtraTranscripts[[1]] %||% "",
-      CpGs = group$CpGs[[1]] %||% "",
-      TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
-      TriggerBestCpG = group$TriggerBestCpG[[1]] %||% "",
-      TriggerBestRho = suppressWarnings(as.numeric(group$TriggerBestRho[[1]] %||% NA_real_)),
-      BestModel = screen_result$best_model_name %||% "",
-      MetricName = screen_result$final_summary$metric_name %||% "R2",
-      BestMetric = suppressWarnings(as.numeric(screen_result$final_summary$metric_value %||% NA_real_)),
-      MedianMetric = if (length(metric_values) > 0) stats::median(metric_values) else NA_real_,
-      MeanMetric = if (length(metric_values) > 0) mean(metric_values) else NA_real_,
-      SeedsRun = length(metric_values),
-      ModelsRun = model_counts[["ModelsRun"]],
-      ModelsOK = model_counts[["ModelsOK"]],
-      DatasetPath = dataset_info$dataset_path,
-      ScreenResultPath = screen_path,
-      ImportancePath = if (file.exists(importance_path)) importance_path else "",
-      stringsAsFactors = FALSE
-    )
+    summary_row <- group_result$summary
     summaries <- ugplot_geo_bind_rows(list(summaries[as.character(summaries$GroupID) != group_id, , drop = FALSE], summary_row))
     summaries <- ugplot_geo_ml_rank_summary(summaries)
     utils::write.csv(summaries, summary_path, row.names = FALSE)
@@ -1533,13 +1930,18 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
       geo_ml_max_stability_seeds = config$geo_ml_max_stability_seeds %||% 4000,
       geo_ml_stability_window = config$geo_ml_stability_window %||% 30,
       geo_ml_stability_tolerance = config$geo_ml_stability_tolerance %||% 0.01,
-      geo_ml_stability_group_column = config$geo_ml_stability_group_column %||% ""
+      geo_ml_stability_group_column = config$geo_ml_stability_group_column %||% "",
+      distributed_screening_workers = vapply(
+        ugplot_geo_distributed_workers(config),
+        function(worker) as.character(worker$name),
+        character(1)
+      )
     )
   )
   last_publish_progress <- -Inf
   last_publish_time <- Sys.time() - 60
   last_partial_time <- Sys.time() - 60
-  publish <- function(progress, message, force = FALSE) {
+  publish <- function(progress, message, force = FALSE, distributed_state = NULL) {
     result$stage <<- message
     result$updated_at <<- as.character(Sys.time())
     now <- Sys.time()
@@ -1551,7 +1953,11 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
       isTRUE(publish_elapsed >= 10) ||
       isTRUE(is.finite(progress_value) && progress_value >= 1)
     if (should_publish) {
-      progress_callback(progress = progress, message = message)
+      callback_args <- list(progress = progress, message = message)
+      if (is.list(distributed_state)) {
+        callback_args$distributed_state <- distributed_state
+      }
+      do.call(progress_callback, callback_args)
       last_publish_progress <<- progress_value
       last_publish_time <<- now
     }
@@ -1746,7 +2152,13 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
           cache_dir = cache_dir,
           source = source,
           config = config,
-          progress_callback = function(value, message) publish(0.93 + 0.04 * value, message)
+          progress_callback = function(value, message, distributed_state = NULL) {
+            publish(
+              0.93 + 0.04 * value,
+              message,
+              distributed_state = distributed_state
+            )
+          }
         )
         result$paths$transcript_ml_screening_summary <- file.path(transcript_ml_dir, "screening_summary.csv")
         result$tables$transcript_ml_screening <- screen_summary

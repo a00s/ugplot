@@ -17,7 +17,7 @@ ugPlotServerStart(
 
 \item{jobs_dir}{Directory used to persist datasets, status and results.}
 
-\item{token}{Optional bearer token. Defaults to no authentication.}
+\item{token}{Bearer token. Required when listening on a non-local interface.}
 
 \item{name}{Local server handle name used by status/stop.}
 }

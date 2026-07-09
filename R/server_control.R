@@ -148,13 +148,16 @@ ugplot_mark_server_state_stopped <- function(name = "default") {
 #' @param host Interface to bind.
 #' @param port Port to listen on.
 #' @param jobs_dir Directory used to persist datasets, status and results.
-#' @param token Optional bearer token. Defaults to no authentication.
+#' @param token Bearer token. Required when listening on a non-local interface.
 #' @param name Local server handle name used by status/stop.
 #' @return Invisibly returns the server state.
 #' @export
 ugPlotServerStart <- function(host = "0.0.0.0", port = 8080,
                               jobs_dir = ugplot_default_jobs_dir(),
                               token = "", name = "default") {
+  if (!(host %in% c("127.0.0.1", "::1", "localhost")) && !nzchar(token)) {
+    stop("A bearer token is required when ugPlotServer listens on a non-local interface.", call. = FALSE)
+  }
   if (!requireNamespace("callr", quietly = TRUE)) {
     stop("Package 'callr' is required to start ugPlotServer in background.", call. = FALSE)
   }

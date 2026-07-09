@@ -1,6 +1,7 @@
 ugplot_remote_servers_path <- function() {
   config_dir <- file.path(path.expand("~"), ".ugplot")
   ugplot_ensure_dir(config_dir)
+  try(Sys.chmod(config_dir, mode = "0700"), silent = TRUE)
   file.path(config_dir, "remote_servers.rds")
 }
 
@@ -81,7 +82,9 @@ ugplot_write_remote_servers <- function(servers) {
     servers <- ugplot_default_remote_servers()
   }
   servers <- servers[!duplicated(servers$name, fromLast = TRUE), , drop = FALSE]
-  saveRDS(servers, ugplot_remote_servers_path())
+  path <- ugplot_remote_servers_path()
+  saveRDS(servers, path)
+  try(Sys.chmod(path, mode = "0600"), silent = TRUE)
   invisible(servers)
 }
 

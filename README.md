@@ -89,9 +89,13 @@ ugPlotInstallModelDeps()
 ugPlotServerStart(
   host = "0.0.0.0",
   port = 8080,
-  token = "change-this-token"
+  token = "use-a-long-random-secret"
 )
 ```
+
+For internet-facing servers, put port 8080 behind an HTTPS reverse proxy or a
+private VPN and block direct public access to the port. Bearer tokens sent over
+plain HTTP are not encrypted. Restrict SSH to keys and trusted source networks.
 
 Manage the background server from R:
 
@@ -103,7 +107,7 @@ ugPlotServerStop()
 Then, in the ugPlot app:
 
 1. Open **CONFIGURATIONS**.
-2. Add the server URL, for example `http://server-address:8080`.
+2. Add the protected server URL, preferably an HTTPS reverse-proxy URL.
 3. Add the same token used in `ugPlotServerStart()`.
 4. In **MACHINE LEARNING**, choose **Run target → Remote server**.
 5. Submit the job and monitor it in **JOBS**.

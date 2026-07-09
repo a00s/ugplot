@@ -2898,7 +2898,10 @@ server <- function(input, output, session) {
             numericInput("geo_ml_timeout", "Timeout per model/seed (s):", value = 1200, min = 1, step = 1),
             uiOutput("geo_ml_model_summary"),
 	            if (run_remote) {
-	              tags$p(class = "geo-step-note", "Remote mode keeps transcript jobs on the selected server.")
+	              tags$div(
+	                uiOutput("geo_distributed_screening_ui"),
+	                tags$p(class = "geo-step-note", "Screening group checkpoints remain with the coordinator. Stability continues on the coordinator after distributed screening.")
+	              )
 	            } else if (transcript_ml_ready) {
 	              actionButton("geo_run_transcript_ml", "Start/resume model screening")
             } else if (transcript_needs_rebuild) {
@@ -4854,6 +4857,63 @@ server <- function(input, output, session) {
         }
       ),
       tags$p(class = "geo-step-note", paste(utils::head(selected, 12), collapse = ", "), if (length(selected) > 12) "..." else "")
+    )
+  })
+
+  output$geo_distributed_screening_ui <- renderUI({
+    states <- remote_server_connection_state()
+    capabilities <- remote_server_capabilities()
+    servers <- remote_servers()
+    if (!is.data.frame(states) || nrow(states) == 0) {
+      return(tags$p(class = "geo-step-note", "Refresh remote jobs to discover compatible screening workers."))
+    }
+    compatible_names <- as.character(states$server[
+      states$state %in% c("idle", "active") &
+        vapply(as.character(states$server), function(server_name) {
+          isTRUE(capabilities[[server_name]]$distributed_geo_screening %||% FALSE) &&
+            identical(as.integer(capabilities[[server_name]]$distributed_protocol_version %||% 0L), 1L)
+        }, logical(1))
+    ])
+    compatible_names <- intersect(compatible_names, as.character(servers$name))
+    if (length(compatible_names) == 0) {
+      return(tags$div(
+        checkboxInput("geo_distributed_screening", "Distribute screening between servers", value = FALSE),
+        tags$p(class = "geo-step-note", "No compatible workers are available. Update the remote servers to this ugPlot version.")
+      ))
+    }
+    current <- isolate(input$geo_distributed_worker_names %||% character(0))
+    selected <- intersect(as.character(current), compatible_names)
+    if (length(selected) == 0) {
+      selected <- compatible_names
+    }
+    insecure_workers <- as.character(servers$name[
+      servers$name %in% compatible_names &
+        grepl("^http://", as.character(servers$url), ignore.case = TRUE)
+    ])
+    tags$div(
+      checkboxInput("geo_distributed_screening", "Distribute screening between servers", value = TRUE),
+      conditionalPanel(
+        condition = "input.geo_distributed_screening",
+        checkboxGroupInput(
+          "geo_distributed_worker_names",
+          "Screening workers:",
+          choices = compatible_names,
+          selected = selected,
+          inline = TRUE
+        )
+      ),
+      if (length(insecure_workers) > 0) {
+        tags$p(
+          class = "geo-step-note text-danger",
+          paste0(
+            "Unencrypted worker connection: ",
+            paste(insecure_workers, collapse = ", "),
+            ". Use HTTPS or a private VPN before sending sensitive datasets."
+          )
+        )
+      } else {
+        NULL
+      }
     )
   })
 
@@ -11785,7 +11845,7 @@ server <- function(input, output, session) {
       data.frame()
     }
     if (is.data.frame(jobs) && nrow(jobs) > 0) {
-      preferred_columns <- c("server", "id", "name", "type", "state", "progress", "message", "target", "models", "created_at", "updated_at", "pid")
+      preferred_columns <- c("server", "id", "name", "type", "state", "progress", "message", "execution", "tasks", "target", "models", "created_at", "updated_at", "pid")
       jobs <- jobs[, c(intersect(preferred_columns, names(jobs)), setdiff(names(jobs), preferred_columns)), drop = FALSE]
       state_values <- if ("state" %in% names(jobs)) as.character(jobs$state) else rep("", nrow(jobs))
       active_rank <- ifelse(state_values %in% c("queued", "running"), 0L, 1L)
@@ -11829,6 +11889,36 @@ server <- function(input, output, session) {
 	      stop("Choose a metadata field locally before starting a remote GEO pipeline.", call. = FALSE)
 	    }
 	    server <- selected_geo_remote_server()
+	    distributed_workers <- list()
+	    if (isTRUE(input$geo_distributed_screening)) {
+	      selected_workers <- unique(as.character(input$geo_distributed_worker_names %||% character(0)))
+	      states <- remote_server_connection_state()
+	      capabilities <- remote_server_capabilities()
+	      configured_servers <- remote_servers()
+	      valid_workers <- selected_workers[
+	        vapply(selected_workers, function(server_name) {
+	          state_row <- states[as.character(states$server) == server_name, , drop = FALSE]
+	          nrow(state_row) == 1L &&
+	            state_row$state[[1]] %in% c("idle", "active") &&
+	            isTRUE(capabilities[[server_name]]$distributed_geo_screening %||% FALSE) &&
+	            identical(as.integer(capabilities[[server_name]]$distributed_protocol_version %||% 0L), 1L)
+	        }, logical(1))
+	      ]
+	      distributed_workers <- lapply(valid_workers, function(server_name) {
+	        worker <- configured_servers[as.character(configured_servers$name) == server_name, , drop = FALSE]
+	        worker_cpu_limit <- suppressWarnings(as.integer(worker$cpu_limit[[1]] %||% 1L))
+	        if (is.na(worker_cpu_limit) || worker_cpu_limit < 1L) {
+	          worker_cpu_limit <- 1L
+	        }
+	        list(
+	          name = as.character(worker$name[[1]]),
+	          url = as.character(worker$url[[1]]),
+	          token = as.character(worker$token[[1]] %||% ""),
+	          cpu_limit = worker_cpu_limit,
+	          protocol_version = 1L
+	        )
+	      })
+	    }
 	    matrix_source <- geo_matrix_source_value(input$geo_matrix_source %||% "processed")
 	    if (isTRUE(remote_loaded)) {
 	      remote_source <- as.character(remote_result$matrix_source %||% "")
@@ -11872,6 +11962,8 @@ server <- function(input, output, session) {
 	      parallel_enabled = isTRUE(input$config_parallel_cubist_models),
 	      restart_parallel_each_model = isTRUE(input$config_restart_parallel_each_model),
 	      retry_parallel_connection_errors = isTRUE(input$config_retry_parallel_connection_errors),
+	      distributed_workers = distributed_workers,
+	      distributed_protocol_version = 1L,
 	      timeout = 0
 	    )
 	  }
@@ -11963,6 +12055,16 @@ server <- function(input, output, session) {
 	    update_geo_numeric_input("geo_ml_max_stability_seeds", config$geo_ml_max_stability_seeds)
 	    update_geo_numeric_input("geo_ml_stability_window", config$geo_ml_stability_window)
 	    update_geo_numeric_input("geo_ml_stability_tolerance", config$geo_ml_stability_tolerance)
+	    if (!is.null(config$distributed_workers)) {
+	      worker_names <- vapply(config$distributed_workers, function(worker) {
+	        as.character(worker$name %||% "")
+	      }, character(1))
+	      worker_names <- worker_names[nzchar(worker_names)]
+	      updateCheckboxInput(session, "geo_distributed_screening", value = length(worker_names) > 0)
+	      if (length(worker_names) > 0) {
+	        updateCheckboxGroupInput(session, "geo_distributed_worker_names", selected = worker_names)
+	      }
+	    }
 	    if (!is.null(config$geo_ml_stability_group_column)) {
 	      updateSelectInput(session, "geo_ml_stability_group_column", selected = as.character(config$geo_ml_stability_group_column %||% ""))
 	    }
