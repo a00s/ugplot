@@ -104,6 +104,26 @@ ugPlotServerStatus()
 ugPlotServerStop()
 ```
 
+For a Linux server that runs ugPlot from a Git checkout, the repository includes
+a restart helper:
+
+```bash
+UGPLOT_SERVER_TOKEN='your-token' scripts/linux-restart-from-git.sh
+```
+
+Optional environment variables:
+
+```bash
+UGPLOT_BRANCH=main
+UGPLOT_HOST=0.0.0.0
+UGPLOT_PORT=8080
+UGPLOT_HEALTH_HOST=127.0.0.1
+```
+
+The script stops the running ugPlot server, pulls the selected branch with
+`--ff-only`, installs the local package, starts the server again, and checks
+`/health`. Keep the token outside the repository.
+
 Then, in the ugPlot app:
 
 1. Open **CONFIGURATIONS**.
