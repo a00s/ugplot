@@ -597,9 +597,55 @@ ugplot_geo_filter_transcript_dataset <- function(dataset, target_column, min_sam
   list(status = "compatible", dataset = filtered_dataset, kept_cpgs = predictor_cols, kept_samples = filtered_dataset$sample_id)
 }
 
+ugplot_geo_build_transcript_group_progress_row <- function(transcript_id, candidates, matrix_files, metadata,
+                                                           cache_dir, target_column, min_samples_pct,
+                                                           source = "processed") {
+  transcript_rows <- candidates[as.character(candidates$Transcript) == transcript_id, , drop = FALSE]
+  transcript_cpgs <- unique(as.character(stats::na.omit(transcript_rows$CpG)))
+  transcript_cpgs <- transcript_cpgs[nzchar(transcript_cpgs)]
+  dataset_path <- ugplot_geo_transcript_dataset_path(cache_dir, transcript_id, target_column, source)
+  raw_dataset_path <- ugplot_geo_transcript_dataset_path(cache_dir, transcript_id, target_column, source, raw = TRUE)
+  transcript_dataset <- if (file.exists(raw_dataset_path)) {
+    tryCatch(utils::read.csv(raw_dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+  } else {
+    tryCatch(
+      ugplot_geo_transcript_dataset(matrix_files, metadata, target_column, transcript_cpgs),
+      error = function(e) data.frame()
+    )
+  }
+  if (is.data.frame(transcript_dataset) && nrow(transcript_dataset) > 0 && !file.exists(raw_dataset_path)) {
+    utils::write.csv(transcript_dataset, raw_dataset_path, row.names = FALSE)
+  }
+  filtered <- ugplot_geo_filter_transcript_dataset(transcript_dataset, target_column, min_samples_pct)
+  if (identical(filtered$status, "compatible")) {
+    utils::write.csv(filtered$dataset, dataset_path, row.names = FALSE)
+  }
+  trigger_max <- suppressWarnings(max(transcript_rows$TriggerMaxAbsRho, transcript_rows$AbsRho, na.rm = TRUE))
+  if (!is.finite(trigger_max)) {
+    trigger_max <- NA_real_
+  }
+  data.frame(
+    Transcript = transcript_id,
+    Gene = paste(unique(stats::na.omit(transcript_rows$Gene)), collapse = ";"),
+    Status = filtered$status,
+    Columns = length(filtered$kept_cpgs),
+    Samples = length(filtered$kept_samples),
+    KeptCpGs = paste(filtered$kept_cpgs, collapse = ";"),
+    CpGKey = ugplot_geo_group_key(filtered$kept_cpgs),
+    SampleKey = ugplot_geo_group_key(filtered$kept_samples),
+    TriggerMaxAbsRho = trigger_max,
+    TriggerBestCpG = if ("TriggerBestCpG" %in% names(transcript_rows)) transcript_rows$TriggerBestCpG[[1]] else transcript_rows$CpG[[1]] %||% "",
+    TriggerBestRho = if ("TriggerBestRho" %in% names(transcript_rows)) suppressWarnings(as.numeric(transcript_rows$TriggerBestRho[[1]])) else suppressWarnings(as.numeric(transcript_rows$SpearmanRho[[1]] %||% NA_real_)),
+    DatasetPath = if (identical(filtered$status, "compatible")) dataset_path else "",
+    RawDatasetPath = raw_dataset_path,
+    stringsAsFactors = FALSE
+  )
+}
+
 ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, metadata, cache_dir, target_column,
                                                       threshold, min_samples_pct, source = "processed",
-                                                      progress_callback = NULL) {
+                                                      progress_callback = NULL, cpu_limit = 1L,
+                                                      parallel_enabled = FALSE) {
   transcripts <- unique(as.character(stats::na.omit(candidates$Transcript)))
   transcripts <- transcripts[nzchar(transcripts)]
   paths <- ugplot_geo_transcript_group_paths(cache_dir, target_column, threshold, min_samples_pct, source)
@@ -613,48 +659,45 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
   } else {
     character(0)
   }
-  for (transcript_id in setdiff(transcripts, processed)) {
-    transcript_rows <- candidates[as.character(candidates$Transcript) == transcript_id, , drop = FALSE]
-    transcript_cpgs <- unique(as.character(stats::na.omit(transcript_rows$CpG)))
-    transcript_cpgs <- transcript_cpgs[nzchar(transcript_cpgs)]
-    dataset_path <- ugplot_geo_transcript_dataset_path(cache_dir, transcript_id, target_column, source)
-    raw_dataset_path <- ugplot_geo_transcript_dataset_path(cache_dir, transcript_id, target_column, source, raw = TRUE)
-    transcript_dataset <- if (file.exists(raw_dataset_path)) {
-      tryCatch(utils::read.csv(raw_dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
-    } else {
-      tryCatch(
-        ugplot_geo_transcript_dataset(matrix_files, metadata, target_column, transcript_cpgs),
-        error = function(e) data.frame()
+  remaining <- setdiff(transcripts, processed)
+  cpu_limit <- suppressWarnings(as.integer(cpu_limit %||% 1L))
+  if (is.na(cpu_limit) || cpu_limit < 1L) {
+    cpu_limit <- 1L
+  }
+  use_parallel <- isTRUE(parallel_enabled) && cpu_limit > 1L && .Platform$OS.type != "windows" && length(remaining) > 1L
+  batches <- if (use_parallel) {
+    split(remaining, ceiling(seq_along(remaining) / cpu_limit))
+  } else {
+    as.list(remaining)
+  }
+  for (batch in batches) {
+    progress_batch <- if (use_parallel) {
+      parallel::mclapply(
+        batch,
+        ugplot_geo_build_transcript_group_progress_row,
+        candidates = candidates,
+        matrix_files = matrix_files,
+        metadata = metadata,
+        cache_dir = cache_dir,
+        target_column = target_column,
+        min_samples_pct = min_samples_pct,
+        source = source,
+        mc.cores = min(cpu_limit, length(batch)),
+        mc.preschedule = FALSE
       )
+    } else {
+      list(ugplot_geo_build_transcript_group_progress_row(
+        batch[[1]],
+        candidates = candidates,
+        matrix_files = matrix_files,
+        metadata = metadata,
+        cache_dir = cache_dir,
+        target_column = target_column,
+        min_samples_pct = min_samples_pct,
+        source = source
+      ))
     }
-    if (is.data.frame(transcript_dataset) && nrow(transcript_dataset) > 0 && !file.exists(raw_dataset_path)) {
-      utils::write.csv(transcript_dataset, raw_dataset_path, row.names = FALSE)
-    }
-    filtered <- ugplot_geo_filter_transcript_dataset(transcript_dataset, target_column, min_samples_pct)
-    if (identical(filtered$status, "compatible")) {
-      utils::write.csv(filtered$dataset, dataset_path, row.names = FALSE)
-    }
-    trigger_max <- suppressWarnings(max(transcript_rows$TriggerMaxAbsRho, transcript_rows$AbsRho, na.rm = TRUE))
-    if (!is.finite(trigger_max)) {
-      trigger_max <- NA_real_
-    }
-    progress_row <- data.frame(
-      Transcript = transcript_id,
-      Gene = paste(unique(stats::na.omit(transcript_rows$Gene)), collapse = ";"),
-      Status = filtered$status,
-      Columns = length(filtered$kept_cpgs),
-      Samples = length(filtered$kept_samples),
-      KeptCpGs = paste(filtered$kept_cpgs, collapse = ";"),
-      CpGKey = ugplot_geo_group_key(filtered$kept_cpgs),
-      SampleKey = ugplot_geo_group_key(filtered$kept_samples),
-      TriggerMaxAbsRho = trigger_max,
-      TriggerBestCpG = if ("TriggerBestCpG" %in% names(transcript_rows)) transcript_rows$TriggerBestCpG[[1]] else transcript_rows$CpG[[1]] %||% "",
-      TriggerBestRho = if ("TriggerBestRho" %in% names(transcript_rows)) suppressWarnings(as.numeric(transcript_rows$TriggerBestRho[[1]])) else suppressWarnings(as.numeric(transcript_rows$SpearmanRho[[1]] %||% NA_real_)),
-      DatasetPath = if (identical(filtered$status, "compatible")) dataset_path else "",
-      RawDatasetPath = raw_dataset_path,
-      stringsAsFactors = FALSE
-    )
-    progress_rows <- ugplot_geo_bind_rows(list(progress_rows, progress_row))
+    progress_rows <- ugplot_geo_bind_rows(c(list(progress_rows), progress_batch))
     tables <- ugplot_geo_build_group_tables_remote(progress_rows, candidates = candidates)
     utils::write.csv(tables$summary, paths$summary, row.names = FALSE)
     utils::write.csv(tables$details, paths$details, row.names = FALSE)
@@ -2235,6 +2278,8 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
           threshold = threshold,
           min_samples_pct = min_transcript_samples,
           source = source,
+          cpu_limit = config$cpu_limit %||% 1L,
+          parallel_enabled = isTRUE(config$parallel_enabled),
           progress_callback = function(value, message) publish(0.86 + 0.06 * value, message)
         )
       }
