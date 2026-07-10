@@ -10,11 +10,12 @@ BRANCH="${UGPLOT_BRANCH:-main}"
 HOST="${UGPLOT_HOST:-0.0.0.0}"
 PORT="${UGPLOT_PORT:-8080}"
 HEALTH_HOST="${UGPLOT_HEALTH_HOST:-127.0.0.1}"
-TOKEN="${UGPLOT_SERVER_TOKEN:-${UGPLOT_TOKEN:-}}"
+TOKEN="${1:-${UGPLOT_SERVER_TOKEN:-${UGPLOT_TOKEN:-}}}"
 
 if [[ -z "${TOKEN}" ]]; then
-  echo "Set UGPLOT_SERVER_TOKEN before restarting the server." >&2
-  echo "Example: UGPLOT_SERVER_TOKEN='...' scripts/linux-restart-from-git.sh" >&2
+  echo "Provide the ugPlot server password/token." >&2
+  echo "Example: scripts/linux-restart-from-git.sh 'your-token'" >&2
+  echo "Or: UGPLOT_SERVER_TOKEN='your-token' scripts/linux-restart-from-git.sh" >&2
   exit 2
 fi
 

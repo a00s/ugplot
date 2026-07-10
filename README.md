@@ -108,7 +108,7 @@ For a Linux server that runs ugPlot from a Git checkout, the repository includes
 a restart helper:
 
 ```bash
-UGPLOT_SERVER_TOKEN='your-token' scripts/linux-restart-from-git.sh
+scripts/linux-restart-from-git.sh 'your-token'
 ```
 
 Optional environment variables:
@@ -118,11 +118,13 @@ UGPLOT_BRANCH=main
 UGPLOT_HOST=0.0.0.0
 UGPLOT_PORT=8080
 UGPLOT_HEALTH_HOST=127.0.0.1
+UGPLOT_SERVER_TOKEN=your-token
 ```
 
 The script stops the running ugPlot server, pulls the selected branch with
 `--ff-only`, installs the local package, starts the server again, and checks
-`/health`. Keep the token outside the repository.
+`/health`. Keep the token outside the repository. Passing the token as an
+environment variable avoids saving it in shell history.
 
 Then, in the ugPlot app:
 
