@@ -61,6 +61,15 @@ test_that("distributed worker config is normalized safely", {
   expect_equal(vapply(workers, `[[`, integer(1), "cpu_limit"), c(8L, 1L))
 })
 
+test_that("distributed retry waits for a different busy worker", {
+  compatible <- ugplot_test_internal("ugplot_geo_retry_has_compatible_worker")
+
+  expect_false(compatible("Fy3", "Fy3", 2L))
+  expect_true(compatible("Fy3", c("Fy3", "Fy2"), 2L))
+  expect_true(compatible("Fy3", "Fy3", 1L))
+  expect_true(compatible("", "Fy3", 2L))
+})
+
 test_that("transcript group cache is complete only when every candidate was processed", {
   cache_complete <- ugplot_test_internal("ugplot_geo_transcript_group_cache_complete")
   root <- tempfile("transcript-group-cache-")

@@ -1369,6 +1369,15 @@ ugplot_geo_transcript_group_cache_complete <- function(candidates, group_paths) 
     all(candidate_transcripts %in% processed_transcripts)
 }
 
+ugplot_geo_retry_has_compatible_worker <- function(previous_worker, available_worker_names,
+                                                   configured_worker_count) {
+  previous_worker <- as.character(previous_worker %||% "")
+  available_worker_names <- as.character(available_worker_names)
+  !nzchar(previous_worker) ||
+    configured_worker_count == 1L ||
+    any(available_worker_names != previous_worker)
+}
+
 ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summary_path,
                                                      pipeline_dir, cache_dir, source,
                                                      run_key, config, workers,
@@ -1566,13 +1575,24 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
     dispatch_count <- min(length(available_workers), length(pending_rows))
     if (dispatch_count > 0) {
       for (dispatch_i in seq_len(dispatch_count)) {
-        row_index <- pending_rows[[1]]
-        previous_worker <- as.character(manifest$Worker[[row_index]] %||% "")
         worker_names <- vapply(available_workers, function(worker) as.character(worker$name), character(1))
+        compatible_pending <- vapply(pending_rows, function(candidate_row) {
+          ugplot_geo_retry_has_compatible_worker(
+            manifest$Worker[[candidate_row]],
+            worker_names,
+            length(workers)
+          )
+        }, logical(1))
+        if (!any(compatible_pending)) {
+          break
+        }
+        pending_index <- which(compatible_pending)[[1]]
+        row_index <- pending_rows[[pending_index]]
+        previous_worker <- as.character(manifest$Worker[[row_index]] %||% "")
         worker_candidates <- which(worker_names != previous_worker)
         worker_index <- if (length(worker_candidates) > 0) worker_candidates[[1]] else 1L
         worker <- available_workers[[worker_index]]
-        pending_rows <- pending_rows[-1]
+        pending_rows <- pending_rows[-pending_index]
         available_workers <- available_workers[-worker_index]
         group <- group_by_id(manifest$GroupID[[row_index]])
         dataset_info <- ugplot_geo_ml_group_dataset(group)
