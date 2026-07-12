@@ -1536,9 +1536,90 @@ table.dataTable tbody td:first-child { border-left: 1px solid #edf0f7; border-ra
 table.dataTable tbody td:last-child { border-right: 1px solid #edf0f7; border-radius: 0 10px 10px 0; }
 .jobs-toolbar { padding: 13px; border: 1px solid var(--ug-border); border-radius: 16px; background: rgba(255,255,255,.88); box-shadow: var(--ug-shadow); }
 .remote-job-actions { display: flex; gap: 5px; flex-wrap: wrap; }
-.remote-job-row-active td:first-child { box-shadow: inset 4px 0 0 var(--ug-blue); }
-.remote-job-row-finished td:first-child { box-shadow: inset 4px 0 0 var(--ug-green); }
-.remote-job-row-problem td:first-child { box-shadow: inset 4px 0 0 var(--ug-danger); }
 .progress { height: 13px; border-radius: 999px; background: #e8edf7; box-shadow: none; }
 .progress-bar { border-radius: 999px; background: linear-gradient(90deg, var(--ug-violet), var(--ug-blue), var(--ug-cyan)); }
+
+/* Visual workspaces: keep data readable while carrying the Science Collab identity. */
+.heatmap-workspace {
+  display: flex;
+  gap: 16px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--ug-border);
+  border-radius: 20px;
+  background: linear-gradient(135deg, rgba(117,87,255,.08), rgba(43,140,255,.055) 48%, rgba(22,199,217,.08));
+  box-shadow: var(--ug-shadow);
+}
+.heatmap-workspace > .sidebar-panel-custom {
+  flex: 0 0 184px;
+  width: 184px;
+  height: calc(100vh - 220px);
+  padding: 12px 9px;
+  border: 1px solid rgba(117,87,255,.12);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,.82), rgba(241,246,255,.72));
+  box-shadow: 0 10px 26px rgba(54,68,115,.08);
+}
+.heatmap-workspace .rowplotlist,
+.heatmap-workspace .rowpalettelist { background: transparent; }
+.heatmap-workspace .rowplotlist .row {
+  margin: 0 0 8px;
+  padding: 5px 0;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: rgba(255,255,255,.64);
+  transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
+}
+.heatmap-workspace .rowplotlist .row:hover {
+  border-color: rgba(117,87,255,.22);
+  transform: translateY(-1px);
+  box-shadow: 0 7px 16px rgba(69,73,139,.10);
+}
+.heatmap-workspace > .plotheatmap {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: calc(100vh - 220px);
+  padding: 14px;
+  border: 1px solid rgba(43,140,255,.10);
+  border-radius: 16px;
+  background: linear-gradient(155deg, rgba(255,255,255,.91), rgba(247,251,255,.82));
+}
+
+button.ml-section-toggle.btn,
+button.ml-section-toggle,
+#ml_toggle_seeds,
+#ml_toggle_missing {
+  color: #4d45b8 !important;
+  background: linear-gradient(110deg, rgba(117,87,255,.14), rgba(43,140,255,.10) 52%, rgba(22,199,217,.12)) !important;
+  background-image: linear-gradient(110deg, rgba(117,87,255,.14), rgba(43,140,255,.10) 52%, rgba(22,199,217,.12)) !important;
+  border: 1px solid rgba(117,87,255,.18) !important;
+  border-radius: 13px !important;
+  box-shadow: 0 8px 20px rgba(65,79,133,.08) !important;
+}
+button.ml-section-toggle:hover,
+button.ml-section-toggle:active,
+button.ml-section-toggle:focus,
+#ml_toggle_seeds:hover,
+#ml_toggle_seeds:active,
+#ml_toggle_seeds:focus,
+#ml_toggle_missing:hover,
+#ml_toggle_missing:active,
+#ml_toggle_missing:focus {
+  color: #4035a3 !important;
+  background: linear-gradient(110deg, rgba(117,87,255,.21), rgba(43,140,255,.15) 52%, rgba(22,199,217,.17)) !important;
+  border-color: rgba(117,87,255,.30) !important;
+}
+.ml-section-panel {
+  margin-top: 8px;
+  padding: 14px;
+  border: 1px solid var(--ug-border);
+  border-radius: 0 0 16px 16px;
+  background: linear-gradient(145deg, rgba(255,255,255,.84), rgba(243,248,255,.76));
+}
 @media (max-width: 720px) { .tab-content > .tab-pane:not([data-value="SCIENCE COLLAB"]) { padding: 12px; } .nav-tabs { padding: 0 7px; } .nav-tabs > li > a { padding: 10px 9px; font-size: 11px; } }
+@media (max-width: 850px) {
+  .heatmap-workspace { display: block; }
+  .heatmap-workspace > .sidebar-panel-custom { width: 100%; height: 330px; margin-bottom: 14px; }
+  .heatmap-workspace > .plotheatmap { width: 100%; height: 650px; }
+}

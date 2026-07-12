@@ -657,6 +657,7 @@ ui <- fluidPage(
     tabPanel("HEATMAP PLOT",
       br(),
       fluidRow(
+        class = "heatmap-workspace",
         column(
           width = 3,
           class = "sidebar-panel-custom",
