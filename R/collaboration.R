@@ -41,6 +41,11 @@ ugplot_collaboration_publish_task <- function(task_id, parent_job_id, payload,
   ugplot_collaboration_with_lock(task_dir, {
     existing <- ugplot_collaboration_read_task(task_id, jobs_dir)
     if (is.list(existing) && identical(existing$state %||% "", "pending")) {
+      if (identical(existing$requirements %||% list(), requirements) &&
+          identical(existing$mission %||% list(), mission) &&
+          file.exists(existing$payload_path %||% "")) {
+        return(existing)
+      }
       ugplot_write_rds_atomic(payload, existing$payload_path)
       existing$requirements <- requirements
       existing$mission <- mission

@@ -31,6 +31,28 @@ test_that("collaboration leases expire without blocking a task", {
   expect_equal(claim("client-c", list(models = "lm"), jobs_dir = root)$task$client_id, "client-c")
 })
 
+test_that("republishing an unchanged pending mission preserves its payload", {
+  root <- tempfile("collaboration-")
+  dir.create(root)
+  publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
+
+  requirements <- list(models = "lm")
+  mission <- list(title = "Stable mission")
+  first <- publish(
+    "stable-task", "parent", list(dataset = data.frame(x = 1)),
+    requirements = requirements, mission = mission, jobs_dir = root
+  )
+  payload_time <- file.info(first$payload_path)$mtime
+  Sys.sleep(0.02)
+  second <- publish(
+    "stable-task", "parent", list(dataset = data.frame(x = 999)),
+    requirements = requirements, mission = mission, jobs_dir = root
+  )
+
+  expect_equal(file.info(second$payload_path)$mtime, payload_time)
+  expect_equal(readRDS(second$payload_path)$dataset$x, 1)
+})
+
 test_that("collaboration accepts only the active lease and first result", {
   root <- tempfile("collaboration-")
   dir.create(root)

@@ -203,7 +203,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       dependency_status <- tryCatch(ugplot_model_dependency_status(), error = function(e) NULL)
       models <- dependency_status$models_installed %||% character(0)
       compatible_models(unique(as.character(models)))
-      claim_models(unique(as.character(dependency_status$models$model %||% models)))
+      claim_models(unique(as.character(models)))
       enabled(TRUE)
       state("waiting")
       last_claim_at(as.POSIXct(NA))
@@ -291,6 +291,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       coordinators <- available_coordinators()
       claimed <- NULL
       claimed_server_url <- ""
+      claim_errors <- character(0)
       if (is.data.frame(coordinators) && nrow(coordinators) > 0L) {
         queue_sizes <- vapply(seq_len(nrow(coordinators)), function(i) {
           status <- tryCatch(
@@ -306,7 +307,10 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           candidate_url <- as.character(coordinators$url[[i]])
           claimed <- tryCatch(
             ugplot_remote_collaboration_claim(candidate_url, client_id, capabilities),
-            error = function(e) NULL
+            error = function(e) {
+              claim_errors <<- c(claim_errors, paste0(candidate_url, ": ", conditionMessage(e)))
+              NULL
+            }
           )
           if (!is.null(claimed)) {
             claimed_server_url <- candidate_url
@@ -330,7 +334,9 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           unlist(lapply(missions, function(item) item$missing_models %||% character(0)), use.names = FALSE)
         }), use.names = FALSE))
         missing_models <- missing_models[nzchar(as.character(missing_models))]
-        if (length(missing_models) > 0L) {
+        if (length(claim_errors) > 0L) {
+          network_note(paste("Could not reserve mission:", paste(unique(claim_errors), collapse = " | ")))
+        } else if (length(missing_models) > 0L) {
           preview <- paste(utils::head(missing_models, 6L), collapse = ", ")
           suffix <- if (length(missing_models) > 6L) paste0(" +", length(missing_models) - 6L, " more") else ""
           network_note(paste0("Incompatible mission: missing ", preview, suffix))
