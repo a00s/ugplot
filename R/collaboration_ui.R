@@ -77,6 +77,8 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
     process <- shiny::reactiveVal(NULL)
     process_files <- shiny::reactiveVal(list())
     compatible_models <- shiny::reactiveVal(character(0))
+    claim_models <- shiny::reactiveVal(character(0))
+    network_note <- shiny::reactiveVal("")
     last_claim_at <- shiny::reactiveVal(as.POSIXct(NA))
     last_heartbeat_at <- shiny::reactiveVal(as.POSIXct(NA))
     resource_previous <- shiny::reactiveVal(NULL)
@@ -151,7 +153,8 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       }
       shiny::tags$div(
         class = "collab-compat-ok", shiny::icon("circle-check"), " Workstation ready",
-        shiny::tags$div(style = "margin-top:4px; font-weight:400; color:#6d7790;", paste(length(models), "compatible ML candidates available"))
+        shiny::tags$div(style = "margin-top:4px; font-weight:400; color:#6d7790;", paste(length(models), "compatible ML candidates available")),
+        if (nzchar(network_note())) shiny::tags$div(style = "margin-top:4px; font-weight:500; color:#55627f;", network_note())
       )
     })
 
@@ -197,8 +200,10 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         )
         return()
       }
-      models <- tryCatch(ugplot_model_dependency_status()$models_installed, error = function(e) character(0))
+      dependency_status <- tryCatch(ugplot_model_dependency_status(), error = function(e) NULL)
+      models <- dependency_status$models_installed %||% character(0)
       compatible_models(unique(as.character(models)))
+      claim_models(unique(as.character(dependency_status$models$model %||% models)))
       enabled(TRUE)
       state("waiting")
       last_claim_at(as.POSIXct(NA))
@@ -279,7 +284,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       if (!is.na(claimed_at) && difftime(Sys.time(), claimed_at, units = "secs") < 6) return()
       last_claim_at(Sys.time())
       capabilities <- list(
-        models = compatible_models(), cpu_limit = as.integer(input$cpu_limit %||% 1L),
+        models = claim_models(), cpu_limit = as.integer(input$cpu_limit %||% 1L),
         protocol_version = 1L,
         scientist_name = trimws(input$scientist_name %||% "Anonymous scientist")
       )
@@ -294,6 +299,8 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           )
           suppressWarnings(as.integer(status$pending %||% 0L))
         }, integer(1))
+        total_waiting <- sum(queue_sizes, na.rm = TRUE)
+        network_note(if (total_waiting > 0L) paste(total_waiting, "mission(s) found; matching requirements") else "No mission is currently queued")
         coordinators <- coordinators[order(queue_sizes, decreasing = TRUE), , drop = FALSE]
         for (i in seq_len(nrow(coordinators))) {
           candidate_url <- as.character(coordinators$url[[i]])
@@ -308,9 +315,27 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         }
       }
       if (is.null(claimed)) {
+        if (grepl("mission(s) found", network_note(), fixed = TRUE)) {
+          network_note(paste0(network_note(), "; no compatible payload yet"))
+        }
         state("waiting")
         return()
       }
+      actual_models <- ugplot_collaboration_required_models(claimed$payload$config %||% list())
+      actual_status <- tryCatch(
+        ugplot_model_dependency_status(models = actual_models),
+        error = function(e) NULL
+      )
+      missing_actual <- unique(c(actual_status$models_missing %||% character(0), actual_status$unknown_models %||% character(0)))
+      if (length(missing_actual) > 0L) {
+        try(ugplot_remote_collaboration_release(
+          claimed_server_url, claimed$task$task_id, claimed$task$lease_id, client_id
+        ), silent = TRUE)
+        network_note(paste("Mission requires missing models:", paste(missing_actual, collapse = ", ")))
+        state("waiting")
+        return()
+      }
+      network_note(paste("Mission accepted from", claimed_server_url))
       event_path <- tempfile("ugplot-collab-events-", fileext = ".rds")
       result_path <- tempfile("ugplot-collab-result-", fileext = ".rds")
       cpu_limit <- as.integer(input$cpu_limit %||% 1L)

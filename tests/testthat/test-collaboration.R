@@ -91,3 +91,19 @@ test_that("collaboration runner emits structured scientific events", {
   metric_event <- events[[which(event_types == "metric_updated")[[1]]]]
   expect_equal(metric_event$data$metrics$R2, 0.72)
 })
+
+test_that("pending collaboration missions refresh their real requirements", {
+  root <- tempfile("collaboration-")
+  dir.create(root)
+  publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
+  read_task <- ugplot_test_internal("ugplot_collaboration_read_task")
+  required_models <- ugplot_test_internal("ugplot_collaboration_required_models")
+
+  publish("task-refresh", "parent", list(version = 1), list(models = c("lm", "missing")), jobs_dir = root)
+  publish("task-refresh", "parent", list(version = 2), list(models = "lm"), jobs_dir = root)
+  refreshed <- read_task("task-refresh", root)
+
+  expect_equal(refreshed$requirements$models, "lm")
+  expect_equal(readRDS(refreshed$payload_path)$version, 2)
+  expect_equal(required_models(list(models = c("lm", "rpart"))), c("lm", "rpart"))
+})

@@ -40,9 +40,15 @@ ugplot_collaboration_publish_task <- function(task_id, parent_job_id, payload,
   task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
   ugplot_collaboration_with_lock(task_dir, {
     existing <- ugplot_collaboration_read_task(task_id, jobs_dir)
-    if (is.list(existing) && existing$state %in% c("pending", "leased", "completed")) {
+    if (is.list(existing) && identical(existing$state %||% "", "pending")) {
+      ugplot_write_rds_atomic(payload, existing$payload_path)
+      existing$requirements <- requirements
+      existing$mission <- mission
+      existing$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+      ugplot_collaboration_write_task(existing, jobs_dir)
       return(existing)
     }
+    if (is.list(existing) && existing$state %in% c("leased", "completed")) return(existing)
     payload_path <- file.path(task_dir, "payload.rds")
     ugplot_write_rds_atomic(payload, payload_path)
     now <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
@@ -72,6 +78,19 @@ ugplot_collaboration_models_compatible <- function(requirements, capabilities) {
   available <- unique(as.character(capabilities$models %||% character(0)))
   required <- required[nzchar(required)]
   all(required %in% available)
+}
+
+ugplot_collaboration_required_models <- function(config) {
+  declared <- unique(as.character(config$collaboration_required_models %||% character(0)))
+  declared <- declared[nzchar(declared)]
+  if (length(declared) > 0L) return(declared)
+  models <- unique(as.character(config$models %||% character(0)))
+  models <- models[nzchar(models)]
+  if (isTRUE(config$geo_ml_quick_models) &&
+      exists("ugplot_geo_ml_quick_models", mode = "function", inherits = TRUE)) {
+    models <- ugplot_geo_ml_quick_models(models)
+  }
+  models
 }
 
 ugplot_collaboration_reap_task <- function(task, now = Sys.time()) {

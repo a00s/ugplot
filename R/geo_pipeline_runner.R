@@ -1566,6 +1566,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         task_config$cpu_limit <- 1L
         task_config$collaboration_enabled <- FALSE
         task_config$request_id <- collaboration_task_id(manifest$GroupID[[row_index]])
+        task_config$collaboration_required_models <- ugplot_collaboration_required_models(task_config)
         mission <- config$collaboration_mission %||% list(
           title = paste("Analyze", as.character(manifest$GroupID[[row_index]])),
           entity = list(id = as.character(manifest$GroupID[[row_index]])),
@@ -1577,7 +1578,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
             collaboration_task_id(manifest$GroupID[[row_index]]),
             parent_job_id,
             payload = list(dataset = dataset_info$dataset, config = task_config),
-            requirements = list(models = unique(as.character(config$models %||% character(0))), protocol_version = 1L),
+            requirements = list(models = task_config$collaboration_required_models, protocol_version = 1L),
             mission = mission,
             jobs_dir = collaboration_jobs_dir
           ),
