@@ -1544,11 +1544,8 @@ table.dataTable tbody td:last-child { border-right: 1px solid #edf0f7; border-ra
   display: flex;
   gap: 16px;
   margin: 0;
-  padding: 14px;
-  border: 1px solid var(--ug-border);
-  border-radius: 20px;
-  background: linear-gradient(135deg, rgba(117,87,255,.08), rgba(43,140,255,.055) 48%, rgba(22,199,217,.08));
-  box-shadow: var(--ug-shadow);
+  padding: 0;
+  background: transparent;
 }
 .heatmap-workspace > .sidebar-panel-custom {
   flex: 0 0 184px;
