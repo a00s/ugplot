@@ -107,3 +107,22 @@ test_that("pending collaboration missions refresh their real requirements", {
   expect_equal(readRDS(refreshed$payload_path)$version, 2)
   expect_equal(required_models(list(models = c("lm", "rpart"))), c("lm", "rpart"))
 })
+
+test_that("public compatibility explains missing mission models", {
+  root <- tempfile("collaboration-")
+  dir.create(root)
+  publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
+  compatibility <- ugplot_test_internal("ugplot_collaboration_compatibility")
+
+  publish(
+    "task-explain", "parent", list(value = 1),
+    requirements = list(models = c("lm", "ranger")),
+    mission = list(title = "Example mission"), jobs_dir = root
+  )
+  result <- compatibility(list(models = "lm"), root)
+
+  expect_equal(result$pending, 1L)
+  expect_equal(result$compatible, 0L)
+  expect_equal(result$missions[[1]]$missing_models, "ranger")
+  expect_equal(result$missions[[1]]$title, "Example mission")
+})

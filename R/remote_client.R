@@ -88,6 +88,13 @@ ugplot_remote_collaboration_claim <- function(server_url, client_id, capabilitie
   list(task = parsed$task, payload = ugplot_remote_decode_rds_base64(parsed$payload_rds_base64))
 }
 
+ugplot_remote_collaboration_compatibility <- function(server_url, capabilities, timeout_seconds = 30) {
+  ugplot_collaboration_post_json(
+    server_url, "collaboration/compatibility",
+    list(capabilities = capabilities), timeout_seconds
+  )
+}
+
 ugplot_remote_collaboration_heartbeat <- function(server_url, task_id, lease_id, client_id) {
   ugplot_collaboration_post_json(
     server_url, paste0("collaboration/", task_id, "/heartbeat"),

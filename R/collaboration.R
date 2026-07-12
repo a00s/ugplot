@@ -293,6 +293,33 @@ ugplot_collaboration_public_status <- function(jobs_dir = ugplot_default_jobs_di
   )
 }
 
+ugplot_collaboration_compatibility <- function(capabilities = list(),
+                                               jobs_dir = ugplot_default_jobs_dir()) {
+  root <- ugplot_collaboration_dir(jobs_dir)
+  task_ids <- if (dir.exists(root)) basename(list.dirs(root, full.names = TRUE, recursive = FALSE)) else character(0)
+  available <- unique(as.character(capabilities$models %||% character(0)))
+  missions <- Filter(Negate(is.null), lapply(task_ids, function(task_id) {
+    task <- ugplot_collaboration_refresh_task(task_id, jobs_dir)
+    if (!is.list(task) || !identical(task$state %||% "", "pending")) return(NULL)
+    required <- unique(as.character(task$requirements$models %||% character(0)))
+    required <- required[nzchar(required)]
+    missing <- setdiff(required, available)
+    list(
+      task_id = as.character(task$task_id),
+      title = as.character(task$mission$title %||% "Scientific mission"),
+      compatible = length(missing) == 0L,
+      required_models = required,
+      missing_models = missing
+    )
+  }))
+  list(
+    protocol_version = 1L,
+    pending = length(missions),
+    compatible = sum(vapply(missions, function(mission) isTRUE(mission$compatible), logical(1))),
+    missions = missions
+  )
+}
+
 ugplot_collaboration_append_event <- function(path, type, data = list()) {
   events <- if (file.exists(path)) tryCatch(readRDS(path), error = function(e) list()) else list()
   events[[length(events) + 1L]] <- list(

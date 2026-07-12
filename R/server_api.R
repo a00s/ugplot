@@ -236,6 +236,16 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
     })
   })
 
+  pr$handle("POST", "/collaboration/compatibility", function(req, res) {
+    tryCatch({
+      body <- ugplot_request_json_body(req)
+      ugplot_collaboration_compatibility(body$capabilities %||% list(), jobs_dir)
+    }, error = function(e) {
+      res$status <- 400
+      list(error = conditionMessage(e))
+    })
+  })
+
   pr$handle("POST", "/collaboration/<task_id>/heartbeat", function(task_id, req, res) {
     tryCatch({
       body <- ugplot_request_json_body(req)

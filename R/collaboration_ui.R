@@ -315,8 +315,29 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         }
       }
       if (is.null(claimed)) {
-        if (grepl("mission(s) found", network_note(), fixed = TRUE)) {
-          network_note(paste0(network_note(), "; no compatible payload yet"))
+        diagnostics <- if (is.data.frame(coordinators) && nrow(coordinators) > 0L) lapply(seq_len(nrow(coordinators)), function(i) {
+          tryCatch(
+            ugplot_remote_collaboration_compatibility(as.character(coordinators$url[[i]]), capabilities),
+            error = function(e) e
+          )
+        }) else list()
+        supported <- Filter(function(value) is.list(value) && !inherits(value, "error"), diagnostics)
+        missing_models <- unique(unlist(lapply(supported, function(value) {
+          missions <- value$missions %||% list()
+          if (is.data.frame(missions) && "missing_models" %in% names(missions)) {
+            return(unlist(missions$missing_models, use.names = FALSE))
+          }
+          unlist(lapply(missions, function(item) item$missing_models %||% character(0)), use.names = FALSE)
+        }), use.names = FALSE))
+        missing_models <- missing_models[nzchar(as.character(missing_models))]
+        if (length(missing_models) > 0L) {
+          preview <- paste(utils::head(missing_models, 6L), collapse = ", ")
+          suffix <- if (length(missing_models) > 6L) paste0(" +", length(missing_models) - 6L, " more") else ""
+          network_note(paste0("Incompatible mission: missing ", preview, suffix))
+        } else if (length(supported) == 0L && grepl("mission(s) found", network_note(), fixed = TRUE)) {
+          network_note("Legacy missions found; update the coordinator to display exact incompatibilities")
+        } else {
+          network_note("No compatible mission is currently available")
         }
         state("waiting")
         return()
