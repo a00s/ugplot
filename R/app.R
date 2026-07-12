@@ -11794,42 +11794,15 @@ server <- function(input, output, session) {
           jobs <- data.frame(server = character(0), stringsAsFactors = FALSE)
         } else {
           jobs$server <- server_name
-          if (all(c("id", "type", "state") %in% names(jobs))) {
-            active_geo_rows <- which(
-              as.character(jobs$type) == "geo" &
-                as.character(jobs$state) %in% c("queued", "running")
-            )
-            for (active_row in active_geo_rows) {
-              active_job_id <- as.character(jobs$id[[active_row]])
-              tryCatch({
-                active_status <- ugplot_remote_job_status(
-                  server_url = server$url,
-                  job_id = active_job_id,
-                  token = server$token %||% ""
-                )
-                row_message <- if ("message" %in% names(jobs)) as.character(jobs$message[[active_row]]) else ""
-                if (nzchar(row_message) && grepl("^Stability[[:space:]]+", row_message)) {
-                  active_status$message <- row_message
-                }
-                if (remote_status_has_result(active_status)) {
-                  active_result <- ugplot_remote_get_result(
-                    server_url = server$url,
-                    job_id = active_job_id,
-                    token = server$token %||% ""
-                  )
-                  if (remote_result_is_geo(active_result)) {
-                    remote_remember_progress_estimate(active_job_id, active_status, active_result)
-                  }
-                }
-              }, error = function(e) NULL)
-            }
-          }
+          # Keep the jobs refresh lightweight. Detailed status, result previews,
+          # and progress estimates are loaded only when a job is selected.
         }
         active_count <- if (is.data.frame(jobs) && nrow(jobs) > 0 && "state" %in% names(jobs)) {
           sum(as.character(jobs$state) %in% c("queued", "running"), na.rm = TRUE)
         } else {
           0L
         }
+        resources <- health$resources %||% list()
         add_server_connection_row(data.frame(
           server = server_name,
           state = if (!isTRUE(version_matches)) "version_mismatch" else if (active_count > 0) "active" else "idle",
@@ -11838,6 +11811,14 @@ server <- function(input, output, session) {
           message = if (!isTRUE(version_matches)) version_message else if (active_count > 0) paste(active_count, "active") else "idle",
           interface_version = local_version,
           server_version = if (nzchar(remote_version)) remote_version else NA_character_,
+          cpu_pct = suppressWarnings(as.numeric(resources$process_cpu_pct %||% NA_real_)),
+          cpu_count = suppressWarnings(as.numeric(resources$host_cpu_count %||% NA_real_)),
+          load1 = suppressWarnings(as.numeric(resources$host_load1 %||% NA_real_)),
+          memory_pct = suppressWarnings(as.numeric(resources$host_mem_used_pct %||% NA_real_)),
+          memory_available_mb = suppressWarnings(as.numeric(resources$host_mem_available_mb %||% NA_real_)),
+          memory_total_mb = suppressWarnings(as.numeric(resources$host_mem_total_mb %||% NA_real_)),
+          disk_pct = suppressWarnings(as.numeric(resources$disk_used_pct %||% NA_real_)),
+          task = paste(as.character(resources$tasks %||% character(0)), collapse = " / "),
           stringsAsFactors = FALSE
         ))
         jobs
@@ -11851,6 +11832,14 @@ server <- function(input, output, session) {
           message = conditionMessage(e),
           interface_version = ugplot_build_version(),
           server_version = NA_character_,
+          cpu_pct = NA_real_,
+          cpu_count = NA_real_,
+          load1 = NA_real_,
+          memory_pct = NA_real_,
+          memory_available_mb = NA_real_,
+          memory_total_mb = NA_real_,
+          disk_pct = NA_real_,
+          task = "",
           stringsAsFactors = FALSE
         ))
         data.frame()
@@ -13335,6 +13324,23 @@ server <- function(input, output, session) {
       style <- state_styles[[state]] %||% state_styles$offline
       jobs_label <- if (is.na(row$jobs[[1]])) "no response" else paste0(row$jobs[[1]], " jobs")
       active_label <- if (!is.na(row$active[[1]]) && row$active[[1]] > 0) paste0(" / ", row$active[[1]], " active") else ""
+      number <- function(name) {
+        if (!name %in% names(row)) return(NA_real_)
+        suppressWarnings(as.numeric(row[[name]][[1]]))
+      }
+      fmt_pct <- function(value) if (is.finite(value)) paste0(round(value, 1), "%") else "N/A"
+      fmt_memory <- function(available, total) {
+        if (!is.finite(available) || !is.finite(total)) return("N/A")
+        paste0(round(available / 1024, 1), " GB free / ", round(total / 1024, 1), " GB")
+      }
+      cpu_pct <- number("cpu_pct")
+      cpu_count <- number("cpu_count")
+      load1 <- number("load1")
+      memory_pct <- number("memory_pct")
+      memory_available <- number("memory_available_mb")
+      memory_total <- number("memory_total_mb")
+      disk_pct <- number("disk_pct")
+      task <- if ("task" %in% names(row)) as.character(row$task[[1]] %||% "") else ""
       tags$div(
         style = paste0(
           "border-left: 5px solid ", style$border, "; background: ", style$background,
@@ -13344,6 +13350,22 @@ server <- function(input, output, session) {
         tags$div(style = "font-weight: 700; font-size: 12px; line-height: 1.2;", htmltools::htmlEscape(row$server[[1]])),
         tags$div(style = "font-size: 11px; line-height: 1.25;", style$label),
         tags$div(style = "font-size: 11px; line-height: 1.25;", paste0(jobs_label, active_label)),
+        if (!identical(state, "offline")) tags$div(
+          style = "font-size: 11px; line-height: 1.35; margin-top: 3px;",
+          paste0(
+            "CPU ", fmt_pct(cpu_pct),
+            " / load ", if (is.finite(load1)) round(load1, 2) else "N/A",
+            " / ", if (is.finite(cpu_count)) round(cpu_count) else "?", " CPUs"
+          ),
+          tags$br(),
+          paste0("Memory ", fmt_pct(memory_pct), " (", fmt_memory(memory_available, memory_total), ")"),
+          tags$br(),
+          paste0("Disk ", fmt_pct(disk_pct)),
+          if (nzchar(task)) tags$div(
+            style = "font-size: 10px; margin-top: 2px; max-width: 360px; overflow-wrap: anywhere;",
+            htmltools::htmlEscape(task)
+          )
+        ),
         if (identical(state, "version_mismatch")) {
           tags$div(style = "font-size: 10px; margin-top: 2px; max-width: 340px;", htmltools::htmlEscape(row$message[[1]] %||% "Version mismatch"))
         } else if (identical(state, "offline")) {

@@ -384,6 +384,7 @@ test_that("resource monitor persists Linux job and host diagnostics", {
   write_job_status <- ugplot_test_internal("ugplot_write_job_status")
   monitor_jobs <- ugplot_test_internal("ugplot_monitor_active_jobs")
   read_resources <- ugplot_test_internal("ugplot_read_job_resources")
+  server_snapshot <- ugplot_test_internal("ugplot_server_resource_snapshot")
 
   status <- create_job(data.frame(x = 1:3), config = list(), jobs_dir = jobs_dir)
   status$state <- "running"
@@ -411,4 +412,9 @@ test_that("resource monitor persists Linux job and host diagnostics", {
     "disk_used_pct"
   ) %in% names(resources)))
   expect_equal(nrow(read_resources(status$id, jobs_dir, max_lines = 1L)), 1L)
+  snapshot <- server_snapshot(jobs_dir)
+  expect_equal(snapshot$active_processes, 1L)
+  expect_true(is.finite(snapshot$process_rss_mb))
+  expect_true(is.finite(snapshot$host_mem_used_pct))
+  expect_match(paste(snapshot$tasks, collapse = " "), "lm|Running")
 })

@@ -328,16 +328,69 @@ ugplot_read_job_resources <- function(job_id, jobs_dir = ugplot_default_jobs_dir
   if (!file.exists(path)) {
     return(data.frame())
   }
-  lines <- readLines(path, warn = FALSE)
-  if (length(lines) <= 1L) {
-    return(data.frame())
-  }
   max_lines <- suppressWarnings(as.integer(max_lines))
   if (is.na(max_lines) || max_lines < 1L) {
     max_lines <- 500L
   }
-  selected <- c(lines[[1]], utils::tail(lines[-1], max_lines))
+  header <- readLines(path, n = 1L, warn = FALSE)
+  if (length(header) == 0L) {
+    return(data.frame())
+  }
+  lines <- if (.Platform$OS.type != "windows" && nzchar(Sys.which("tail"))) {
+    tryCatch(
+      system2("tail", c("-n", as.character(max_lines), path), stdout = TRUE, stderr = FALSE),
+      error = function(e) character(0)
+    )
+  } else {
+    readLines(path, warn = FALSE)
+  }
+  lines <- lines[nzchar(lines) & lines != header[[1]]]
+  if (length(lines) == 0L) {
+    return(data.frame())
+  }
+  selected <- c(header[[1]], utils::tail(lines, max_lines))
   utils::read.delim(text = selected, stringsAsFactors = FALSE, check.names = FALSE)
+}
+
+ugplot_server_resource_snapshot <- function(jobs_dir = ugplot_default_jobs_dir()) {
+  system <- ugplot_linux_system_resources()
+  disk <- ugplot_disk_resources(jobs_dir)
+  job_ids <- if (dir.exists(jobs_dir)) basename(list.dirs(jobs_dir, full.names = TRUE, recursive = FALSE)) else character(0)
+  statuses <- Filter(Negate(is.null), lapply(job_ids, function(job_id) {
+    status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+    if (is.list(status) && identical(status$state %||% "", "running")) status else NULL
+  }))
+  samples <- Filter(function(value) is.data.frame(value) && nrow(value) > 0L, lapply(statuses, function(status) {
+    ugplot_read_job_resources(status$id, jobs_dir, max_lines = 1L)
+  }))
+  latest <- if (length(samples) > 0L) do.call(rbind, samples) else data.frame()
+  numeric_sum <- function(name) {
+    if (!name %in% names(latest)) return(NA_real_)
+    values <- suppressWarnings(as.numeric(latest[[name]]))
+    if (all(!is.finite(values))) NA_real_ else sum(values[is.finite(values)])
+  }
+  tasks <- unique(vapply(statuses, function(status) {
+    worker <- as.character(status$worker_name %||% "")
+    message <- as.character(status$message %||% "")
+    model <- as.character(status$current_model %||% "")
+    detail <- if (nzchar(model)) paste0("model ", model) else message
+    if (nzchar(worker)) paste0(worker, ": ", detail) else detail
+  }, character(1)))
+  tasks <- tasks[nzchar(tasks)]
+  list(
+    sampled_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
+    active_processes = length(statuses),
+    process_cpu_pct = round(numeric_sum("process_cpu_pct"), 2),
+    process_rss_mb = round(numeric_sum("process_rss_mb"), 2),
+    host_cpu_count = system$cpus,
+    host_load1 = round(system$load1, 2),
+    host_mem_total_mb = round(system$mem_total_mb, 2),
+    host_mem_available_mb = round(system$mem_available_mb, 2),
+    host_mem_used_pct = round(system$mem_used_pct, 2),
+    disk_available_mb = round(disk$available_mb, 2),
+    disk_used_pct = round(disk$used_pct, 2),
+    tasks = utils::head(tasks, 4L)
+  )
 }
 
 ugplot_job_result_preview <- function(result) {
