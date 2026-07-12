@@ -1421,7 +1421,7 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
   --collab-green: #26c281;
   --collab-amber: #ffb547;
   min-height: calc(100vh - 145px);
-  margin: 0 -15px;
+  margin: 0 -30px;
   padding: 22px;
   color: var(--collab-ink);
   background:
@@ -1505,7 +1505,7 @@ body { color: var(--ug-ink); background: #f5f8ff; }
   border-bottom: 1px solid #edf0f7;
   background: #fff;
 }
-.nav-tabs { padding: 0 18px; border-bottom: 1px solid #e3e8f3; background: #fff; }
+.nav-tabs { margin-right: -15px; margin-left: -15px; padding: 0 33px; border-bottom: 1px solid #e3e8f3; background: #fff; }
 .nav-tabs > li > a { margin: 0 3px; padding: 13px 16px; border: 0 !important; border-radius: 12px 12px 0 0; color: #5074a8; font-size: 13px; font-weight: 750; letter-spacing: .015em; transition: color .2s ease, background .2s ease, transform .2s ease; }
 .nav-tabs > li > a:hover { color: var(--ug-violet); background: #f3f1ff; transform: translateY(-1px); }
 .nav-tabs > li.active > a, .nav-tabs > li.active > a:hover, .nav-tabs > li.active > a:focus { color: #5744c5; background: linear-gradient(180deg, #f3f0ff, #fff); box-shadow: inset 0 3px 0 var(--ug-violet); }
@@ -1623,7 +1623,7 @@ button.ml-section-toggle:focus,
   border-radius: 0 0 16px 16px;
   background: linear-gradient(145deg, rgba(255,255,255,.84), rgba(243,248,255,.76));
 }
-@media (max-width: 720px) { .tab-content > .tab-pane:not([data-value="SCIENCE COLLAB"]) { padding: 12px; } .nav-tabs { padding: 0 7px; } .nav-tabs > li > a { padding: 10px 9px; font-size: 11px; } }
+@media (max-width: 720px) { .tab-content > .tab-pane:not([data-value="SCIENCE COLLAB"]) { padding: 12px; } .nav-tabs { padding: 0 22px; } .nav-tabs > li > a { padding: 10px 9px; font-size: 11px; } }
 @media (max-width: 850px) {
   .heatmap-workspace { display: block; }
   .heatmap-workspace > .sidebar-panel-custom { width: 100%; height: 330px; margin-bottom: 14px; }
