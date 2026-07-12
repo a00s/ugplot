@@ -76,6 +76,13 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
       updates$distributed_state <- distributed_state
     }
     do.call(ugplot_update_job_status, c(list(job_id = job_id, jobs_dir = jobs_dir), updates))
+    safe_boundary <- identical(runner, "ugplot_run_placeholder_job") ||
+      isTRUE(current_run$clear %||% FALSE) ||
+      grepl("^(Finished|Not enough data)", as.character(message %||% ""))
+    if (!identical(runner, "ugplot_run_geo_pipeline_job") &&
+        isTRUE(safe_boundary) && ugplot_job_drain_requested(job_dir)) {
+      ugplot_signal_job_drained()
+    }
   }
   partial_callback <- function(result) {
     ugplot_write_job_partial_result(job_id, result, jobs_dir)
@@ -99,6 +106,19 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
       result_path = result_path
     )
     invisible(result)
+  }, ugplot_job_drained = function(e) {
+    partial_path <- ugplot_result_path(job_id, jobs_dir, partial = TRUE)
+    has_partial <- file.exists(partial_path)
+    ugplot_append_job_log(job_id, conditionMessage(e), jobs_dir)
+    ugplot_update_job_status(
+      job_id, jobs_dir,
+      state = "stopped",
+      message = conditionMessage(e),
+      error = NULL,
+      result_path = if (has_partial) partial_path else NULL,
+      drained_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    )
+    invisible(NULL)
   }, error = function(e) {
     ugplot_append_job_log(job_id, paste0("Failed: ", conditionMessage(e)), jobs_dir)
     ugplot_update_job_status(
@@ -271,9 +291,10 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
   }
   saveRDS(config, config_path)
   pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
-  if ((status$state %||% "") %in% c("queued", "running") && !is.na(pid) && ugplot_process_alive(pid)) {
+  if ((status$state %||% "") %in% c("queued", "running", "draining") && !is.na(pid) && ugplot_process_alive(pid)) {
     stop("Job is already running.", call. = FALSE)
   }
+  unlink(ugplot_drain_request_path(job_id, jobs_dir), force = TRUE)
   status$state <- "queued"
   status$message <- "Queued for resume"
   status$error <- NULL
@@ -341,7 +362,7 @@ ugplot_monitor_active_jobs <- function(jobs_dir = ugplot_default_jobs_dir(), sta
   samples <- list()
   for (job_id in job_ids) {
     status <- tryCatch(ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir)), error = function(e) NULL)
-    if (!is.list(status) || !(status$state %||% "") %in% c("queued", "running")) {
+    if (!is.list(status) || !(status$state %||% "") %in% c("queued", "running", "draining")) {
       next
     }
     previous <- if (exists(job_id, envir = state, inherits = FALSE)) get(job_id, envir = state) else NULL

@@ -70,6 +70,14 @@ test_that("distributed retry waits for a different busy worker", {
   expect_true(compatible("", "Fy3", 2L))
 })
 
+test_that("smooth drain waits for every fixed and collaborative worker", {
+  drain_ready <- ugplot_test_internal("ugplot_geo_drain_ready")
+
+  expect_false(drain_ready("Fy2", FALSE))
+  expect_false(drain_ready(character(0), TRUE))
+  expect_true(drain_ready(character(0), logical(0)))
+})
+
 test_that("transcript group cache is complete only when every candidate was processed", {
   cache_complete <- ugplot_test_internal("ugplot_geo_transcript_group_cache_complete")
   root <- tempfile("transcript-group-cache-")

@@ -296,6 +296,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_geo_cpg_summary",
     "ugplot_remote_geo_cpg_lookup",
     "ugplot_remote_stop_job",
+    "ugplot_remote_drain_job",
     "ugplot_remote_resume_job",
     "ugplot_remote_delete_job",
     "ugplot_remote_get_result",
@@ -11801,7 +11802,7 @@ server <- function(input, output, session) {
           # and progress estimates are loaded only when a job is selected.
         }
         active_count <- if (is.data.frame(jobs) && nrow(jobs) > 0 && "state" %in% names(jobs)) {
-          sum(as.character(jobs$state) %in% c("queued", "running"), na.rm = TRUE)
+          sum(as.character(jobs$state) %in% c("queued", "running", "draining"), na.rm = TRUE)
         } else {
           0L
         }
@@ -11868,7 +11869,7 @@ server <- function(input, output, session) {
       preferred_columns <- c("server", "id", "name", "type", "state", "progress", "message", "execution", "tasks", "target", "models", "created_at", "updated_at", "pid")
       jobs <- jobs[, c(intersect(preferred_columns, names(jobs)), setdiff(names(jobs), preferred_columns)), drop = FALSE]
       state_values <- if ("state" %in% names(jobs)) as.character(jobs$state) else rep("", nrow(jobs))
-      active_rank <- ifelse(state_values %in% c("queued", "running"), 0L, 1L)
+      active_rank <- ifelse(state_values %in% c("queued", "running", "draining"), 0L, 1L)
       updated_values <- if ("updated_at" %in% names(jobs)) {
         suppressWarnings(as.POSIXct(as.character(jobs$updated_at), format = "%Y-%m-%d %H:%M:%S %z"))
       } else {
@@ -12672,7 +12673,7 @@ server <- function(input, output, session) {
 
     if (remote_status_is_geo(status)) {
       remote_job_preview_result(NULL)
-      active_geo <- remote_status_scalar(status$state, "unknown") %in% c("queued", "running")
+      active_geo <- remote_status_scalar(status$state, "unknown") %in% c("queued", "running", "draining")
       if (isTRUE(active_geo) && remote_status_has_result(status)) {
         result <- tryCatch(
           ugplot_remote_get_result(
@@ -13011,7 +13012,7 @@ server <- function(input, output, session) {
         row_state <- if ("state" %in% names(raw_jobs)) as.character(raw_jobs$state[[i]]) else ""
         row_message <- if ("message" %in% names(raw_jobs)) as.character(raw_jobs$message[[i]]) else ""
         if (nzchar(estimate_label) &&
-            row_state %in% c("queued", "running") &&
+            row_state %in% c("queued", "running", "draining") &&
             grepl("^Stability[[:space:]]+", row_message)) {
           return(estimate_label)
         }
@@ -13057,10 +13058,12 @@ server <- function(input, output, session) {
       job_ids <- as.character(raw_jobs$id)
       server_names <- if ("server" %in% names(raw_jobs)) as.character(raw_jobs$server) else rep(selected_remote_server()$name[[1]], length(job_ids))
       states <- if ("state" %in% names(jobs)) as.character(jobs$state) else rep("", length(job_ids))
-      can_stop <- states %in% c("queued", "running")
+      can_stop <- states %in% c("queued", "running", "draining")
+      can_drain <- states %in% c("queued", "running") &
+        vapply(server_names, function(server_name) remote_server_supports("drain_job", server_name), logical(1))
       can_load <- !can_stop
       load_labels <- ifelse(states == "finished", "Load", "Load partial")
-      can_delete <- vapply(server_names, function(server_name) remote_server_supports("delete_job", server_name), logical(1)) & !states %in% c("queued", "running")
+      can_delete <- vapply(server_names, function(server_name) remote_server_supports("delete_job", server_name), logical(1)) & !states %in% c("queued", "running", "draining")
       can_resume <- if ("resumable" %in% names(raw_jobs)) {
         vapply(server_names, function(server_name) remote_server_supports("resume_job", server_name), logical(1)) &
           tolower(as.character(raw_jobs$resumable)) %in% c("true", "1", "yes")
@@ -13081,6 +13084,11 @@ server <- function(input, output, session) {
         }
         if (isTRUE(can_stop[[i]])) {
           buttons <- c(buttons, paste0("<button type='button' class='btn btn-danger btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_stop_job_row', '", action_key, "', {priority: 'event'});\">Stop</button>"))
+        }
+        if (isTRUE(can_drain[[i]])) {
+          buttons <- c(buttons, paste0("<button type='button' class='btn btn-warning btn-sm' title='Finish active tasks, checkpoint, then stop safely' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_drain_job_row', '", action_key, "', {priority: 'event'});\">Stop smoothly</button>"))
+        } else if (identical(states[[i]], "draining")) {
+          buttons <- c(buttons, "<button type='button' class='btn btn-warning btn-sm' disabled>Draining…</button>")
         }
         if (isTRUE(can_resume[[i]])) {
           buttons <- c(buttons, paste0("<button type='button' class='btn btn-success btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_resume_job_row', '", action_key, "', {priority: 'event'});\">Resume</button>"))
@@ -13105,7 +13113,7 @@ server <- function(input, output, session) {
           $(row).removeClass('remote-job-row-finished remote-job-row-active remote-job-row-problem');
           if (state === 'finished') {
             $(row).addClass('remote-job-row-finished');
-          } else if (state === 'queued' || state === 'running') {
+          } else if (state === 'queued' || state === 'running' || state === 'draining') {
             $(row).addClass('remote-job-row-active');
           } else if (state === 'failed' || state === 'stopped' || state === 'error') {
             $(row).addClass('remote-job-row-problem');
@@ -13226,6 +13234,24 @@ server <- function(input, output, session) {
       remote_job_status_text(paste("Remote job stopped:", job_id, "-", status$message %||% ""))
     }, error = function(e) {
       remote_job_status_text(paste("Remote stop failed:", conditionMessage(e)))
+    })
+  })
+
+  observeEvent(input$remote_drain_job_row, {
+    tryCatch({
+      action <- parse_remote_job_action_key(input$remote_drain_job_row)
+      job_id <- action$job_id
+      server <- remote_server_by_name(action$server)
+      status <- ugplot_remote_drain_job(
+        server_url = server$url,
+        job_id = job_id,
+        token = server$token %||% ""
+      )
+      updateTextInput(session, "remote_job_id", value = job_id)
+      refresh_remote_jobs()
+      remote_job_status_text(paste("Remote job is draining:", job_id, "-", status$message %||% ""))
+    }, error = function(e) {
+      remote_job_status_text(paste("Remote smooth stop failed:", conditionMessage(e)))
     })
   })
 
@@ -13463,7 +13489,7 @@ server <- function(input, output, session) {
     screening_done <- screening_n > 0 && (groups_n == 0 || screening_n >= groups_n)
     stability_done <- total_groups > 0 && stability_saved >= total_groups
     final_done <- identical(status_state, "finished")
-    stability_running <- isTRUE(stability$is_stability) && status_state %in% c("queued", "running")
+    stability_running <- isTRUE(stability$is_stability) && status_state %in% c("queued", "running", "draining")
     estimate_pct <- if (isTRUE(stability$is_stability) && is.finite(stability$estimate_pct)) {
       stability$estimate_pct
     } else if (total_groups > 0) {

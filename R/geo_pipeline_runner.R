@@ -1383,6 +1383,10 @@ ugplot_geo_retry_has_compatible_worker <- function(previous_worker, available_wo
     any(available_worker_names != previous_worker)
 }
 
+ugplot_geo_drain_ready <- function(busy_workers, collaboration_leased = logical(0)) {
+  length(busy_workers) == 0L && !any(as.logical(collaboration_leased))
+}
+
 ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summary_path,
                                                      pipeline_dir, cache_dir, source,
                                                      run_key, config, workers,
@@ -1525,6 +1529,8 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
   collaboration_task_id <- function(group_id) paste(parent_job_id, "screen", group_id, sep = ":")
 
   repeat {
+    draining <- exists("ugplot_job_drain_requested", mode = "function", inherits = TRUE) &&
+      ugplot_job_drain_requested(config$job_dir %||% "")
     if (isTRUE(collaboration_enabled)) {
       unfinished_rows <- which(manifest$State != "completed")
       for (row_index in unfinished_rows) {
@@ -1540,7 +1546,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         }
       }
 
-      offer_rows <- utils::head(which(manifest$State == "pending"), collaboration_queue_depth)
+      offer_rows <- if (isTRUE(draining)) integer(0) else utils::head(which(manifest$State == "pending"), collaboration_queue_depth)
       for (row_index in offer_rows) {
         group <- group_by_id(manifest$GroupID[[row_index]])
         dataset_info <- ugplot_geo_ml_group_dataset(group)
@@ -1577,6 +1583,14 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
           ),
           silent = TRUE
         )
+      }
+      if (isTRUE(draining)) {
+        for (row_index in which(manifest$State == "pending")) {
+          try(ugplot_collaboration_close_pending_task(
+            collaboration_task_id(manifest$GroupID[[row_index]]),
+            jobs_dir = collaboration_jobs_dir
+          ), silent = TRUE)
+        }
       }
     }
 
@@ -1625,7 +1639,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         crashed <- identical(status_message, "Background process stopped before finishing") ||
           grepl("^Timed out", status_message) ||
           identical(remote_state, "stopped")
-        if (isTRUE(status$resumable) && isTRUE(crashed) &&
+        if (!isTRUE(draining) && isTRUE(status$resumable) && isTRUE(crashed) &&
             manifest$Attempts[[row_index]] <= max_attempts) {
           resumed <- tryCatch(
             ugplot_remote_resume_job(worker$url, manifest$JobID[[row_index]], worker$token %||% ""),
@@ -1659,7 +1673,22 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         if (isTRUE(fallback_requested)) manifest$Attempts[[row_index]] <- 0L
       }
     }
-    pending_rows <- which(manifest$State == "pending" & manifest$Attempts < max_attempts)
+    collaboration_leased <- logical(0)
+    if (isTRUE(collaboration_enabled)) {
+      unfinished_rows <- which(manifest$State != "completed")
+      collaboration_leased <- vapply(unfinished_rows, function(row_index) {
+        task <- ugplot_collaboration_refresh_task(
+          collaboration_task_id(manifest$GroupID[[row_index]]),
+          collaboration_jobs_dir
+        )
+        is.list(task) && identical(task$state %||% "", "leased")
+      }, logical(1))
+    }
+    if (isTRUE(draining) && ugplot_geo_drain_ready(busy_workers, collaboration_leased)) {
+      report_progress()
+      ugplot_signal_job_drained("Drained safely; active work collected and checkpoint ready")
+    }
+    pending_rows <- if (isTRUE(draining)) integer(0) else which(manifest$State == "pending" & manifest$Attempts < max_attempts)
     if (isTRUE(collaboration_enabled) && length(pending_rows) > 0L) {
       leased <- vapply(pending_rows, function(row_index) {
         task <- ugplot_collaboration_refresh_task(

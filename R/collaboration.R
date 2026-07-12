@@ -214,6 +214,20 @@ ugplot_collaboration_cancel_task <- function(task_id, reason = "completed_elsewh
   })
 }
 
+ugplot_collaboration_close_pending_task <- function(task_id, reason = "coordinator_draining",
+                                                    jobs_dir = ugplot_default_jobs_dir()) {
+  task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  ugplot_collaboration_with_lock(task_dir, {
+    task <- ugplot_collaboration_read_task(task_id, jobs_dir)
+    if (!is.list(task) || !identical(task$state %||% "", "pending")) return(FALSE)
+    task$state <- "cancelled"
+    task$cancel_reason <- as.character(reason)
+    task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    ugplot_collaboration_write_task(task, jobs_dir)
+    TRUE
+  })
+}
+
 ugplot_collaboration_encode_rds <- function(value) {
   path <- tempfile(fileext = ".rds")
   on.exit(unlink(path), add = TRUE)

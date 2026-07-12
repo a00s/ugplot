@@ -53,6 +53,38 @@ ugplot_resources_path <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) 
   file.path(ugplot_job_dir(job_id, jobs_dir), "resources.tsv")
 }
 
+ugplot_drain_request_path <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  file.path(ugplot_job_dir(job_id, jobs_dir), "drain-request.rds")
+}
+
+ugplot_job_drain_requested <- function(job_dir) {
+  file.exists(file.path(as.character(job_dir %||% ""), "drain-request.rds"))
+}
+
+ugplot_request_job_drain <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+  if (is.null(status)) stop("Job not found: ", job_id, call. = FALSE)
+  if (!(status$state %||% "") %in% c("queued", "running", "draining")) {
+    return(ugplot_read_job_status(job_id, jobs_dir))
+  }
+  ugplot_write_rds_atomic(
+    list(requested_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")),
+    ugplot_drain_request_path(job_id, jobs_dir)
+  )
+  ugplot_update_job_status(
+    job_id, jobs_dir,
+    state = "draining",
+    message = "Draining: finishing active work before stopping",
+    drain_requested_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+  )
+  ugplot_read_job_status(job_id, jobs_dir)
+}
+
+ugplot_signal_job_drained <- function(message = "Drained safely; checkpoint is ready") {
+  condition <- structure(list(message = message, call = NULL), class = c("ugplot_job_drained", "condition"))
+  stop(condition)
+}
+
 ugplot_read_key_value_file <- function(path) {
   if (!file.exists(path)) {
     return(list())
@@ -358,7 +390,7 @@ ugplot_server_resource_snapshot <- function(jobs_dir = ugplot_default_jobs_dir()
   job_ids <- if (dir.exists(jobs_dir)) basename(list.dirs(jobs_dir, full.names = TRUE, recursive = FALSE)) else character(0)
   statuses <- Filter(Negate(is.null), lapply(job_ids, function(job_id) {
     status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
-    if (is.list(status) && identical(status$state %||% "", "running")) status else NULL
+    if (is.list(status) && (status$state %||% "") %in% c("running", "draining")) status else NULL
   }))
   samples <- Filter(function(value) is.data.frame(value) && nrow(value) > 0L, lapply(statuses, function(status) {
     ugplot_read_job_resources(status$id, jobs_dir, max_lines = 1L)
@@ -629,7 +661,7 @@ ugplot_job_resumable <- function(status, jobs_dir = ugplot_default_jobs_dir()) {
     return(FALSE)
   }
   state <- status$state %||% ""
-  if (state %in% c("queued", "running", "finished")) {
+  if (state %in% c("queued", "running", "draining", "finished")) {
     return(FALSE)
   }
   job_dir <- ugplot_job_dir(status$id, jobs_dir)
@@ -761,7 +793,7 @@ ugplot_delete_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir(), forc
   status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
   state <- status$state %||% ""
   pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
-  is_active <- state %in% c("queued", "running") && !is.na(pid) && ugplot_process_alive(pid)
+  is_active <- state %in% c("queued", "running", "draining") && !is.na(pid) && ugplot_process_alive(pid)
   if (is_active && !isTRUE(force)) {
     stop("Stop the job before deleting it.", call. = FALSE)
   }
@@ -779,7 +811,7 @@ ugplot_delete_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir(), forc
 ugplot_refresh_job_status <- function(status, jobs_dir = ugplot_default_jobs_dir()) {
   state <- status$state %||% ""
   pid <- status$pid %||% NA_integer_
-  should_check_pid <- state %in% c("queued", "running") && !is.na(suppressWarnings(as.integer(pid)))
+  should_check_pid <- state %in% c("queued", "running", "draining") && !is.na(suppressWarnings(as.integer(pid)))
   if (!should_check_pid) {
     status$resumable <- ugplot_job_resumable(status, jobs_dir)
     status$config_summary <- ugplot_job_config_summary(status, jobs_dir)
@@ -921,7 +953,7 @@ ugplot_read_job_bundle <- function(job_id, jobs_dir = ugplot_default_jobs_dir(),
     stop("Job not found: ", job_id, call. = FALSE)
   }
   status <- ugplot_read_job_status(job_id, jobs_dir)
-  if (!isTRUE(allow_active) && status$state %in% c("queued", "running")) {
+  if (!isTRUE(allow_active) && status$state %in% c("queued", "running", "draining")) {
     stop("Full job bundle is not available while the job is active. Use preview, or stop/wait before Load.", call. = FALSE)
   }
   dataset_path <- file.path(job_dir, "dataset.rds")

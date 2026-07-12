@@ -206,6 +206,12 @@ ugplot_remote_stop_job <- function(server_url, job_id, token = "") {
   ugplot_remote_parse(response)
 }
 
+ugplot_remote_drain_job <- function(server_url, job_id, token = "") {
+  request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/drain"), token)
+  response <- httr::POST(request$url, request$headers)
+  ugplot_remote_parse(response)
+}
+
 ugplot_remote_resume_job <- function(server_url, job_id, token = "", timeout_seconds = 30) {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/resume"), token)
   response <- httr::POST(request$url, request$headers, httr::timeout(timeout_seconds))

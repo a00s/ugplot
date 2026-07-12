@@ -418,3 +418,24 @@ test_that("resource monitor persists Linux job and host diagnostics", {
   expect_true(is.finite(snapshot$host_mem_used_pct))
   expect_match(paste(snapshot$tasks, collapse = " "), "lm|Running")
 })
+
+test_that("smooth drain stops a job at a cooperative boundary", {
+  jobs_dir <- tempfile("ugplot-drain-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  request_drain <- ugplot_test_internal("ugplot_request_job_drain")
+  run_job <- ugplot_test_internal("ugplot_run_job_from_dir")
+
+  status <- create_job(
+    data.frame(x = 1:3),
+    config = list(runner = "ugplot_run_placeholder_job", steps = 3L),
+    jobs_dir = jobs_dir
+  )
+  requested <- request_drain(status$id, jobs_dir)
+  expect_equal(requested$state, "draining")
+  expect_false(requested$resumable)
+
+  run_job(status$id, jobs_dir)
+  drained <- readRDS(file.path(jobs_dir, status$id, "status.rds"))
+  expect_equal(drained$state, "stopped")
+  expect_match(drained$message, "Drained safely")
+})

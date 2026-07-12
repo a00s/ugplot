@@ -278,6 +278,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
       capabilities = list(
         delete_job = TRUE,
         resume_job = TRUE,
+        drain_job = TRUE,
         auto_resume_monitor = !is.null(auto_resume_process),
         job_bundle = TRUE,
         job_preview = TRUE,
@@ -389,6 +390,13 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         list(error = conditionMessage(e))
       }
     )
+  })
+
+  pr$handle("POST", "/jobs/<job_id>/drain", function(job_id, res) {
+    tryCatch(ugplot_request_job_drain(job_id, jobs_dir), error = function(e) {
+      res$status <- 400
+      list(error = conditionMessage(e))
+    })
   })
 
   pr$handle("POST", "/jobs/<job_id>/resume", function(job_id, res) {
