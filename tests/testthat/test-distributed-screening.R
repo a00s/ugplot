@@ -199,6 +199,19 @@ test_that("distributed scheduler checkpoints worker results in coordinator cache
 
   run_distributed <- ugplot_test_internal("ugplot_geo_run_transcript_ml_distributed")
   summary_path <- file.path(pipeline_dir, "screening_summary.csv")
+  saveRDS(
+    data.frame(
+      GroupID = "TG1",
+      Worker = "Fy3",
+      JobID = "",
+      State = "pending",
+      Attempts = 2L,
+      PollFailures = 0L,
+      Error = "Connection timeout",
+      stringsAsFactors = FALSE
+    ),
+    file.path(pipeline_dir, "distributed-screening.rds")
+  )
   result <- run_distributed(
     eligible = eligible,
     summaries = data.frame(),
@@ -226,4 +239,5 @@ test_that("distributed scheduler checkpoints worker results in coordinator cache
   expect_true(file.exists(result$ScreenResultPath))
   expect_true(file.exists(result$ImportancePath))
   expect_equal(manifest$State, "completed")
+  expect_equal(manifest$Attempts, 1L)
 })

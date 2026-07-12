@@ -1426,6 +1426,10 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
     character(0)
   }
   manifest$State[manifest$GroupID %in% processed] <- "completed"
+  retry_rows <- manifest$State == "pending"
+  manifest$Attempts[retry_rows] <- 0L
+  manifest$PollFailures[retry_rows] <- 0L
+  manifest$JobID[retry_rows] <- ""
   ugplot_geo_write_distributed_manifest(manifest, manifest_path)
 
   worker_by_name <- function(name) {
