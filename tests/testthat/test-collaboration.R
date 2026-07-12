@@ -6,6 +6,7 @@ test_that("collaboration leases expire without blocking a task", {
   read_task <- ugplot_test_internal("ugplot_collaboration_read_task")
   write_task <- ugplot_test_internal("ugplot_collaboration_write_task")
   consume_fallback <- ugplot_test_internal("ugplot_collaboration_consume_fallback")
+  release <- ugplot_test_internal("ugplot_collaboration_release_task")
 
   publish(
     "parent-TG1",
@@ -26,6 +27,8 @@ test_that("collaboration leases expire without blocking a task", {
   second <- claim("client-b", list(models = "lm"), jobs_dir = root)
   expect_equal(second$task$client_id, "client-b")
   expect_false(identical(first$task$lease_id, second$task$lease_id))
+  expect_true(release("parent-TG1", second$task$lease_id, "client-b", root)$released)
+  expect_equal(claim("client-c", list(models = "lm"), jobs_dir = root)$task$client_id, "client-c")
 })
 
 test_that("collaboration accepts only the active lease and first result", {
@@ -34,6 +37,7 @@ test_that("collaboration accepts only the active lease and first result", {
   publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
   claim <- ugplot_test_internal("ugplot_collaboration_claim_task")
   heartbeat <- ugplot_test_internal("ugplot_collaboration_heartbeat")
+  release <- ugplot_test_internal("ugplot_collaboration_release_task")
   complete <- ugplot_test_internal("ugplot_collaboration_complete_task")
   take_result <- ugplot_test_internal("ugplot_collaboration_take_result")
 
@@ -41,6 +45,7 @@ test_that("collaboration accepts only the active lease and first result", {
   expect_null(claim("incompatible", list(models = "rf"), jobs_dir = root))
   lease <- claim("scientist", list(models = c("lm", "rf")), jobs_dir = root)$task
   expect_true(heartbeat("task-1", lease$lease_id, "scientist", jobs_dir = root)$accepted)
+  expect_false(release("task-1", "wrong", "scientist", jobs_dir = root)$released)
   expect_false(complete("task-1", "wrong", "scientist", list(answer = 0), jobs_dir = root)$accepted)
   expect_true(complete("task-1", lease$lease_id, "scientist", list(answer = 42), jobs_dir = root)$accepted)
   expect_false(complete("task-1", lease$lease_id, "scientist", list(answer = 99), jobs_dir = root)$accepted)

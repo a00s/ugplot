@@ -162,6 +162,26 @@ ugplot_collaboration_heartbeat <- function(task_id, lease_id, client_id,
   })
 }
 
+ugplot_collaboration_release_task <- function(task_id, lease_id, client_id,
+                                              jobs_dir = ugplot_default_jobs_dir()) {
+  task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  ugplot_collaboration_with_lock(task_dir, {
+    task <- ugplot_collaboration_read_task(task_id, jobs_dir)
+    valid <- is.list(task) && identical(task$state %||% "", "leased") &&
+      identical(as.character(task$lease_id %||% ""), as.character(lease_id)) &&
+      identical(as.character(task$client_id %||% ""), as.character(client_id))
+    if (!valid) return(list(released = FALSE, reason = "lease_not_active"))
+    task$state <- "pending"
+    task$lease_id <- ""
+    task$client_id <- ""
+    task$lease_expires_at <- as.POSIXct(NA)
+    task$heartbeat_at <- as.POSIXct(NA)
+    task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    ugplot_collaboration_write_task(task, jobs_dir)
+    list(released = TRUE, task_id = task_id)
+  })
+}
+
 ugplot_collaboration_complete_task <- function(task_id, lease_id, client_id, result,
                                                jobs_dir = ugplot_default_jobs_dir()) {
   task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)

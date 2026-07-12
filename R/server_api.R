@@ -249,6 +249,18 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
     })
   })
 
+  pr$handle("POST", "/collaboration/<task_id>/release", function(task_id, req, res) {
+    tryCatch({
+      body <- ugplot_request_json_body(req)
+      ugplot_collaboration_release_task(
+        task_id, body$lease_id %||% "", body$client_id %||% "", jobs_dir
+      )
+    }, error = function(e) {
+      res$status <- 400
+      list(error = conditionMessage(e))
+    })
+  })
+
   pr$handle("POST", "/collaboration/<task_id>/complete", function(task_id, req, res) {
     tryCatch({
       body <- ugplot_request_json_body(req)

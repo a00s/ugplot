@@ -95,6 +95,13 @@ ugplot_remote_collaboration_heartbeat <- function(server_url, task_id, lease_id,
   )
 }
 
+ugplot_remote_collaboration_release <- function(server_url, task_id, lease_id, client_id) {
+  ugplot_collaboration_post_json(
+    server_url, paste0("collaboration/", task_id, "/release"),
+    list(lease_id = lease_id, client_id = client_id)
+  )
+}
+
 ugplot_remote_collaboration_complete <- function(server_url, task_id, lease_id, client_id, result,
                                                  timeout_seconds = 600) {
   result_path <- tempfile(fileext = ".rds")

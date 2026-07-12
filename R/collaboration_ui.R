@@ -73,6 +73,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
     mission <- shiny::reactiveVal(list())
     events <- shiny::reactiveVal(list())
     lease <- shiny::reactiveVal(NULL)
+    lease_server_url <- shiny::reactiveVal("")
     process <- shiny::reactiveVal(NULL)
     process_files <- shiny::reactiveVal(list())
     compatible_models <- shiny::reactiveVal(character(0))
@@ -89,6 +90,12 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       row <- servers[as.character(servers$name) == selected, , drop = FALSE]
       if (nrow(row) != 1L) stop("Choose a collaboration coordinator.", call. = FALSE)
       row
+    }
+    available_coordinators <- function() {
+      servers <- remote_servers()
+      if (!is.data.frame(servers) || nrow(servers) == 0L) return(servers)
+      selected <- as.character(input$server_name %||% "")
+      servers[order(as.character(servers$name) != selected), , drop = FALSE]
     }
     append_local_event <- function(type, data = list()) {
       current <- events()
@@ -115,7 +122,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         return(shiny::tags$p(class = "collab-empty-visual", "Configure a remote server first."))
       }
       shiny::selectInput(
-        session$ns("server_name"), "Mission coordinator",
+        session$ns("server_name"), "Preferred coordinator",
         choices = stats::setNames(as.character(servers$name), as.character(servers$name)),
         selected = as.character(servers$name[[1]])
       )
@@ -162,21 +169,30 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         enabled(FALSE)
         worker <- process()
         if (!is.null(worker) && worker$is_alive()) try(worker$kill(), silent = TRUE)
+        active_lease <- lease()
+        if (is.list(active_lease) && nzchar(lease_server_url())) {
+          try(ugplot_remote_collaboration_release(
+            lease_server_url(), active_lease$task_id, active_lease$lease_id, client_id
+          ), silent = TRUE)
+        }
         process(NULL)
         lease(NULL)
+        lease_server_url("")
         state("idle")
         return()
       }
       state("connecting")
-      server <- tryCatch(selected_server(), error = function(e) NULL)
-      status <- if (is.null(server)) NULL else tryCatch(
-        ugplot_remote_collaboration_status(as.character(server$url[[1]])),
-        error = function(e) e
-      )
-      if (is.null(status) || inherits(status, "error") || !identical(as.character(status$status %||% ""), "open")) {
+      servers <- available_coordinators()
+      statuses <- if (is.data.frame(servers) && nrow(servers) > 0L) lapply(seq_len(nrow(servers)), function(i) {
+        tryCatch(ugplot_remote_collaboration_status(as.character(servers$url[[i]])), error = function(e) e)
+      }) else list()
+      open_servers <- vapply(statuses, function(status) {
+        is.list(status) && !inherits(status, "error") && identical(as.character(status$status %||% ""), "open")
+      }, logical(1))
+      if (!any(open_servers)) {
         state("error")
         shiny::showNotification(
-          if (inherits(status, "error")) conditionMessage(status) else "This server is not accepting public collaboration yet.",
+          "No configured server is accepting public collaboration yet.",
           type = "error"
         )
         return()
@@ -192,11 +208,14 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
     shiny::observe({
       collaboration_timer()
       if (!isTRUE(enabled())) return()
-      server <- tryCatch(selected_server(), error = function(e) NULL)
-      if (is.null(server)) return()
-      server_url <- as.character(server$url[[1]])
       worker <- process()
       active_lease <- lease()
+      server_url <- if (is.list(active_lease) && nzchar(lease_server_url())) {
+        lease_server_url()
+      } else {
+        preferred <- tryCatch(selected_server(), error = function(e) NULL)
+        if (is.null(preferred)) return() else as.character(preferred$url[[1]])
+      }
 
       if (!is.null(worker)) {
         files <- process_files()
@@ -250,6 +269,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         process(NULL)
         process_files(list())
         lease(NULL)
+        lease_server_url("")
         resource_previous(NULL)
         last_claim_at(Sys.time())
         return()
@@ -258,17 +278,35 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       claimed_at <- last_claim_at()
       if (!is.na(claimed_at) && difftime(Sys.time(), claimed_at, units = "secs") < 6) return()
       last_claim_at(Sys.time())
-      claimed <- tryCatch(
-        ugplot_remote_collaboration_claim(
-          server_url, client_id,
-          list(
-            models = compatible_models(), cpu_limit = as.integer(input$cpu_limit %||% 1L),
-            protocol_version = 1L,
-            scientist_name = trimws(input$scientist_name %||% "Anonymous scientist")
-          )
-        ),
-        error = function(e) NULL
+      capabilities <- list(
+        models = compatible_models(), cpu_limit = as.integer(input$cpu_limit %||% 1L),
+        protocol_version = 1L,
+        scientist_name = trimws(input$scientist_name %||% "Anonymous scientist")
       )
+      coordinators <- available_coordinators()
+      claimed <- NULL
+      claimed_server_url <- ""
+      if (is.data.frame(coordinators) && nrow(coordinators) > 0L) {
+        queue_sizes <- vapply(seq_len(nrow(coordinators)), function(i) {
+          status <- tryCatch(
+            ugplot_remote_collaboration_status(as.character(coordinators$url[[i]])),
+            error = function(e) NULL
+          )
+          suppressWarnings(as.integer(status$pending %||% 0L))
+        }, integer(1))
+        coordinators <- coordinators[order(queue_sizes, decreasing = TRUE), , drop = FALSE]
+        for (i in seq_len(nrow(coordinators))) {
+          candidate_url <- as.character(coordinators$url[[i]])
+          claimed <- tryCatch(
+            ugplot_remote_collaboration_claim(candidate_url, client_id, capabilities),
+            error = function(e) NULL
+          )
+          if (!is.null(claimed)) {
+            claimed_server_url <- candidate_url
+            break
+          }
+        }
+      }
       if (is.null(claimed)) {
         state("waiting")
         return()
@@ -292,6 +330,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       mission(claimed$task$mission %||% list())
       events(list())
       lease(claimed$task)
+      lease_server_url(claimed_server_url)
       process_files(list(events = event_path, result = result_path, started_at = Sys.time()))
       process(worker)
       resource_history(data.frame())

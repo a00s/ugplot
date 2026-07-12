@@ -1484,3 +1484,56 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
 .collab-impact-label { color: #737d98; font-size: 10px; font-weight: 700; text-transform: uppercase; }
 @media (max-width: 980px) { .collab-layout { grid-template-columns: 1fr; } .collab-control-card { position: static; } .collab-mission-panel, .collab-resource-panel, .collab-experiment-panel, .collab-discovery-panel { grid-column: span 12; } }
 @media (max-width: 620px) { .collab-lab { padding: 10px; } .collab-hero { align-items: flex-start; flex-wrap: wrap; } .collab-connection-badge { margin-left: 0; } .collab-journey { grid-template-columns: repeat(3, 1fr); } .collab-impact-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* Shared ugPlot visual system */
+:root {
+  --ug-ink: #17213f;
+  --ug-muted: #68738f;
+  --ug-violet: #7557ff;
+  --ug-blue: #2b8cff;
+  --ug-cyan: #16c7d9;
+  --ug-green: #26c281;
+  --ug-amber: #ffb547;
+  --ug-danger: #ff6472;
+  --ug-border: rgba(72, 91, 145, .14);
+  --ug-shadow: 0 14px 36px rgba(45, 59, 105, .09);
+}
+body { color: var(--ug-ink); background: #f5f8ff; }
+.container-fluid > h2 { margin: 20px 18px 14px; }
+.nav-tabs { padding: 0 18px; border-bottom: 1px solid #e3e8f3; background: #fff; }
+.nav-tabs > li > a { margin: 0 3px; padding: 13px 16px; border: 0 !important; border-radius: 12px 12px 0 0; color: #5074a8; font-size: 13px; font-weight: 750; letter-spacing: .015em; transition: color .2s ease, background .2s ease, transform .2s ease; }
+.nav-tabs > li > a:hover { color: var(--ug-violet); background: #f3f1ff; transform: translateY(-1px); }
+.nav-tabs > li.active > a, .nav-tabs > li.active > a:hover, .nav-tabs > li.active > a:focus { color: #5744c5; background: linear-gradient(180deg, #f3f0ff, #fff); box-shadow: inset 0 3px 0 var(--ug-violet); }
+.tab-content > .tab-pane:not([data-value="SCIENCE COLLAB"]) { min-height: calc(100vh - 190px); padding: 24px; background: radial-gradient(circle at 95% 0, rgba(22,199,217,.08), transparent 23%), linear-gradient(145deg, #f7f8ff, #f2f9ff 58%, #f6fffb); }
+.tab-content h3, .tab-content h4, .section-title { color: var(--ug-ink); font-weight: 800; letter-spacing: -.015em; }
+.section-title { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 14px; font-size: 22px; }
+.section-title::before { content: ""; width: 9px; height: 27px; border-radius: 9px; background: linear-gradient(180deg, var(--ug-violet), var(--ug-cyan)); box-shadow: 0 5px 12px rgba(117,87,255,.25); }
+.well, .panel, .box, .remote-job-status-panel, .geo-table-section, .dl-panel { border: 1px solid var(--ug-border) !important; border-radius: 17px !important; background: rgba(255,255,255,.92) !important; box-shadow: var(--ug-shadow); }
+.well { padding: 18px; }
+.panel-heading { border-radius: 16px 16px 0 0 !important; border-bottom: 1px solid #edf0f7 !important; background: #f9faff !important; color: var(--ug-ink) !important; font-weight: 750; }
+.form-control, .selectize-input, .selectize-control.single .selectize-input, .input-group-addon { min-height: 40px; border: 1px solid #dfe5f1 !important; border-radius: 11px !important; background: #fff !important; box-shadow: none !important; color: var(--ug-ink); transition: border-color .2s ease, box-shadow .2s ease; }
+.form-control:focus, .selectize-input.focus { border-color: #9b8cff !important; box-shadow: 0 0 0 4px rgba(117,87,255,.10) !important; }
+.control-label { color: #46516e; font-size: 12px; font-weight: 750; }
+.btn { border-radius: 10px !important; font-weight: 700; transition: transform .18s ease, box-shadow .18s ease; }
+.btn:hover { transform: translateY(-1px); }
+.btn-primary, .btn-success { border-color: transparent !important; background: linear-gradient(110deg, var(--ug-violet), var(--ug-blue)) !important; box-shadow: 0 7px 17px rgba(72,102,255,.20); }
+.btn-success { background: linear-gradient(110deg, #22b77a, #19bfa7) !important; }
+.btn-warning { border-color: transparent !important; background: linear-gradient(110deg, #ffbd4a, #ff9854) !important; color: #4f3500 !important; }
+.btn-danger { border-color: transparent !important; background: linear-gradient(110deg, #ff6b79, #ff7659) !important; }
+.btn-default { border-color: #dfe4f0 !important; background: #fff !important; color: #52617f !important; }
+.dataTables_wrapper { padding: 14px; border: 1px solid var(--ug-border); border-radius: 17px; background: rgba(255,255,255,.94); box-shadow: var(--ug-shadow); }
+table.dataTable { border-collapse: separate !important; border-spacing: 0 5px !important; }
+table.dataTable thead th { border: 0 !important; color: #727d98; font-size: 10px; font-weight: 850; letter-spacing: .07em; text-transform: uppercase; }
+table.dataTable tbody tr { background: #f9faff !important; transition: transform .15s ease, box-shadow .15s ease; }
+table.dataTable tbody tr:hover { transform: translateY(-1px); box-shadow: 0 7px 16px rgba(55,70,120,.08); }
+table.dataTable tbody td { border-top: 1px solid #edf0f7 !important; border-bottom: 1px solid #edf0f7; vertical-align: middle; }
+table.dataTable tbody td:first-child { border-left: 1px solid #edf0f7; border-radius: 10px 0 0 10px; }
+table.dataTable tbody td:last-child { border-right: 1px solid #edf0f7; border-radius: 0 10px 10px 0; }
+.jobs-toolbar { padding: 13px; border: 1px solid var(--ug-border); border-radius: 16px; background: rgba(255,255,255,.88); box-shadow: var(--ug-shadow); }
+.remote-job-actions { display: flex; gap: 5px; flex-wrap: wrap; }
+.remote-job-row-active td:first-child { box-shadow: inset 4px 0 0 var(--ug-blue); }
+.remote-job-row-finished td:first-child { box-shadow: inset 4px 0 0 var(--ug-green); }
+.remote-job-row-problem td:first-child { box-shadow: inset 4px 0 0 var(--ug-danger); }
+.progress { height: 13px; border-radius: 999px; background: #e8edf7; box-shadow: none; }
+.progress-bar { border-radius: 999px; background: linear-gradient(90deg, var(--ug-violet), var(--ug-blue), var(--ug-cyan)); }
+@media (max-width: 720px) { .tab-content > .tab-pane:not([data-value="SCIENCE COLLAB"]) { padding: 12px; } .nav-tabs { padding: 0 7px; } .nav-tabs > li > a { padding: 10px 9px; font-size: 11px; } }
