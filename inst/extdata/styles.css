@@ -1511,6 +1511,8 @@ body { color: var(--ug-ink); background: #f5f8ff; }
 .nav-tabs > li.active > a, .nav-tabs > li.active > a:hover, .nav-tabs > li.active > a:focus { color: #5744c5; background: linear-gradient(180deg, #f3f0ff, #fff); box-shadow: inset 0 3px 0 var(--ug-violet); }
 .tab-content > .tab-pane:not([data-value="SCIENCE COLLAB"]) {
   min-height: calc(100vh - 190px);
+  margin-right: -15px;
+  margin-left: -15px;
   padding: 24px;
   background:
     radial-gradient(circle at 8% 5%, rgba(117,87,255,.18), transparent 25%),
