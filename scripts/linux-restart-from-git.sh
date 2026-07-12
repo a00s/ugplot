@@ -36,7 +36,18 @@ R CMD INSTALL .
 echo "Starting ugPlot server on ${HOST}:${PORT}..."
 Rscript -e 'library(ugplot); ugPlotServerStart(host = Sys.getenv("UGPLOT_HOST", "0.0.0.0"), port = as.integer(Sys.getenv("UGPLOT_PORT", "8080")), token = Sys.getenv("UGPLOT_SERVER_TOKEN"))'
 
-echo "Testing health endpoint..."
-curl -fsS -H "Authorization: Bearer ${UGPLOT_SERVER_TOKEN}" "http://${HEALTH_HOST}:${PORT}/health"
-echo
+echo "Waiting for health endpoint..."
+HEALTH_URL="http://${HEALTH_HOST}:${PORT}/health"
+HEALTH_RESPONSE=""
+for attempt in $(seq 1 30); do
+  if HEALTH_RESPONSE="$(curl -fsS --max-time 2 -H "Authorization: Bearer ${UGPLOT_SERVER_TOKEN}" "${HEALTH_URL}" 2>/dev/null)"; then
+    echo "${HEALTH_RESPONSE}"
+    break
+  fi
+  if [[ "${attempt}" -eq 30 ]]; then
+    echo "ugPlot did not become healthy at ${HEALTH_URL} within 30 seconds." >&2
+    exit 1
+  fi
+  sleep 1
+done
 echo "ugPlot restarted successfully."
