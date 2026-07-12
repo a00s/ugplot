@@ -55,6 +55,62 @@ ugplot_remote_health <- function(server_url, token = "", timeout_seconds = 15) {
   ugplot_remote_parse(response)
 }
 
+ugplot_collaboration_post_json <- function(server_url, path, body, timeout_seconds = 60) {
+  request <- ugplot_remote_request(server_url, path, token = "")
+  response <- httr::POST(
+    request$url,
+    httr::timeout(timeout_seconds),
+    httr::content_type_json(),
+    body = jsonlite::toJSON(body, auto_unbox = TRUE, null = "null"),
+    encode = "raw"
+  )
+  ugplot_remote_parse(response)
+}
+
+ugplot_remote_decode_rds_base64 <- function(value) {
+  path <- tempfile(fileext = ".rds")
+  on.exit(unlink(path), add = TRUE)
+  writeBin(base64enc::base64decode(value), path)
+  readRDS(path)
+}
+
+ugplot_remote_collaboration_status <- function(server_url, timeout_seconds = 15) {
+  request <- ugplot_remote_request(server_url, "collaboration", token = "")
+  ugplot_remote_parse(httr::GET(request$url, httr::timeout(timeout_seconds)))
+}
+
+ugplot_remote_collaboration_claim <- function(server_url, client_id, capabilities, timeout_seconds = 60) {
+  parsed <- ugplot_collaboration_post_json(
+    server_url, "collaboration/claim",
+    list(client_id = client_id, capabilities = capabilities), timeout_seconds
+  )
+  if (is.null(parsed$task) || is.null(parsed$payload_rds_base64)) return(NULL)
+  list(task = parsed$task, payload = ugplot_remote_decode_rds_base64(parsed$payload_rds_base64))
+}
+
+ugplot_remote_collaboration_heartbeat <- function(server_url, task_id, lease_id, client_id) {
+  ugplot_collaboration_post_json(
+    server_url, paste0("collaboration/", task_id, "/heartbeat"),
+    list(lease_id = lease_id, client_id = client_id)
+  )
+}
+
+ugplot_remote_collaboration_complete <- function(server_url, task_id, lease_id, client_id, result,
+                                                 timeout_seconds = 600) {
+  result_path <- tempfile(fileext = ".rds")
+  on.exit(unlink(result_path), add = TRUE)
+  saveRDS(result, result_path)
+  ugplot_collaboration_post_json(
+    server_url, paste0("collaboration/", task_id, "/complete"),
+    list(
+      lease_id = lease_id,
+      client_id = client_id,
+      result_rds_base64 = base64enc::base64encode(result_path)
+    ),
+    timeout_seconds
+  )
+}
+
 ugplot_remote_list_jobs <- function(server_url, token = "") {
   request <- ugplot_remote_request(server_url, "jobs", token)
   response <- httr::GET(request$url, request$headers)

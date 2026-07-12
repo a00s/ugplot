@@ -1,0 +1,309 @@
+ugplot_collaboration_dir <- function(jobs_dir = ugplot_default_jobs_dir()) {
+  file.path(jobs_dir, "collaboration")
+}
+
+ugplot_collaboration_task_dir <- function(task_id, jobs_dir = ugplot_default_jobs_dir()) {
+  task_id <- gsub("[^A-Za-z0-9._-]", "_", as.character(task_id %||% ""))
+  if (!nzchar(task_id)) stop("A collaboration task ID is required.", call. = FALSE)
+  file.path(ugplot_collaboration_dir(jobs_dir), task_id)
+}
+
+ugplot_collaboration_with_lock <- function(task_dir, code, timeout_seconds = 5) {
+  ugplot_ensure_dir(task_dir)
+  lock_dir <- file.path(task_dir, ".lock")
+  deadline <- Sys.time() + timeout_seconds
+  repeat {
+    if (dir.create(lock_dir, showWarnings = FALSE)) break
+    if (Sys.time() >= deadline) stop("Collaboration task is busy.", call. = FALSE)
+    Sys.sleep(0.05)
+  }
+  on.exit(unlink(lock_dir, recursive = TRUE, force = TRUE), add = TRUE)
+  force(code)
+}
+
+ugplot_collaboration_read_task <- function(task_id, jobs_dir = ugplot_default_jobs_dir()) {
+  path <- file.path(ugplot_collaboration_task_dir(task_id, jobs_dir), "task.rds")
+  if (!file.exists(path)) return(NULL)
+  tryCatch(readRDS(path), error = function(e) NULL)
+}
+
+ugplot_collaboration_write_task <- function(task, jobs_dir = ugplot_default_jobs_dir()) {
+  task_dir <- ugplot_collaboration_task_dir(task$task_id, jobs_dir)
+  ugplot_ensure_dir(task_dir)
+  ugplot_write_rds_atomic(task, file.path(task_dir, "task.rds"))
+  invisible(task)
+}
+
+ugplot_collaboration_publish_task <- function(task_id, parent_job_id, payload,
+                                              requirements = list(), mission = list(),
+                                              jobs_dir = ugplot_default_jobs_dir()) {
+  task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  ugplot_collaboration_with_lock(task_dir, {
+    existing <- ugplot_collaboration_read_task(task_id, jobs_dir)
+    if (is.list(existing) && existing$state %in% c("pending", "leased", "completed")) {
+      return(existing)
+    }
+    payload_path <- file.path(task_dir, "payload.rds")
+    ugplot_write_rds_atomic(payload, payload_path)
+    now <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    task <- list(
+      task_id = as.character(task_id),
+      parent_job_id = as.character(parent_job_id),
+      state = "pending",
+      created_at = now,
+      updated_at = now,
+      requirements = requirements,
+      mission = mission,
+      payload_path = payload_path,
+      lease_id = "",
+      client_id = "",
+      lease_expires_at = as.POSIXct(NA),
+      heartbeat_at = as.POSIXct(NA),
+      completed_at = as.POSIXct(NA),
+      result_path = ""
+    )
+    ugplot_collaboration_write_task(task, jobs_dir)
+    task
+  })
+}
+
+ugplot_collaboration_models_compatible <- function(requirements, capabilities) {
+  required <- unique(as.character(requirements$models %||% character(0)))
+  available <- unique(as.character(capabilities$models %||% character(0)))
+  required <- required[nzchar(required)]
+  all(required %in% available)
+}
+
+ugplot_collaboration_reap_task <- function(task, now = Sys.time()) {
+  if (is.list(task) && identical(task$state %||% "", "leased")) {
+    expiry <- suppressWarnings(as.POSIXct(task$lease_expires_at))
+    if (!is.na(expiry) && expiry <= now) {
+      task$state <- "pending"
+      task$lease_id <- ""
+      task$client_id <- ""
+      task$lease_expires_at <- as.POSIXct(NA)
+      task$lease_expired_count <- as.integer(task$lease_expired_count %||% 0L) + 1L
+      task$fallback_requested <- TRUE
+      task$updated_at <- format(now, "%Y-%m-%d %H:%M:%S %z")
+    }
+  }
+  task
+}
+
+ugplot_collaboration_consume_fallback <- function(task_id, jobs_dir = ugplot_default_jobs_dir()) {
+  task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  ugplot_collaboration_with_lock(task_dir, {
+    task <- ugplot_collaboration_reap_task(ugplot_collaboration_read_task(task_id, jobs_dir))
+    requested <- is.list(task) && isTRUE(task$fallback_requested)
+    if (requested) task$fallback_requested <- FALSE
+    if (is.list(task)) ugplot_collaboration_write_task(task, jobs_dir)
+    requested
+  })
+}
+
+ugplot_collaboration_refresh_task <- function(task_id, jobs_dir = ugplot_default_jobs_dir()) {
+  task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  ugplot_collaboration_with_lock(task_dir, {
+    task <- ugplot_collaboration_read_task(task_id, jobs_dir)
+    refreshed <- ugplot_collaboration_reap_task(task)
+    if (is.list(refreshed)) ugplot_collaboration_write_task(refreshed, jobs_dir)
+    refreshed
+  })
+}
+
+ugplot_collaboration_claim_task <- function(client_id, capabilities = list(),
+                                            lease_seconds = 120,
+                                            jobs_dir = ugplot_default_jobs_dir()) {
+  client_id <- trimws(as.character(client_id %||% ""))
+  if (!nzchar(client_id)) stop("A collaboration client ID is required.", call. = FALSE)
+  root <- ugplot_collaboration_dir(jobs_dir)
+  if (!dir.exists(root)) return(NULL)
+  task_ids <- basename(list.dirs(root, full.names = TRUE, recursive = FALSE))
+  for (task_id in task_ids) {
+    claimed <- ugplot_collaboration_with_lock(ugplot_collaboration_task_dir(task_id, jobs_dir), {
+      task <- ugplot_collaboration_read_task(task_id, jobs_dir)
+      task <- ugplot_collaboration_reap_task(task)
+      if (!is.list(task) || !identical(task$state %||% "", "pending") ||
+          !ugplot_collaboration_models_compatible(task$requirements %||% list(), capabilities)) {
+        if (is.list(task)) ugplot_collaboration_write_task(task, jobs_dir)
+        return(NULL)
+      }
+      lease_id <- paste0(format(Sys.time(), "%Y%m%d%H%M%S"), "-", paste(sample(c(letters, LETTERS, 0:9), 12L, TRUE), collapse = ""))
+      task$state <- "leased"
+      task$lease_id <- lease_id
+      task$client_id <- client_id
+      task$heartbeat_at <- Sys.time()
+      task$lease_expires_at <- Sys.time() + max(30, as.numeric(lease_seconds))
+      task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+      ugplot_collaboration_write_task(task, jobs_dir)
+      payload <- readRDS(task$payload_path)
+      list(task = task, payload = payload)
+    })
+    if (!is.null(claimed)) return(claimed)
+  }
+  NULL
+}
+
+ugplot_collaboration_heartbeat <- function(task_id, lease_id, client_id,
+                                          lease_seconds = 120,
+                                          jobs_dir = ugplot_default_jobs_dir()) {
+  task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  ugplot_collaboration_with_lock(task_dir, {
+    task <- ugplot_collaboration_read_task(task_id, jobs_dir)
+    valid <- is.list(task) && identical(task$state %||% "", "leased") &&
+      identical(as.character(task$lease_id %||% ""), as.character(lease_id)) &&
+      identical(as.character(task$client_id %||% ""), as.character(client_id))
+    if (!valid) return(list(accepted = FALSE, reason = "lease_not_active"))
+    task$heartbeat_at <- Sys.time()
+    task$lease_expires_at <- Sys.time() + max(30, as.numeric(lease_seconds))
+    task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    ugplot_collaboration_write_task(task, jobs_dir)
+    list(accepted = TRUE, lease_expires_at = task$lease_expires_at)
+  })
+}
+
+ugplot_collaboration_complete_task <- function(task_id, lease_id, client_id, result,
+                                               jobs_dir = ugplot_default_jobs_dir()) {
+  task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  ugplot_collaboration_with_lock(task_dir, {
+    task <- ugplot_collaboration_read_task(task_id, jobs_dir)
+    if (is.list(task) && identical(task$state %||% "", "completed")) {
+      return(list(accepted = FALSE, reason = "already_completed"))
+    }
+    valid <- is.list(task) && identical(task$state %||% "", "leased") &&
+      identical(as.character(task$lease_id %||% ""), as.character(lease_id)) &&
+      identical(as.character(task$client_id %||% ""), as.character(client_id))
+    if (!valid) return(list(accepted = FALSE, reason = "lease_not_active"))
+    expiry <- suppressWarnings(as.POSIXct(task$lease_expires_at))
+    if (is.na(expiry) || expiry < Sys.time()) return(list(accepted = FALSE, reason = "lease_expired"))
+    result_path <- file.path(task_dir, "result.rds")
+    ugplot_write_rds_atomic(result, result_path)
+    task$state <- "completed"
+    task$result_path <- result_path
+    task$completed_at <- Sys.time()
+    task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    ugplot_collaboration_write_task(task, jobs_dir)
+    list(accepted = TRUE, task_id = task_id)
+  })
+}
+
+ugplot_collaboration_take_result <- function(task_id, jobs_dir = ugplot_default_jobs_dir()) {
+  task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  ugplot_collaboration_with_lock(task_dir, {
+    task <- ugplot_collaboration_read_task(task_id, jobs_dir)
+    if (!is.list(task) || !identical(task$state %||% "", "completed") || !file.exists(task$result_path %||% "")) {
+      return(NULL)
+    }
+    list(task = task, result = readRDS(task$result_path))
+  })
+}
+
+ugplot_collaboration_cancel_task <- function(task_id, reason = "completed_elsewhere",
+                                             jobs_dir = ugplot_default_jobs_dir()) {
+  task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  ugplot_collaboration_with_lock(task_dir, {
+    task <- ugplot_collaboration_read_task(task_id, jobs_dir)
+    if (!is.list(task) || identical(task$state %||% "", "completed")) return(FALSE)
+    task$state <- "cancelled"
+    task$cancel_reason <- as.character(reason)
+    task$lease_id <- ""
+    task$client_id <- ""
+    task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    ugplot_collaboration_write_task(task, jobs_dir)
+    TRUE
+  })
+}
+
+ugplot_collaboration_encode_rds <- function(value) {
+  path <- tempfile(fileext = ".rds")
+  on.exit(unlink(path), add = TRUE)
+  saveRDS(value, path)
+  base64enc::base64encode(path)
+}
+
+ugplot_collaboration_public_status <- function(jobs_dir = ugplot_default_jobs_dir()) {
+  root <- ugplot_collaboration_dir(jobs_dir)
+  task_ids <- if (dir.exists(root)) basename(list.dirs(root, full.names = TRUE, recursive = FALSE)) else character(0)
+  tasks <- Filter(Negate(is.null), lapply(task_ids, ugplot_collaboration_read_task, jobs_dir = jobs_dir))
+  states <- if (length(tasks) > 0L) table(vapply(tasks, function(task) as.character(task$state %||% "unknown"), character(1))) else integer(0)
+  state_count <- function(name) {
+    value <- suppressWarnings(as.integer(states[name]))
+    if (length(value) == 0L || is.na(value)) 0L else value
+  }
+  list(
+    status = "open",
+    protocol_version = 1L,
+    pending = state_count("pending"),
+    leased = state_count("leased"),
+    completed = state_count("completed"),
+    lease_seconds = 120L
+  )
+}
+
+ugplot_collaboration_append_event <- function(path, type, data = list()) {
+  events <- if (file.exists(path)) tryCatch(readRDS(path), error = function(e) list()) else list()
+  events[[length(events) + 1L]] <- list(
+    sequence = length(events) + 1L,
+    type = as.character(type),
+    timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
+    data = data
+  )
+  ugplot_write_rds_atomic(events, path)
+  invisible(utils::tail(events, 1L)[[1]])
+}
+
+ugplot_collaboration_run_payload <- function(payload, cpu_limit = 1L, event_path = tempfile(fileext = ".rds")) {
+  if (!is.list(payload) || !is.data.frame(payload$dataset) || !is.list(payload$config)) {
+    stop("The collaboration payload is invalid.", call. = FALSE)
+  }
+  config <- payload$config
+  runner_name <- as.character(config$runner %||% "")
+  allowed_runners <- c("ugplot_run_geo_screen_group_job")
+  if (!(runner_name %in% allowed_runners)) stop("Unsupported collaboration runner.", call. = FALSE)
+  config$cpu_limit <- max(1L, suppressWarnings(as.integer(cpu_limit)))
+  config$parallel_enabled <- config$cpu_limit > 1L
+  config$job_dir <- tempfile("ugplot-collaboration-task-")
+  dir.create(config$job_dir, recursive = TRUE)
+  on.exit(unlink(config$job_dir, recursive = TRUE, force = TRUE), add = TRUE)
+  dataset <- payload$dataset
+  missing_count <- sum(is.na(dataset))
+  ugplot_collaboration_append_event(event_path, "mission_received", list())
+  ugplot_collaboration_append_event(event_path, "dataset_profiled", list(
+    rows = nrow(dataset), columns = ncol(dataset),
+    missing_pct = if (length(dataset) > 0L) 100 * missing_count / length(as.matrix(dataset)) else 0
+  ))
+  progress_callback <- function(...) {
+    args <- list(...)
+    current <- args$current_run %||% list()
+    event_type <- if (is.list(current) && nzchar(as.character(current$model %||% ""))) "experiment_started" else "progress_updated"
+    ugplot_collaboration_append_event(event_path, event_type, list(
+      progress = suppressWarnings(as.numeric(args$progress %||% NA_real_)),
+      message = as.character(args$message %||% ""),
+      candidate = as.character(current$model %||% ""),
+      dataset_seed = current$dataset_seed %||% NULL,
+      training_seed = current$training_seed %||% NULL
+    ))
+  }
+  partial_callback <- function(partial) {
+    table <- partial$results_table %||% data.frame()
+    if (!is.data.frame(table) || nrow(table) == 0L) return(invisible(NULL))
+    latest <- table[nrow(table), , drop = FALSE]
+    metric_names <- intersect(c("R2", "Accuracy", "MAE", "RMSE"), names(latest))
+    metrics <- lapply(metric_names, function(name) suppressWarnings(as.numeric(latest[[name]][[1]])))
+    names(metrics) <- metric_names
+    metrics <- metrics[vapply(metrics, function(value) length(value) == 1L && is.finite(value), logical(1))]
+    ugplot_collaboration_append_event(event_path, "metric_updated", list(
+      candidate = as.character(latest$Model[[1]] %||% ""),
+      status = as.character(latest$Status[[1]] %||% ""),
+      metrics = metrics,
+      completed = nrow(table)
+    ))
+  }
+  runner <- get(runner_name, mode = "function", inherits = TRUE)
+  result <- runner(dataset, config, progress_callback = progress_callback, partial_callback = partial_callback)
+  ugplot_collaboration_append_event(event_path, "validation_completed", list(
+    group_id = as.character(result$group_id %||% ""),
+    candidate = as.character(result$screen_result$best_model_name %||% "")
+  ))
+  result
+}

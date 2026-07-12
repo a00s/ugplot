@@ -1206,7 +1206,8 @@ ugplot_geo_ml_quick_models <- function(available) {
 }
 
 ugplot_geo_screen_group <- function(dataset, group, source, config, screen_path,
-                                    importance_path, progress_callback = NULL) {
+                                    importance_path, progress_callback = NULL,
+                                    partial_callback = NULL) {
   if (!is.data.frame(dataset) || !is.data.frame(group) || nrow(group) != 1L) {
     stop("A single transcript group and its dataset are required.", call. = FALSE)
   }
@@ -1241,7 +1242,10 @@ ugplot_geo_screen_group <- function(dataset, group, source, config, screen_path,
     dataset,
     screen_config,
     progress_callback = progress_callback %||% function(...) NULL,
-    partial_callback = function(partial) saveRDS(partial, screen_path)
+    partial_callback = function(partial) {
+      saveRDS(partial, screen_path)
+      if (is.function(partial_callback)) partial_callback(partial)
+    }
   )
   saveRDS(screen_result, screen_path)
   metric_values <- ugplot_geo_ml_metric_values(screen_result)
@@ -1302,7 +1306,8 @@ ugplot_run_geo_screen_group_job <- function(dataset, config = list(),
         progress = args$progress %||% NULL,
         message = paste0("Worker screening ", group_id, ": ", args$message %||% "")
       )
-    }
+    },
+    partial_callback = partial_callback
   )
   list(
     kind = "geo_screen_group",
@@ -1471,6 +1476,10 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
     manifest$State[[row_index]] <<- "completed"
     manifest$PollFailures[[row_index]] <<- 0L
     manifest$Error[[row_index]] <<- ""
+    collaboration_task_id <- paste(parent_job_id, "screen", group_id, sep = ":")
+    if (exists("ugplot_collaboration_cancel_task", mode = "function", inherits = TRUE)) {
+      try(ugplot_collaboration_cancel_task(collaboration_task_id, jobs_dir = collaboration_jobs_dir), silent = TRUE)
+    }
     ugplot_geo_write_distributed_manifest(manifest, manifest_path)
   }
   report_progress <- function() {
@@ -1507,8 +1516,70 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
     poll_seconds <- 1
   }
   parent_job_id <- basename(as.character(config$job_dir %||% ""))
+  collaboration_jobs_dir <- dirname(as.character(config$job_dir %||% ""))
+  collaboration_enabled <- !identical(config$collaboration_enabled, FALSE) &&
+    nzchar(parent_job_id) && dir.exists(collaboration_jobs_dir) &&
+    exists("ugplot_collaboration_publish_task", mode = "function", inherits = TRUE)
+  collaboration_queue_depth <- suppressWarnings(as.integer(config$collaboration_queue_depth %||% 8L))
+  if (is.na(collaboration_queue_depth) || collaboration_queue_depth < 1L) collaboration_queue_depth <- 8L
+  collaboration_task_id <- function(group_id) paste(parent_job_id, "screen", group_id, sep = ":")
 
   repeat {
+    if (isTRUE(collaboration_enabled)) {
+      unfinished_rows <- which(manifest$State != "completed")
+      for (row_index in unfinished_rows) {
+        contributed <- tryCatch(
+          ugplot_collaboration_take_result(
+            collaboration_task_id(manifest$GroupID[[row_index]]),
+            collaboration_jobs_dir
+          ),
+          error = function(e) NULL
+        )
+        if (is.list(contributed) && !is.null(contributed$result)) {
+          save_completed(row_index, contributed$result)
+        }
+      }
+
+      offer_rows <- utils::head(which(manifest$State == "pending"), collaboration_queue_depth)
+      for (row_index in offer_rows) {
+        group <- group_by_id(manifest$GroupID[[row_index]])
+        dataset_info <- ugplot_geo_ml_group_dataset(group)
+        task_config <- config
+        task_config$distributed_workers <- NULL
+        task_config$resume_result <- NULL
+        task_config$resume_result_path <- NULL
+        task_config$resume_completed_keys <- NULL
+        task_config$jobs_dir <- NULL
+        task_config$job_dir <- NULL
+        task_config$model_log_dir <- NULL
+        task_config$runner <- "ugplot_run_geo_screen_group_job"
+        task_config$type <- "geo_worker"
+        task_config$distributed_group <- group
+        task_config$matrix_source <- source
+        task_config$coordinator_dataset_path <- dataset_info$dataset_path
+        task_config$cpu_limit <- 1L
+        task_config$collaboration_enabled <- FALSE
+        task_config$request_id <- collaboration_task_id(manifest$GroupID[[row_index]])
+        mission <- config$collaboration_mission %||% list(
+          title = paste("Analyze", as.character(manifest$GroupID[[row_index]])),
+          entity = list(id = as.character(manifest$GroupID[[row_index]])),
+          dataset = list(rows = nrow(dataset_info$dataset), columns = ncol(dataset_info$dataset)),
+          stages = c("dataset_received", "dataset_profiled", "experiment_started", "metric_updated", "validation_completed", "result_accepted")
+        )
+        try(
+          ugplot_collaboration_publish_task(
+            collaboration_task_id(manifest$GroupID[[row_index]]),
+            parent_job_id,
+            payload = list(dataset = dataset_info$dataset, config = task_config),
+            requirements = list(models = unique(as.character(config$models %||% character(0))), protocol_version = 1L),
+            mission = mission,
+            jobs_dir = collaboration_jobs_dir
+          ),
+          silent = TRUE
+        )
+      }
+    }
+
     if (all(manifest$State == "completed")) {
       break
     }
@@ -1575,7 +1646,30 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
 
     busy_workers <- unique(manifest$Worker[manifest$State %in% c("submitted", "running")])
     available_workers <- Filter(function(worker) !(as.character(worker$name) %in% busy_workers), workers)
+    if (isTRUE(collaboration_enabled)) {
+      fallback_rows <- which(manifest$State == "pending")
+      for (row_index in fallback_rows) {
+        fallback_requested <- tryCatch(
+          ugplot_collaboration_consume_fallback(
+            collaboration_task_id(manifest$GroupID[[row_index]]),
+            collaboration_jobs_dir
+          ),
+          error = function(e) FALSE
+        )
+        if (isTRUE(fallback_requested)) manifest$Attempts[[row_index]] <- 0L
+      }
+    }
     pending_rows <- which(manifest$State == "pending" & manifest$Attempts < max_attempts)
+    if (isTRUE(collaboration_enabled) && length(pending_rows) > 0L) {
+      leased <- vapply(pending_rows, function(row_index) {
+        task <- ugplot_collaboration_refresh_task(
+          collaboration_task_id(manifest$GroupID[[row_index]]),
+          collaboration_jobs_dir
+        )
+        is.list(task) && identical(task$state %||% "", "leased")
+      }, logical(1))
+      pending_rows <- pending_rows[!leased]
+    }
     dispatch_count <- min(length(available_workers), length(pending_rows))
     if (dispatch_count > 0) {
       for (dispatch_i in seq_len(dispatch_count)) {
@@ -1639,6 +1733,13 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         } else {
           manifest$JobID[[row_index]] <- as.character(started$id %||% "")
           manifest$State[[row_index]] <- "submitted"
+          if (isTRUE(collaboration_enabled)) {
+            try(ugplot_collaboration_cancel_task(
+              collaboration_task_id(manifest$GroupID[[row_index]]),
+              reason = "assigned_to_fixed_worker",
+              jobs_dir = collaboration_jobs_dir
+            ), silent = TRUE)
+          }
         }
         ugplot_geo_write_distributed_manifest(manifest, manifest_path)
       }
@@ -1646,6 +1747,16 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
 
     exhausted <- which(manifest$State != "completed" & manifest$Attempts >= max_attempts &
                          !manifest$State %in% c("submitted", "running"))
+    if (isTRUE(collaboration_enabled) && length(exhausted) > 0L) {
+      leased <- vapply(exhausted, function(row_index) {
+        task <- ugplot_collaboration_refresh_task(
+          collaboration_task_id(manifest$GroupID[[row_index]]),
+          collaboration_jobs_dir
+        )
+        is.list(task) && identical(task$state %||% "", "leased")
+      }, logical(1))
+      exhausted <- exhausted[!leased]
+    }
     if (length(exhausted) > 0) {
       failed <- paste0(manifest$GroupID[exhausted], ": ", manifest$Error[exhausted], collapse = "; ")
       stop("Distributed screening failed after retries: ", failed, call. = FALSE)

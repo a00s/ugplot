@@ -97,7 +97,7 @@ test_that("transcript group cache is complete only when every candidate was proc
 test_that("worker screening runner returns a portable group result", {
   ugplot_test_local_namespace_binding("ugplot_geo_screen_group", function(
       dataset, group, source, config, screen_path, importance_path,
-      progress_callback = NULL) {
+      progress_callback = NULL, partial_callback = NULL) {
     list(
       summary = data.frame(
         GroupID = group$GroupID,

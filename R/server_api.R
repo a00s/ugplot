@@ -199,11 +199,68 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
   pr <- plumber::pr()
 
   pr$filter("auth", function(req, res) {
+    request_path <- as.character(req$PATH_INFO %||% "")
+    if (grepl("^/collaboration(/|$)", request_path)) {
+      return(plumber::forward())
+    }
     if (!ugplot_check_token(req, token)) {
       res$status <- 401
       return(list(error = "Unauthorized"))
     }
     plumber::forward()
+  })
+
+  pr$handle("GET", "/collaboration", function() {
+    ugplot_collaboration_public_status(jobs_dir)
+  })
+
+  pr$handle("POST", "/collaboration/claim", function(req, res) {
+    tryCatch({
+      body <- ugplot_request_json_body(req)
+      claimed <- ugplot_collaboration_claim_task(
+        client_id = body$client_id %||% "",
+        capabilities = body$capabilities %||% list(),
+        lease_seconds = 120,
+        jobs_dir = jobs_dir
+      )
+      if (is.null(claimed)) {
+        return(list(task = NULL, message = "No compatible mission is waiting."))
+      }
+      public_task <- claimed$task
+      public_task$payload_path <- NULL
+      public_task$result_path <- NULL
+      list(task = public_task, payload_rds_base64 = ugplot_collaboration_encode_rds(claimed$payload))
+    }, error = function(e) {
+      res$status <- 400
+      list(error = conditionMessage(e))
+    })
+  })
+
+  pr$handle("POST", "/collaboration/<task_id>/heartbeat", function(task_id, req, res) {
+    tryCatch({
+      body <- ugplot_request_json_body(req)
+      ugplot_collaboration_heartbeat(
+        task_id, body$lease_id %||% "", body$client_id %||% "",
+        lease_seconds = 120, jobs_dir = jobs_dir
+      )
+    }, error = function(e) {
+      res$status <- 400
+      list(error = conditionMessage(e))
+    })
+  })
+
+  pr$handle("POST", "/collaboration/<task_id>/complete", function(task_id, req, res) {
+    tryCatch({
+      body <- ugplot_request_json_body(req)
+      result <- ugplot_read_rds_base64(body$result_rds_base64 %||% "")
+      ugplot_collaboration_complete_task(
+        task_id, body$lease_id %||% "", body$client_id %||% "", result,
+        jobs_dir = jobs_dir
+      )
+    }, error = function(e) {
+      res$status <- 400
+      list(error = conditionMessage(e))
+    })
   })
 
   pr$handle("GET", "/health", function() {

@@ -213,6 +213,8 @@ source_local_helper <- function(file_name, function_name = NULL, always_reload =
 
 source_local_helper("00_version.R", "ugplot_build_version", always_reload = TRUE)
 source_local_helper("job_store.R", "ugplot_ensure_dir", always_reload = TRUE)
+source_local_helper("collaboration.R", "ugplot_collaboration_claim_task", always_reload = TRUE)
+source_local_helper("collaboration_ui.R", "ugplot_collaboration_tab_ui", always_reload = TRUE)
 source_local_helper("server_deps.R", "ugPlotInstallModelDeps", always_reload = TRUE)
 source_local_helper("remote_client.R", "ugplot_remote_create_job", always_reload = TRUE)
 source_local_helper("remote_servers.R", "ugplot_read_remote_servers", always_reload = TRUE)
@@ -969,6 +971,7 @@ ui <- fluidPage(
         uiOutput("remote_job_log_panel")
       )
     ),
+    ugplot_collaboration_tab_ui("collaboration", total_system_cpus),
     # MODEL ANALYSIS (vertical layout)
     tabPanel("MODEL ANALYSIS",
       fluidPage(
@@ -1859,6 +1862,7 @@ server <- function(input, output, session) {
   disable("merge_all_rows")
   disable("process_table_content")
   session$allowReconnect(TRUE)
+  ugplot_collaboration_tab_server("collaboration", remote_servers, total_system_cpus)
 
   configured_cpu_limit <- reactive({
     cpu_limit <- suppressWarnings(as.integer(input$config_cpu_count %||% default_system_cpu_limit))
@@ -2476,7 +2480,6 @@ server <- function(input, output, session) {
   remote_server_connection_state <- reactiveVal(data.frame())
   remote_result_cache <- reactiveVal(NULL)
   remote_result_cache_job_id <- reactiveVal("")
-
   defaultpalette <- reactiveVal(colorRampPalette(c("red", "yellow", "green"))(256))
   transpose_table2 <- reactiveVal(0)
   refresh_counter <- reactiveVal(0)
