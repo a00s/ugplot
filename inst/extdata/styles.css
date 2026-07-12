@@ -1499,7 +1499,12 @@ table.dataTable tbody tr.remote-job-row-problem.selected td:nth-child(5) {
   --ug-shadow: 0 14px 36px rgba(45, 59, 105, .09);
 }
 body { color: var(--ug-ink); background: #f5f8ff; }
-.container-fluid > h2 { margin: 20px 18px 14px; }
+.container-fluid > h2 {
+  margin: 0 -15px;
+  padding: 20px 32px 14px;
+  border-bottom: 1px solid #edf0f7;
+  background: #fff;
+}
 .nav-tabs { padding: 0 18px; border-bottom: 1px solid #e3e8f3; background: #fff; }
 .nav-tabs > li > a { margin: 0 3px; padding: 13px 16px; border: 0 !important; border-radius: 12px 12px 0 0; color: #5074a8; font-size: 13px; font-weight: 750; letter-spacing: .015em; transition: color .2s ease, background .2s ease, transform .2s ease; }
 .nav-tabs > li > a:hover { color: var(--ug-violet); background: #f3f1ff; transform: translateY(-1px); }
