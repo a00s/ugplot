@@ -484,7 +484,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       history$memory_gb <- suppressWarnings(as.numeric(history$process_rss_mb)) / 1024
       plotly::plot_ly(history, x = ~sample) %>%
         plotly::add_lines(y = ~cpu_share, name = "CPU %", line = list(color = "#087f83", width = 3), fill = "tozeroy", fillcolor = "rgba(16,200,194,.12)") %>%
-        plotly::add_lines(y = ~memory_gb, name = "Memory GB", yaxis = "y2", line = list(color = "#ee8f88", width = 3)) %>%
+        plotly::add_lines(y = ~memory_gb, name = "Memory GB", yaxis = "y2", line = list(color = "#7557ff", width = 3)) %>%
         plotly::layout(
           margin = list(l = 42, r = 42, t = 5, b = 28), legend = list(orientation = "h", y = 1.15),
           xaxis = list(title = "", showticklabels = FALSE, gridcolor = "#f0f2f8"),
