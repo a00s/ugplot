@@ -43,6 +43,15 @@ ugplot_collaboration_tab_ui <- function(id, total_system_cpus = 1L) {
                 plotly::plotlyOutput(ns("resource_plot"), height = "190px")
               ),
               shiny::tags$section(
+                class = "collab-panel collab-dataset-panel",
+                shiny::tags$div(class = "collab-panel-heading", "Dataset under the microscope"),
+                shiny::tags$div(
+                  class = "collab-dataset-grid",
+                  shiny::uiOutput(ns("variable_explorer")),
+                  plotly::plotlyOutput(ns("dataset_plot"), height = "235px")
+                )
+              ),
+              shiny::tags$section(
                 class = "collab-panel collab-experiment-panel",
                 shiny::tags$div(class = "collab-panel-heading", "Experiment arena"),
                 shiny::uiOutput(ns("current_experiment")),
@@ -513,6 +522,8 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         metric_updated = "Compare", validation_completed = "Validate", result_accepted = "Contribute"
       )
       reached <- vapply(names(steps), function(type) type %in% event_types(), logical(1))
+      if (isTRUE(reached[["metric_updated"]])) reached[["experiment_started"]] <- TRUE
+      if (isTRUE(reached[["validation_completed"]])) reached[c("experiment_started", "metric_updated")] <- TRUE
       active_index <- if (any(!reached)) which(!reached)[[1]] else length(steps)
       shiny::tags$div(
         class = "collab-journey",
@@ -541,15 +552,100 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           class = "collab-stat-row",
           shiny::tags$span(class = "collab-stat-pill", paste(profile$rows %||% "—", "observations")),
           shiny::tags$span(class = "collab-stat-pill", paste(profile$columns %||% "—", "variables")),
+          if (!is.null(profile$total_values)) shiny::tags$span(
+            class = "collab-stat-pill",
+            paste(format(as.numeric(profile$total_values), big.mark = ",", scientific = FALSE), "values")
+          ),
           shiny::tags$span(class = "collab-stat-pill", paste0(round(as.numeric(profile$missing_pct %||% 0), 2), "% missing")),
           shiny::tags$span(class = "collab-stat-pill", paste(input$cpu_limit %||% 1L, "CPU cores"))
         )
       )
     })
 
+    output$variable_explorer <- shiny::renderUI({
+      profile <- (latest_event("dataset_profiled") %||% list())$data %||% list()
+      variable_names <- as.character(unlist(profile$variable_names %||% character(0), use.names = FALSE))
+      variable_types <- as.character(unlist(profile$variable_types %||% character(0), use.names = FALSE))
+      target_name <- as.character(profile$target_name %||% "")
+      target_label <- as.character(profile$target_label %||% target_name)
+      metadata <- profile$metadata %||% list()
+      target_summary <- profile$target_summary %||% list()
+      if (length(variable_names) == 0L) {
+        return(shiny::tags$div(class = "collab-empty-visual", "Profiling variables..."))
+      }
+      if (length(variable_types) < length(variable_names)) {
+        variable_types <- c(variable_types, rep("value", length(variable_names) - length(variable_types)))
+      }
+      metadata_cards <- if (is.list(metadata) && length(metadata) > 0L) {
+        lapply(names(metadata), function(name) {
+          label <- gsub("([a-z0-9])([A-Z])", "\\1 \\2", name)
+          shiny::tags$div(
+            class = "collab-metadata-item",
+            shiny::tags$span(htmltools::htmlEscape(label)),
+            shiny::tags$strong(htmltools::htmlEscape(as.character(metadata[[name]])))
+          )
+        })
+      } else NULL
+      summary_items <- Filter(Negate(is.null), list(
+        if (!is.null(target_summary$minimum)) c("Minimum", signif(as.numeric(target_summary$minimum), 5)),
+        if (!is.null(target_summary$median)) c("Median", signif(as.numeric(target_summary$median), 5)),
+        if (!is.null(target_summary$maximum)) c("Maximum", signif(as.numeric(target_summary$maximum), 5)),
+        if (!is.null(target_summary$distinct)) c("Distinct", as.character(target_summary$distinct))
+      ))
+      shiny::tags$div(
+        class = "collab-variable-explorer",
+        shiny::tags$div(
+          class = "collab-dataset-headline",
+          shiny::tags$span("Target"),
+          shiny::tags$strong(htmltools::htmlEscape(target_label)),
+          shiny::tags$small(paste(format(as.numeric(profile$total_values %||% 0), big.mark = ",", scientific = FALSE), "measured values"))
+        ),
+        if (length(metadata_cards) > 0L) shiny::tags$div(class = "collab-metadata-grid", metadata_cards),
+        if (length(summary_items) > 0L) shiny::tags$div(
+          class = "collab-target-summary",
+          lapply(summary_items, function(item) shiny::tags$span(shiny::tags$small(item[[1]]), shiny::tags$strong(item[[2]])))
+        ),
+        shiny::tags$div(
+          class = "collab-variable-cloud",
+          lapply(seq_along(variable_names), function(i) shiny::tags$span(
+            class = paste("collab-variable-chip", if (identical(variable_names[[i]], target_name)) "target" else ""),
+            shiny::tags$strong(htmltools::htmlEscape(variable_names[[i]])),
+            shiny::tags$small(htmltools::htmlEscape(variable_types[[i]]))
+          ))
+        )
+      )
+    })
+
+    output$dataset_plot <- plotly::renderPlotly({
+      profile <- (latest_event("dataset_profiled") %||% list())$data %||% list()
+      distribution <- profile$target_distribution %||% list()
+      labels <- unlist(distribution$labels %||% character(0), use.names = FALSE)
+      counts <- suppressWarnings(as.numeric(unlist(distribution$counts %||% numeric(0), use.names = FALSE)))
+      valid <- is.finite(counts)
+      labels <- labels[valid]
+      counts <- counts[valid]
+      if (length(counts) == 0L) return(empty_plot("Target distribution will appear here"))
+      target_label <- as.character(profile$target_label %||% profile$target_name %||% "Target")
+      plotly::plot_ly(
+        x = labels, y = counts, type = "bar",
+        marker = list(color = counts, colorscale = list(c(0, "#7557ff"), c(1, "#16c7d9")), showscale = FALSE),
+        text = paste(counts, "observations"), hovertemplate = "%{x}<br>%{text}<extra></extra>"
+      ) %>% plotly::layout(
+        title = list(text = paste("Distribution of", target_label), font = list(size = 14)),
+        margin = list(l = 45, r = 15, t = 42, b = 48),
+        xaxis = list(title = target_label, gridcolor = "#f0f2f8"),
+        yaxis = list(title = "Observations", gridcolor = "#f0f2f8")
+      )
+    })
+
     output$current_experiment <- shiny::renderUI({
-      current <- latest_event("experiment_started")
-      if (is.null(current) && is.null(latest_event("metric_updated"))) {
+      progress_events <- Filter(function(event) {
+        identical(event$type %||% "", "progress_updated")
+      }, events())
+      progress_event <- if (length(progress_events) > 0L) utils::tail(progress_events, 1L)[[1]] else NULL
+      current <- latest_event("experiment_started") %||% progress_event
+      metric_event <- latest_event("metric_updated")
+      if (is.null(current) && is.null(metric_event)) {
         if (identical(state(), "preparing")) {
           return(shiny::tags$div(
             class = "collab-candidate",
@@ -563,10 +659,26 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         ))
       }
       data <- current$data %||% list()
+      candidate <- as.character(data$candidate %||% "")
+      message <- as.character(data$message %||% "")
+      if (!nzchar(candidate) && grepl("Running[[:space:]]+[^[:space:]]+", message)) {
+        candidate <- sub(".*Running[[:space:]]+([^[:space:]]+).*", "\\1", message)
+      }
+      if (!nzchar(candidate)) candidate <- as.character((metric_event$data %||% list())$candidate %||% "Preparing candidate")
+      progress <- suppressWarnings(as.numeric(data$progress %||% NA_real_))
       shiny::tags$div(
-        class = "collab-candidate", shiny::icon("microchip"),
-        htmltools::htmlEscape(as.character(data$candidate %||% "Preparing candidate")),
-        if (!is.null(data$training_seed)) shiny::tags$small(paste("seed", data$training_seed))
+        class = "collab-current-experiment",
+        shiny::tags$div(
+          class = "collab-candidate", shiny::icon("microchip"),
+          htmltools::htmlEscape(candidate),
+          if (is.finite(progress)) shiny::tags$small(paste0(round(100 * progress, 1), "%")),
+          if (!is.null(data$training_seed)) shiny::tags$small(paste("seed", data$training_seed))
+        ),
+        if (nzchar(message)) shiny::tags$p(class = "collab-experiment-message", htmltools::htmlEscape(message)),
+        if (is.finite(progress)) shiny::tags$div(
+          class = "collab-experiment-progress",
+          shiny::tags$span(style = paste0("width:", max(0, min(100, 100 * progress)), "%"))
+        )
       )
     })
 
@@ -642,11 +754,20 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
 
     output$impact <- shiny::renderUI({
       totals <- impact()
+      worker <- process()
+      resource_history()
+      live_experiments <- if (!is.null(worker)) {
+        sum(vapply(events(), function(event) identical(event$type %||% "", "metric_updated"), logical(1)))
+      } else 0L
+      files <- process_files()
+      live_seconds <- if (!is.null(worker) && !is.null(files$started_at)) {
+        max(0, as.numeric(difftime(Sys.time(), files$started_at, units = "secs")))
+      } else 0
       shiny::tags$div(
         class = "collab-impact-grid",
         shiny::tags$div(class = "collab-impact-item", shiny::tags$div(class = "collab-impact-value", totals$accepted), shiny::tags$div(class = "collab-impact-label", "Accepted contributions")),
-        shiny::tags$div(class = "collab-impact-item", shiny::tags$div(class = "collab-impact-value", totals$experiments), shiny::tags$div(class = "collab-impact-label", "Experiments conducted")),
-        shiny::tags$div(class = "collab-impact-item", shiny::tags$div(class = "collab-impact-value", sprintf("%.1fh", totals$compute_seconds / 3600)), shiny::tags$div(class = "collab-impact-label", "Compute donated")),
+        shiny::tags$div(class = "collab-impact-item", shiny::tags$div(class = "collab-impact-value", totals$experiments + live_experiments), shiny::tags$div(class = "collab-impact-label", "Experiments conducted")),
+        shiny::tags$div(class = "collab-impact-item", shiny::tags$div(class = "collab-impact-value", sprintf("%.2fh", (totals$compute_seconds + live_seconds) / 3600)), shiny::tags$div(class = "collab-impact-label", "Compute donated")),
         shiny::tags$div(class = "collab-impact-item", shiny::tags$div(class = "collab-impact-value", if (enabled()) "ONLINE" else "READY"), shiny::tags$div(class = "collab-impact-label", "Laboratory status"))
       )
     })

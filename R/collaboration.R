@@ -592,10 +592,71 @@ ugplot_collaboration_run_payload <- function(payload, cpu_limit = 1L, event_path
   on.exit(unlink(config$job_dir, recursive = TRUE, force = TRUE), add = TRUE)
   dataset <- payload$dataset
   missing_count <- sum(is.na(dataset))
+  variable_names <- names(dataset)
+  variable_types <- vapply(dataset, function(column) {
+    if (is.numeric(column)) "numeric" else if (is.factor(column)) "category" else class(column)[[1]]
+  }, character(1))
+  configured_target <- as.character(config$target_column %||% "")
+  target_name <- if ("target" %in% variable_names) {
+    "target"
+  } else if (nzchar(configured_target) && configured_target %in% variable_names) {
+    configured_target
+  } else if (length(variable_names) > 0L) {
+    variable_names[[1]]
+  } else {
+    ""
+  }
+  target_label <- if (nzchar(configured_target)) configured_target else target_name
+  target_values <- if (nzchar(target_name)) dataset[[target_name]] else NULL
+  target_distribution <- list(kind = "none", labels = character(0), counts = numeric(0))
+  target_summary <- list(distinct = length(unique(target_values[!is.na(target_values)])))
+  if (is.numeric(target_values)) {
+    finite_target <- as.numeric(target_values[is.finite(target_values)])
+    if (length(finite_target) > 0L) {
+      histogram <- graphics::hist(
+        finite_target,
+        breaks = min(16L, max(5L, ceiling(sqrt(length(finite_target))))),
+        plot = FALSE, include.lowest = TRUE
+      )
+      target_distribution <- list(
+        kind = "numeric", labels = signif(histogram$mids, 5), counts = as.numeric(histogram$counts)
+      )
+      target_summary <- c(target_summary, list(
+        minimum = min(finite_target), median = stats::median(finite_target),
+        mean = mean(finite_target), maximum = max(finite_target)
+      ))
+    }
+  } else if (length(target_values) > 0L) {
+    counts <- utils::head(sort(table(as.character(target_values), useNA = "no"), decreasing = TRUE), 14L)
+    target_distribution <- list(
+      kind = "categorical", labels = names(counts), counts = as.numeric(counts)
+    )
+  }
+  group_metadata <- config$distributed_group %||% list()
+  if (is.data.frame(group_metadata) && nrow(group_metadata) > 0L) {
+    group_metadata <- as.list(group_metadata[1, , drop = FALSE])
+  }
+  metadata <- list()
+  if (is.list(group_metadata)) {
+    excluded <- c("GroupKey", "DatasetPath", "CpGs")
+    for (metadata_name in setdiff(names(group_metadata), excluded)) {
+      value <- unlist(group_metadata[[metadata_name]], use.names = FALSE)
+      if (length(value) == 1L && !is.na(value) && nzchar(as.character(value)) && nchar(as.character(value)) <= 160L) {
+        metadata[[metadata_name]] <- as.character(value)
+      }
+    }
+  }
   ugplot_collaboration_append_event(event_path, "mission_received", list())
   ugplot_collaboration_append_event(event_path, "dataset_profiled", list(
     rows = nrow(dataset), columns = ncol(dataset),
-    missing_pct = if (length(dataset) > 0L) 100 * missing_count / length(as.matrix(dataset)) else 0
+    total_values = nrow(dataset) * ncol(dataset),
+    non_missing_values = nrow(dataset) * ncol(dataset) - missing_count,
+    missing_pct = if (length(dataset) > 0L) 100 * missing_count / length(as.matrix(dataset)) else 0,
+    variable_names = variable_names, variable_types = variable_types,
+    numeric_variables = sum(variable_types == "numeric"),
+    target_name = target_name, target_label = target_label,
+    target_summary = target_summary, target_distribution = target_distribution,
+    metadata = metadata
   ))
   progress_callback <- function(...) {
     args <- list(...)

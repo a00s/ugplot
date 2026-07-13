@@ -193,7 +193,10 @@ test_that("collaboration runner emits structured scientific events", {
   result <- run_payload(
     list(
       dataset = data.frame(target = 1:5, feature = 5:1),
-      config = list(runner = "ugplot_run_geo_screen_group_job")
+      config = list(
+        runner = "ugplot_run_geo_screen_group_job", target_column = "age",
+        distributed_group = data.frame(GroupID = "TG1", Gene = "GENE1", stringsAsFactors = FALSE)
+      )
     ),
     event_path = event_path
   )
@@ -206,7 +209,13 @@ test_that("collaboration runner emits structured scientific events", {
     "metric_updated", "validation_completed"
   ) %in% event_types))
   metric_event <- events[[which(event_types == "metric_updated")[[1]]]]
+  profile_event <- events[[which(event_types == "dataset_profiled")[[1]]]]
   expect_equal(metric_event$data$metrics$R2, 0.72)
+  expect_equal(profile_event$data$total_values, 10)
+  expect_equal(profile_event$data$variable_names, c("target", "feature"))
+  expect_equal(profile_event$data$target_label, "age")
+  expect_equal(profile_event$data$metadata$Gene, "GENE1")
+  expect_true(length(profile_event$data$target_distribution$counts) > 0L)
 })
 
 test_that("pending collaboration missions refresh their real requirements", {
