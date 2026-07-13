@@ -85,6 +85,25 @@ ugplot_collaboration_models_compatible <- function(requirements, capabilities) {
   all(required %in% available)
 }
 
+ugplot_collaboration_parent_job_status <- function(task,
+                                                   jobs_dir = ugplot_default_jobs_dir()) {
+  parent_job_id <- trimws(as.character(task$parent_job_id %||% ""))
+  if (!nzchar(parent_job_id)) {
+    return(list(active = FALSE, state = "missing", parent_job_id = ""))
+  }
+  status <- tryCatch(
+    ugplot_read_job_status(parent_job_id, jobs_dir),
+    error = function(e) NULL
+  )
+  state <- if (is.list(status)) as.character(status$state %||% "unknown") else "missing"
+  pid <- if (is.list(status)) suppressWarnings(as.integer(status$pid %||% NA_integer_)) else NA_integer_
+  list(
+    active = identical(state, "running") && !is.na(pid) && ugplot_process_alive(pid),
+    state = state,
+    parent_job_id = parent_job_id
+  )
+}
+
 ugplot_collaboration_required_models <- function(config) {
   declared <- unique(as.character(config$collaboration_required_models %||% character(0)))
   declared <- declared[nzchar(declared)]
@@ -147,8 +166,19 @@ ugplot_collaboration_claim_task <- function(client_id, capabilities = list(),
     claimed <- ugplot_collaboration_with_lock(ugplot_collaboration_task_dir(task_id, jobs_dir), {
       task <- ugplot_collaboration_read_task(task_id, jobs_dir)
       task <- ugplot_collaboration_reap_task(task)
+      parent <- if (is.list(task)) {
+        ugplot_collaboration_parent_job_status(task, jobs_dir)
+      } else {
+        list(active = FALSE)
+      }
       if (!is.list(task) || !identical(task$state %||% "", "pending") ||
+          !isTRUE(parent$active) ||
           !ugplot_collaboration_models_compatible(task$requirements %||% list(), capabilities)) {
+        if (is.list(task) && identical(task$state %||% "", "pending") && !isTRUE(parent$active)) {
+          task$state <- "cancelled"
+          task$cancel_reason <- "parent_job_not_running"
+          task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+        }
         if (is.list(task)) ugplot_collaboration_write_task(task, jobs_dir)
         NULL
       } else {
@@ -284,7 +314,19 @@ ugplot_collaboration_public_status <- function(jobs_dir = ugplot_default_jobs_di
   root <- ugplot_collaboration_dir(jobs_dir)
   task_ids <- if (dir.exists(root)) basename(list.dirs(root, full.names = TRUE, recursive = FALSE)) else character(0)
   tasks <- Filter(Negate(is.null), lapply(task_ids, ugplot_collaboration_read_task, jobs_dir = jobs_dir))
-  states <- if (length(tasks) > 0L) table(vapply(tasks, function(task) as.character(task$state %||% "unknown"), character(1))) else integer(0)
+  pending_tasks <- Filter(function(task) identical(task$state %||% "", "pending"), tasks)
+  pending_parent <- lapply(
+    pending_tasks,
+    ugplot_collaboration_parent_job_status,
+    jobs_dir = jobs_dir
+  )
+  pending_active <- vapply(pending_parent, function(parent) isTRUE(parent$active), logical(1))
+  nonpending_tasks <- Filter(function(task) !identical(task$state %||% "", "pending"), tasks)
+  states <- if (length(nonpending_tasks) > 0L) {
+    table(vapply(nonpending_tasks, function(task) as.character(task$state %||% "unknown"), character(1)))
+  } else {
+    integer(0)
+  }
   state_count <- function(name) {
     value <- suppressWarnings(as.integer(states[name]))
     if (length(value) == 0L || is.na(value)) 0L else value
@@ -292,7 +334,8 @@ ugplot_collaboration_public_status <- function(jobs_dir = ugplot_default_jobs_di
   list(
     status = "open",
     protocol_version = 1L,
-    pending = state_count("pending"),
+    pending = sum(pending_active),
+    inactive_pending = length(pending_active) - sum(pending_active),
     leased = state_count("leased"),
     completed = state_count("completed"),
     lease_seconds = 120L
@@ -304,25 +347,38 @@ ugplot_collaboration_compatibility <- function(capabilities = list(),
   root <- ugplot_collaboration_dir(jobs_dir)
   task_ids <- if (dir.exists(root)) basename(list.dirs(root, full.names = TRUE, recursive = FALSE)) else character(0)
   available <- unique(as.character(capabilities$models %||% character(0)))
-  missions <- Filter(Negate(is.null), lapply(task_ids, function(task_id) {
+  inspected <- Filter(Negate(is.null), lapply(task_ids, function(task_id) {
     task <- ugplot_collaboration_refresh_task(task_id, jobs_dir)
     if (!is.list(task) || !identical(task$state %||% "", "pending")) return(NULL)
+    list(task = task, parent = ugplot_collaboration_parent_job_status(task, jobs_dir))
+  }))
+  active <- Filter(function(item) isTRUE(item$parent$active), inspected)
+  inactive <- Filter(function(item) !isTRUE(item$parent$active), inspected)
+  missions <- lapply(active, function(item) {
+    task <- item$task
     required <- unique(as.character(task$requirements$models %||% character(0)))
     required <- required[nzchar(required)]
     missing <- setdiff(required, available)
     list(
       task_id = as.character(task$task_id),
+      parent_job_id = as.character(task$parent_job_id %||% ""),
       title = as.character(task$mission$title %||% "Scientific mission"),
       compatible = length(missing) == 0L,
       required_models = required,
       missing_models = missing
     )
-  }))
+  })
   list(
     protocol_version = 1L,
     pending = length(missions),
     compatible = sum(vapply(missions, function(mission) isTRUE(mission$compatible), logical(1))),
-    missions = missions
+    missions = missions,
+    inactive_pending = length(inactive),
+    inactive_missions = lapply(inactive, function(item) list(
+      task_id = as.character(item$task$task_id %||% ""),
+      parent_job_id = as.character(item$parent$parent_job_id %||% ""),
+      parent_state = as.character(item$parent$state %||% "unknown")
+    ))
   )
 }
 

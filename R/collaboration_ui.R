@@ -332,6 +332,9 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         pending_count <- sum(vapply(supported, function(value) {
           suppressWarnings(as.integer(value$pending %||% 0L))
         }, integer(1)), na.rm = TRUE)
+        inactive_count <- sum(vapply(supported, function(value) {
+          suppressWarnings(as.integer(value$inactive_pending %||% 0L))
+        }, integer(1)), na.rm = TRUE)
         missing_models <- unique(unlist(lapply(supported, function(value) {
           missions <- value$missions %||% list()
           if (is.data.frame(missions) && "missing_models" %in% names(missions)) {
@@ -355,6 +358,11 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           network_note("Legacy missions found; update the coordinator to display exact incompatibilities")
         } else if (pending_count > 0L) {
           network_note(paste(pending_count, "mission(s) are waiting, but none match this workstation"))
+        } else if (inactive_count > 0L) {
+          network_note(paste(
+            inactive_count,
+            "old mission(s) ignored because their parent job is not running"
+          ))
         } else {
           network_note("No mission is currently queued by the coordinators")
         }

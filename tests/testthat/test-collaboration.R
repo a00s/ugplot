@@ -1,6 +1,22 @@
+ugplot_test_active_collaboration_parent <- function(root, parent_job_id = "parent",
+                                                    state = "running") {
+  parent_dir <- file.path(root, parent_job_id)
+  dir.create(parent_dir, recursive = TRUE, showWarnings = FALSE)
+  saveRDS(
+    list(
+      id = parent_job_id,
+      state = state,
+      pid = if (identical(state, "running")) Sys.getpid() else NA_integer_,
+      timeout = NA_real_
+    ),
+    file.path(parent_dir, "status.rds")
+  )
+}
+
 test_that("collaboration leases expire without blocking a task", {
   root <- tempfile("collaboration-")
   dir.create(root)
+  ugplot_test_active_collaboration_parent(root)
   publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
   claim <- ugplot_test_internal("ugplot_collaboration_claim_task")
   read_task <- ugplot_test_internal("ugplot_collaboration_read_task")
@@ -56,6 +72,7 @@ test_that("republishing an unchanged pending mission preserves its payload", {
 test_that("collaboration accepts only the active lease and first result", {
   root <- tempfile("collaboration-")
   dir.create(root)
+  ugplot_test_active_collaboration_parent(root)
   publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
   claim <- ugplot_test_internal("ugplot_collaboration_claim_task")
   heartbeat <- ugplot_test_internal("ugplot_collaboration_heartbeat")
@@ -77,6 +94,7 @@ test_that("collaboration accepts only the active lease and first result", {
 test_that("claim skips unavailable tasks and continues through the queue", {
   root <- tempfile("collaboration-")
   dir.create(root)
+  ugplot_test_active_collaboration_parent(root)
   publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
   claim <- ugplot_test_internal("ugplot_collaboration_claim_task")
   complete <- ugplot_test_internal("ugplot_collaboration_complete_task")
@@ -159,6 +177,7 @@ test_that("pending collaboration missions refresh their real requirements", {
 test_that("public compatibility explains missing mission models", {
   root <- tempfile("collaboration-")
   dir.create(root)
+  ugplot_test_active_collaboration_parent(root)
   publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
   compatibility <- ugplot_test_internal("ugplot_collaboration_compatibility")
 
@@ -173,4 +192,37 @@ test_that("public compatibility explains missing mission models", {
   expect_equal(result$compatible, 0L)
   expect_equal(result$missions[[1]]$missing_models, "ranger")
   expect_equal(result$missions[[1]]$title, "Example mission")
+})
+
+test_that("collaboration only offers tasks from a running parent job", {
+  root <- tempfile("collaboration-")
+  dir.create(root)
+  ugplot_test_active_collaboration_parent(root, "finished-parent", "finished")
+  ugplot_test_active_collaboration_parent(root, "running-parent", "running")
+  publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
+  claim <- ugplot_test_internal("ugplot_collaboration_claim_task")
+  compatibility <- ugplot_test_internal("ugplot_collaboration_compatibility")
+  public_status <- ugplot_test_internal("ugplot_collaboration_public_status")
+
+  publish(
+    "a-old-task", "finished-parent", list(value = "old"),
+    requirements = list(models = "lm"), jobs_dir = root
+  )
+  publish(
+    "b-active-task", "running-parent", list(value = "active"),
+    requirements = list(models = "lm"), jobs_dir = root
+  )
+
+  status <- public_status(root)
+  expect_equal(status$pending, 1L)
+  expect_equal(status$inactive_pending, 1L)
+  report <- compatibility(list(models = "lm"), root)
+  expect_equal(report$pending, 1L)
+  expect_equal(report$inactive_pending, 1L)
+  expect_equal(report$missions[[1]]$parent_job_id, "running-parent")
+  expect_equal(report$inactive_missions[[1]]$parent_state, "finished")
+
+  claimed <- claim("scientist", list(models = "lm"), jobs_dir = root)
+  expect_equal(claimed$task$parent_job_id, "running-parent")
+  expect_equal(claimed$payload$value, "active")
 })
