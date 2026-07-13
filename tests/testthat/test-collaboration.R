@@ -277,3 +277,19 @@ test_that("collaboration only offers tasks from a running parent job", {
   expect_equal(claimed$task$parent_job_id, "running-parent")
   expect_equal(claimed$payload$value, "active")
 })
+
+test_that("collaboration parent checks do not refresh the full job configuration", {
+  root <- tempfile("collaboration-")
+  dir.create(root)
+  ugplot_test_active_collaboration_parent(root)
+  parent_status <- ugplot_test_internal("ugplot_collaboration_parent_job_status")
+  ugplot_test_local_namespace_binding(
+    "ugplot_read_job_status",
+    function(...) stop("full status refresh should not be called")
+  )
+
+  result <- parent_status(list(parent_job_id = "parent"), root)
+
+  expect_true(result$active)
+  expect_equal(result$state, "running")
+})

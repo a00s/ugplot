@@ -126,7 +126,7 @@ ugplot_collaboration_parent_job_status <- function(task,
     return(list(active = FALSE, state = "missing", parent_job_id = ""))
   }
   status <- tryCatch(
-    ugplot_read_job_status(parent_job_id, jobs_dir),
+    ugplot_read_rds_or_null(ugplot_status_path(parent_job_id, jobs_dir)),
     error = function(e) NULL
   )
   state <- if (is.list(status)) as.character(status$state %||% "unknown") else "missing"
@@ -349,11 +349,19 @@ ugplot_collaboration_public_status <- function(jobs_dir = ugplot_default_jobs_di
   task_ids <- if (dir.exists(root)) basename(list.dirs(root, full.names = TRUE, recursive = FALSE)) else character(0)
   tasks <- Filter(Negate(is.null), lapply(task_ids, ugplot_collaboration_read_task, jobs_dir = jobs_dir))
   pending_tasks <- Filter(function(task) identical(task$state %||% "", "pending"), tasks)
-  pending_parent <- lapply(
-    pending_tasks,
-    ugplot_collaboration_parent_job_status,
-    jobs_dir = jobs_dir
-  )
+  parent_cache <- new.env(parent = emptyenv())
+  pending_parent <- lapply(pending_tasks, function(task) {
+    parent_job_id <- as.character(task$parent_job_id %||% "")
+    cache_key <- if (nzchar(parent_job_id)) parent_job_id else "<missing>"
+    if (!exists(cache_key, envir = parent_cache, inherits = FALSE)) {
+      assign(
+        cache_key,
+        ugplot_collaboration_parent_job_status(task, jobs_dir),
+        envir = parent_cache
+      )
+    }
+    get(cache_key, envir = parent_cache, inherits = FALSE)
+  })
   pending_active <- vapply(pending_parent, function(parent) isTRUE(parent$active), logical(1))
   nonpending_tasks <- Filter(function(task) !identical(task$state %||% "", "pending"), tasks)
   states <- if (length(nonpending_tasks) > 0L) {
@@ -384,8 +392,24 @@ ugplot_collaboration_compatibility <- function(capabilities = list(),
   inspected <- Filter(Negate(is.null), lapply(task_ids, function(task_id) {
     task <- ugplot_collaboration_refresh_task(task_id, jobs_dir)
     if (!is.list(task) || !identical(task$state %||% "", "pending")) return(NULL)
-    list(task = task, parent = ugplot_collaboration_parent_job_status(task, jobs_dir))
+    task
   }))
+  parent_cache <- new.env(parent = emptyenv())
+  inspected <- lapply(inspected, function(task) {
+    parent_job_id <- as.character(task$parent_job_id %||% "")
+    cache_key <- if (nzchar(parent_job_id)) parent_job_id else "<missing>"
+    if (!exists(cache_key, envir = parent_cache, inherits = FALSE)) {
+      assign(
+        cache_key,
+        ugplot_collaboration_parent_job_status(task, jobs_dir),
+        envir = parent_cache
+      )
+    }
+    list(
+      task = task,
+      parent = get(cache_key, envir = parent_cache, inherits = FALSE)
+    )
+  })
   active <- Filter(function(item) isTRUE(item$parent$active), inspected)
   inactive <- Filter(function(item) !isTRUE(item$parent$active), inspected)
   missions <- lapply(active, function(item) {
