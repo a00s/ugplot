@@ -535,14 +535,22 @@ ui <- fluidPage(
         class = "ugplot-doi-link",
         type = "button",
         `data-doi` = "https://doi.org/10.64898/2026.02.09.704870",
-        title = "Copy the ugPlot DOI",
+        title = "Copy the ugPlot DOI and open the preprint",
         onclick = "
           (function(button) {
             var doi = button.getAttribute('data-doi');
+            var openedWindow = null;
+            try {
+              openedWindow = window.open(doi, '_blank');
+              if (openedWindow) { openedWindow.opener = null; }
+            } catch (error) {
+              openedWindow = null;
+            }
+            var opened = openedWindow !== null;
             var report = function(ok) {
               Shiny.setInputValue(
                 'ugplot_doi_copy_result',
-                { ok: ok, nonce: Date.now() },
+                { ok: ok, opened: opened, nonce: Date.now() },
                 { priority: 'event' }
               );
             };
@@ -1889,9 +1897,19 @@ ugPlot <- function(dataset = data.frame()) {
 server <- function(input, output, session) {
   observeEvent(input$ugplot_doi_copy_result, {
     copied <- isTRUE(input$ugplot_doi_copy_result$ok)
+    opened <- isTRUE(input$ugplot_doi_copy_result$opened)
+    message <- if (copied && opened) {
+      "ugPlot DOI copied; opening the preprint."
+    } else if (copied) {
+      "ugPlot DOI copied. The browser blocked the new window."
+    } else if (opened) {
+      "Opening the ugPlot preprint, but the DOI could not be copied automatically."
+    } else {
+      "Could not copy the DOI or open the preprint automatically."
+    }
     showNotification(
-      if (copied) "ugPlot DOI copied to the clipboard." else "Could not copy the DOI automatically.",
-      type = if (copied) "message" else "warning",
+      message,
+      type = if (copied || opened) "message" else "warning",
       duration = 3
     )
   }, ignoreInit = TRUE)
