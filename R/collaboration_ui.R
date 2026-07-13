@@ -44,7 +44,7 @@ ugplot_collaboration_tab_ui <- function(id, total_system_cpus = 1L) {
               ),
               shiny::tags$section(
                 class = "collab-panel collab-dataset-panel",
-                shiny::tags$div(class = "collab-panel-heading", "Dataset under the microscope"),
+                shiny::tags$div(class = "collab-panel-heading", "Dataset"),
                 shiny::tags$div(
                   class = "collab-dataset-grid",
                   shiny::uiOutput(ns("variable_explorer")),
@@ -629,7 +629,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       plotly::plot_ly(
         x = labels, y = counts, type = "bar",
         marker = list(color = counts, colorscale = list(c(0, "#7557ff"), c(1, "#16c7d9")), showscale = FALSE),
-        text = paste(counts, "observations"), hovertemplate = "%{x}<br>%{text}<extra></extra>"
+        hovertemplate = "%{x}<br>%{y} observations<extra></extra>"
       ) %>% plotly::layout(
         title = list(text = paste("Distribution of", target_label), font = list(size = 14)),
         margin = list(l = 45, r = 15, t = 42, b = 48),
@@ -684,13 +684,14 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
 
     output$metric_plot <- plotly::renderPlotly({
       metric_events <- Filter(function(event) identical(event$type, "metric_updated"), events())
-      metric_events <- utils::tail(metric_events, 80L)
       rows <- Filter(Negate(is.null), lapply(seq_along(metric_events), function(i) {
         event <- metric_events[[i]]
         metrics <- event$data$metrics %||% list()
         if (length(metrics) == 0L) return(NULL)
+        completed <- suppressWarnings(as.numeric(event$data$completed %||% i))
+        if (!is.finite(completed)) completed <- i
         data.frame(
-          experiment = i,
+          experiment = completed,
           candidate = as.character(event$data$candidate %||% paste("Candidate", i)),
           metric = names(metrics), value = as.numeric(unlist(metrics, use.names = FALSE)),
           stringsAsFactors = FALSE
@@ -698,18 +699,38 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       }))
       if (length(rows) == 0L) return(empty_plot("Real metrics will grow here"))
       data <- do.call(rbind, rows)
+      data <- data[is.finite(data$value), , drop = FALSE]
+      if (nrow(data) == 0L) return(empty_plot("Real metrics will grow here"))
       metric_names <- unique(as.character(data$metric))
-      metric_colors <- grDevices::hcl.colors(max(3L, length(metric_names)), palette = "Dark 3")
-      plotly::plot_ly(
-        data, x = ~experiment, y = ~value, color = ~metric,
-        colors = metric_colors[seq_along(metric_names)],
-        type = "scatter", mode = "lines+markers", marker = list(size = 8), line = list(width = 3),
-        hovertemplate = "%{text}<br>%{y:.4f}<extra></extra>",
-        text = ~paste(candidate, "·", metric)
-      ) %>% plotly::layout(
-        margin = list(l = 45, r = 15, t = 10, b = 38),
+      primary_metric <- grepl("^(R2|R\\^2|R²)$", toupper(metric_names))
+      ordered_metrics <- c(metric_names[primary_metric], metric_names[!primary_metric])
+      named_colors <- c(R2 = "#35a326", "R^2" = "#35a326", "R²" = "#35a326", MAE = "#e56883", RMSE = "#109bd3")
+      fallback_colors <- grDevices::hcl.colors(max(3L, length(ordered_metrics)), palette = "Dark 3")
+      plot <- NULL
+      for (i in seq_along(ordered_metrics)) {
+        metric_name <- ordered_metrics[[i]]
+        metric_data <- data[data$metric == metric_name, , drop = FALSE]
+        color_key <- toupper(metric_name)
+        color <- if (color_key %in% names(named_colors)) unname(named_colors[[color_key]]) else fallback_colors[[i]]
+        trace <- list(
+          x = metric_data$experiment, y = metric_data$value,
+          name = metric_name, type = "scattergl", mode = "lines+markers",
+          yaxis = if (grepl("^(R2|R\\^2|R²)$", color_key)) "y" else "y2",
+          marker = list(size = 7, color = color), line = list(width = 3, color = color),
+          text = paste(metric_data$candidate, "·", metric_name),
+          hovertemplate = "%{text}<br>Experiment %{x}<br>%{y:.4f}<extra></extra>"
+        )
+        plot <- if (is.null(plot)) {
+          do.call(plotly::plot_ly, trace)
+        } else {
+          do.call(plotly::add_trace, c(list(p = plot), trace))
+        }
+      }
+      plot %>% plotly::layout(
+        margin = list(l = 55, r = 58, t = 10, b = 42),
         xaxis = list(title = "Completed experiments", gridcolor = "#eef0f7"),
-        yaxis = list(title = "Metric", gridcolor = "#eef0f7"),
+        yaxis = list(title = "R²", range = c(0, 1), dtick = 0.1, fixedrange = FALSE, gridcolor = "#eef0f7", zeroline = TRUE),
+        yaxis2 = list(title = "MAE / RMSE", overlaying = "y", side = "right", rangemode = "tozero", showgrid = FALSE),
         legend = list(orientation = "h", y = -0.25)
       )
     })
@@ -733,21 +754,40 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
     })
 
     output$discovery <- shiny::renderUI({
-      metric_event <- latest_event("metric_updated")
-      if (is.null(metric_event)) {
+      metric_events <- Filter(function(event) {
+        identical(event$type %||% "", "metric_updated") && length((event$data %||% list())$metrics %||% list()) > 0L
+      }, events())
+      if (length(metric_events) == 0L) {
         return(shiny::tags$div(
           class = "collab-empty-visual",
           shiny::tags$div(shiny::tags$span(class = "collab-empty-icon", shiny::icon("gem")), "A result card will emerge from the evidence.")
         ))
       }
-      data <- metric_event$data %||% list()
-      metrics <- data$metrics %||% list()
-      metric_name <- if (length(metrics) > 0L) names(metrics)[[1]] else "Experiments"
-      metric_value <- if (length(metrics) > 0L) round(as.numeric(metrics[[1]]), 4) else data$completed %||% 0L
+      r2_values <- vapply(metric_events, function(event) {
+        metrics <- (event$data %||% list())$metrics %||% list()
+        names_upper <- toupper(names(metrics))
+        index <- which(names_upper %in% c("R2", "R^2", "R²"))
+        if (length(index) == 0L) return(NA_real_)
+        suppressWarnings(as.numeric(metrics[[index[[1]]]]))
+      }, numeric(1))
+      if (any(is.finite(r2_values))) {
+        metric_event <- metric_events[[which.max(replace(r2_values, !is.finite(r2_values), -Inf))]]
+        data <- metric_event$data %||% list()
+        metric_name <- "Best R²"
+        metric_value <- round(max(r2_values, na.rm = TRUE), 4)
+        evidence_label <- "Strongest evidence from"
+      } else {
+        metric_event <- utils::tail(metric_events, 1L)[[1]]
+        data <- metric_event$data %||% list()
+        metrics <- data$metrics %||% list()
+        metric_name <- names(metrics)[[1]]
+        metric_value <- round(as.numeric(metrics[[1]]), 4)
+        evidence_label <- "Latest evidence from"
+      }
       shiny::tags$div(
         shiny::tags$div(class = "collab-discovery-score", metric_value),
         shiny::tags$strong(htmltools::htmlEscape(metric_name)),
-        shiny::tags$p(style = "color:#7d8498; margin-top:8px;", paste("Latest evidence from", data$candidate %||% "the current candidate")),
+        shiny::tags$p(style = "color:#7d8498; margin-top:8px;", paste(evidence_label, data$candidate %||% "the current candidate")),
         if (!is.null(latest_event("validation_completed"))) shiny::tags$div(class = "collab-compat-ok", shiny::icon("circle-check"), " Validation completed")
       )
     })

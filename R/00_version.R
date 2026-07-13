@@ -1,5 +1,5 @@
 ugplot_build_version <- function() {
-  "20260713.17"
+  "20260713.18"
 }
 
 ugplot_compare_build_versions <- function(local_version, remote_version) {
