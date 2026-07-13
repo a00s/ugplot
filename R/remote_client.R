@@ -74,6 +74,11 @@ ugplot_remote_decode_rds_base64 <- function(value) {
   readRDS(path)
 }
 
+ugplot_remote_store_rds_base64 <- function(value, path = tempfile(fileext = ".rds")) {
+  writeBin(base64enc::base64decode(value), path)
+  path
+}
+
 ugplot_remote_collaboration_status <- function(server_url, timeout_seconds = 15) {
   request <- ugplot_remote_request(server_url, "collaboration", token = "")
   ugplot_remote_parse(httr::GET(request$url, httr::timeout(timeout_seconds)))
@@ -85,7 +90,10 @@ ugplot_remote_collaboration_claim <- function(server_url, client_id, capabilitie
     list(client_id = client_id, capabilities = capabilities), timeout_seconds
   )
   if (is.null(parsed$task) || is.null(parsed$payload_rds_base64)) return(NULL)
-  list(task = parsed$task, payload = ugplot_remote_decode_rds_base64(parsed$payload_rds_base64))
+  list(
+    task = parsed$task,
+    payload_path = ugplot_remote_store_rds_base64(parsed$payload_rds_base64)
+  )
 }
 
 ugplot_remote_collaboration_compatibility <- function(server_url, capabilities, timeout_seconds = 30) {

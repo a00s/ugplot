@@ -351,3 +351,17 @@ test_that("job group activity identifies collaborative and server executors", {
   expect_equal(fixed$executor, "Fy3")
   expect_equal(fixed$progress, 0.35)
 })
+
+test_that("collaboration payload can be staged without loading it in the Shiny process", {
+  payload <- list(dataset = data.frame(x = 1:4), config = list(runner = "worker"))
+  source_path <- tempfile(fileext = ".rds")
+  saveRDS(payload, source_path)
+  encoded <- base64enc::base64encode(source_path)
+  unlink(source_path)
+
+  staged_path <- ugplot_test_internal("ugplot_remote_store_rds_base64")(encoded)
+  on.exit(unlink(staged_path), add = TRUE)
+
+  expect_true(file.exists(staged_path))
+  expect_identical(readRDS(staged_path), payload)
+})

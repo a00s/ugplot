@@ -72,6 +72,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
     enabled <- shiny::reactiveVal(FALSE)
     mission <- shiny::reactiveVal(list())
     events <- shiny::reactiveVal(list())
+    events_signature <- shiny::reactiveVal("")
     lease <- shiny::reactiveVal(NULL)
     lease_server_url <- shiny::reactiveVal("")
     process <- shiny::reactiveVal(NULL)
@@ -175,6 +176,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         launch_pending(FALSE)
         worker <- process()
         if (!is.null(worker) && worker$is_alive()) try(worker$kill(), silent = TRUE)
+        files <- process_files()
         active_lease <- lease()
         if (is.list(active_lease) && nzchar(lease_server_url())) {
           try(ugplot_remote_collaboration_release(
@@ -182,6 +184,8 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           ), silent = TRUE)
         }
         process(NULL)
+        if (length(files) > 0L) unlink(unlist(files[c("events", "result", "payload")]), force = TRUE)
+        process_files(list())
         lease(NULL)
         lease_server_url("")
         state("idle")
@@ -229,7 +233,20 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         files <- process_files()
         if (nzchar(files$events %||% "") && file.exists(files$events)) {
           new_events <- tryCatch(readRDS(files$events), error = function(e) events())
-          if (is.list(new_events)) events(new_events)
+          if (is.list(new_events)) {
+            last_event <- if (length(new_events) > 0L) utils::tail(new_events, 1L)[[1]] else list()
+            signature <- paste(
+              length(new_events),
+              as.character(last_event$sequence %||% ""),
+              as.character(last_event$type %||% ""),
+              as.character(last_event$timestamp %||% ""),
+              sep = ":"
+            )
+            if (!identical(signature, events_signature())) {
+              events_signature(signature)
+              events(new_events)
+            }
+          }
         }
         if (worker$is_alive()) {
           sample <- tryCatch(
@@ -285,7 +302,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
             state("accepted")
           } else state("waiting")
         } else state("waiting")
-        unlink(unlist(files[c("events", "result")]), force = TRUE)
+        unlink(unlist(files[c("events", "result", "payload")]), force = TRUE)
         process(NULL)
         process_files(list())
         lease(NULL)
@@ -385,7 +402,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         state("waiting")
         return()
       }
-      actual_models <- ugplot_collaboration_required_models(claimed$payload$config %||% list())
+      actual_models <- unique(as.character(claimed$task$requirements$models %||% character(0)))
       actual_status <- tryCatch(
         ugplot_model_dependency_status(models = actual_models),
         error = function(e) NULL
@@ -395,6 +412,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         try(ugplot_remote_collaboration_release(
           claimed_server_url, claimed$task$task_id, claimed$task$lease_id, client_id
         ), silent = TRUE)
+        unlink(claimed$payload_path %||% "", force = TRUE)
         network_note(paste("Mission requires missing models:", paste(missing_actual, collapse = ", ")))
         state("waiting")
         return()
@@ -402,14 +420,20 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       network_note(paste("Mission accepted from", claimed_server_url))
       event_path <- tempfile("ugplot-collab-events-", fileext = ".rds")
       result_path <- tempfile("ugplot-collab-result-", fileext = ".rds")
+      payload_path <- as.character(claimed$payload_path %||% "")
       cpu_limit <- as.integer(input$cpu_limit %||% 1L)
       mission(claimed$task$mission %||% list())
       events(list())
+      events_signature("")
       append_local_event("mission_received", list(message = "Mission secured; preparing the scientific workspace"))
       lease(claimed$task)
       lease_server_url(claimed_server_url)
       resource_history(data.frame())
       last_heartbeat_at(as.POSIXct(NA))
+      process_files(list(
+        events = event_path, result = result_path, payload = payload_path,
+        started_at = Sys.time()
+      ))
       launch_pending(TRUE)
       state("preparing")
       scheduled_task_id <- as.character(claimed$task$task_id %||% "")
@@ -420,19 +444,21 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           identical(as.character(active_lease$task_id %||% ""), scheduled_task_id)
         if (!still_reserved) {
           launch_pending(FALSE)
-          unlink(c(event_path, result_path), force = TRUE)
+          unlink(c(event_path, result_path, payload_path), force = TRUE)
+          process_files(list())
           return()
         }
         worker <- tryCatch(
           callr::r_bg(
-            func = function(payload, cpu_limit, event_path, result_path, lib_paths) {
+            func = function(payload_path, cpu_limit, event_path, result_path, lib_paths) {
               .libPaths(lib_paths)
               library(ugplot)
               runner <- get("ugplot_collaboration_run_payload", envir = asNamespace("ugplot"))
+              payload <- readRDS(payload_path)
               saveRDS(runner(payload, cpu_limit = cpu_limit, event_path = event_path), result_path)
             },
             args = list(
-              payload = claimed$payload, cpu_limit = cpu_limit, event_path = event_path,
+              payload_path = payload_path, cpu_limit = cpu_limit, event_path = event_path,
               result_path = result_path, lib_paths = .libPaths()
             ),
             supervise = TRUE, cleanup = FALSE, poll_connection = FALSE
@@ -448,10 +474,10 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           lease_server_url("")
           network_note(paste("Could not start experiment:", conditionMessage(worker)))
           state("error")
-          unlink(c(event_path, result_path), force = TRUE)
+          unlink(c(event_path, result_path, payload_path), force = TRUE)
+          process_files(list())
           return()
         }
-        process_files(list(events = event_path, result = result_path, started_at = Sys.time()))
         process(worker)
         launch_pending(FALSE)
         state("computing")
@@ -525,6 +551,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
 
     output$metric_plot <- plotly::renderPlotly({
       metric_events <- Filter(function(event) identical(event$type, "metric_updated"), events())
+      metric_events <- utils::tail(metric_events, 80L)
       rows <- Filter(Negate(is.null), lapply(seq_along(metric_events), function(i) {
         event <- metric_events[[i]]
         metrics <- event$data$metrics %||% list()
@@ -538,10 +565,14 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       }))
       if (length(rows) == 0L) return(empty_plot("Real metrics will grow here"))
       data <- do.call(rbind, rows)
+      metric_names <- unique(as.character(data$metric))
+      metric_colors <- grDevices::hcl.colors(max(3L, length(metric_names)), palette = "Dark 3")
       plotly::plot_ly(
-        data, x = ~experiment, y = ~value, color = ~candidate, split = ~metric,
+        data, x = ~experiment, y = ~value, color = ~metric,
+        colors = metric_colors[seq_along(metric_names)],
         type = "scatter", mode = "lines+markers", marker = list(size = 8), line = list(width = 3),
-        hovertemplate = "%{text}<br>%{y:.4f}<extra></extra>", text = ~paste(candidate, metric)
+        hovertemplate = "%{text}<br>%{y:.4f}<extra></extra>",
+        text = ~paste(candidate, "·", metric)
       ) %>% plotly::layout(
         margin = list(l = 45, r = 15, t = 10, b = 38),
         xaxis = list(title = "Completed experiments", gridcolor = "#eef0f7"),
@@ -602,6 +633,8 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
     session$onSessionEnded(function() {
       worker <- shiny::isolate(process())
       if (!is.null(worker) && worker$is_alive()) try(worker$kill(), silent = TRUE)
+      files <- shiny::isolate(process_files())
+      if (length(files) > 0L) unlink(unlist(files[c("events", "result", "payload")]), force = TRUE)
     })
   })
 }
