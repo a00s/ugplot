@@ -8,12 +8,46 @@ ugplot_collaboration_task_dir <- function(task_id, jobs_dir = ugplot_default_job
   file.path(ugplot_collaboration_dir(jobs_dir), task_id)
 }
 
-ugplot_collaboration_with_lock <- function(task_dir, code, timeout_seconds = 5) {
+ugplot_collaboration_lock_stale <- function(lock_dir, legacy_stale_seconds = 60) {
+  owner_path <- file.path(lock_dir, "owner.rds")
+  owner <- if (file.exists(owner_path)) {
+    tryCatch(readRDS(owner_path), error = function(e) NULL)
+  } else {
+    NULL
+  }
+  if (is.list(owner)) {
+    owner_pid <- suppressWarnings(as.integer(owner$pid %||% NA_integer_))
+    if (!is.na(owner_pid)) return(!ugplot_process_alive(owner_pid))
+  }
+  info <- suppressWarnings(file.info(lock_dir))
+  if (nrow(info) == 0L || is.na(info$mtime[[1]])) return(FALSE)
+  age <- as.numeric(difftime(Sys.time(), info$mtime[[1]], units = "secs"))
+  is.finite(age) && age >= legacy_stale_seconds
+}
+
+ugplot_collaboration_with_lock <- function(task_dir, code, timeout_seconds = 5,
+                                           legacy_stale_seconds = 60) {
   ugplot_ensure_dir(task_dir)
   lock_dir <- file.path(task_dir, ".lock")
   deadline <- Sys.time() + timeout_seconds
   repeat {
-    if (dir.create(lock_dir, showWarnings = FALSE)) break
+    if (dir.create(lock_dir, showWarnings = FALSE)) {
+      saveRDS(
+        list(pid = Sys.getpid(), acquired_at = Sys.time()),
+        file.path(lock_dir, "owner.rds")
+      )
+      break
+    }
+    if (ugplot_collaboration_lock_stale(lock_dir, legacy_stale_seconds)) {
+      stale_dir <- paste0(
+        lock_dir, ".stale-", Sys.getpid(), "-",
+        paste(sample(c(letters, 0:9), 8L, TRUE), collapse = "")
+      )
+      if (file.rename(lock_dir, stale_dir)) {
+        unlink(stale_dir, recursive = TRUE, force = TRUE)
+        next
+      }
+    }
     if (Sys.time() >= deadline) stop("Collaboration task is busy.", call. = FALSE)
     Sys.sleep(0.05)
   }

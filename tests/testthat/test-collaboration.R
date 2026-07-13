@@ -13,6 +13,57 @@ ugplot_test_active_collaboration_parent <- function(root, parent_job_id = "paren
   )
 }
 
+test_that("collaboration recovers a lock left by a terminated process", {
+  root <- tempfile("collaboration-")
+  task_dir <- file.path(root, "collaboration", "orphaned-task")
+  lock_dir <- file.path(task_dir, ".lock")
+  dir.create(lock_dir, recursive = TRUE)
+  saveRDS(
+    list(pid = 999999999L, acquired_at = Sys.time() - 3600),
+    file.path(lock_dir, "owner.rds")
+  )
+  with_lock <- ugplot_test_internal("ugplot_collaboration_with_lock")
+
+  expect_equal(with_lock(task_dir, "recovered", timeout_seconds = 0.2), "recovered")
+  expect_false(dir.exists(lock_dir))
+})
+
+test_that("collaboration recovers a legacy lock without owner metadata", {
+  root <- tempfile("collaboration-")
+  task_dir <- file.path(root, "collaboration", "legacy-task")
+  lock_dir <- file.path(task_dir, ".lock")
+  dir.create(lock_dir, recursive = TRUE)
+  Sys.setFileTime(lock_dir, Sys.time() - 3600)
+  with_lock <- ugplot_test_internal("ugplot_collaboration_with_lock")
+
+  expect_equal(
+    with_lock(
+      task_dir, "recovered", timeout_seconds = 0.2,
+      legacy_stale_seconds = 1
+    ),
+    "recovered"
+  )
+  expect_false(dir.exists(lock_dir))
+})
+
+test_that("collaboration does not steal a lock from a live process", {
+  root <- tempfile("collaboration-")
+  task_dir <- file.path(root, "collaboration", "live-task")
+  lock_dir <- file.path(task_dir, ".lock")
+  dir.create(lock_dir, recursive = TRUE)
+  saveRDS(
+    list(pid = Sys.getpid(), acquired_at = Sys.time()),
+    file.path(lock_dir, "owner.rds")
+  )
+  with_lock <- ugplot_test_internal("ugplot_collaboration_with_lock")
+
+  expect_error(
+    with_lock(task_dir, "stolen", timeout_seconds = 0.1),
+    "Collaboration task is busy",
+    fixed = TRUE
+  )
+})
+
 test_that("collaboration leases expire without blocking a task", {
   root <- tempfile("collaboration-")
   dir.create(root)
