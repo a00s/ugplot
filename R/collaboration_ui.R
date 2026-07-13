@@ -256,13 +256,14 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           sample <- tryCatch(
             ugplot_sample_job_resources(
               list(pid = worker$get_pid(), message = "Collaborative experiment"),
-              resource_previous()
+              shiny::isolate(resource_previous())
             ),
             error = function(e) data.frame()
           )
           if (is.data.frame(sample) && nrow(sample) > 0L) {
             resource_previous(as.list(sample[nrow(sample), , drop = FALSE]))
-            resource_history(utils::tail(rbind(resource_history(), sample), 120L))
+            history <- shiny::isolate(resource_history())
+            resource_history(utils::tail(rbind(history, sample), 120L))
           }
           heartbeat_at <- last_heartbeat_at()
           if (is.list(active_lease) && (is.na(heartbeat_at) || difftime(Sys.time(), heartbeat_at, units = "secs") >= 25)) {
