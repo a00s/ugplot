@@ -5605,7 +5605,7 @@ server <- function(input, output, session) {
       )
     }
     strata <- levels(ranked$StratumValue)
-    plotly::layout(
+    plotly::event_register(plotly::layout(
       plot_obj,
       title = list(text = title),
       xaxis = list(
@@ -5622,7 +5622,7 @@ server <- function(input, output, session) {
       margin = list(l = 70, r = 30, t = 55, b = 55),
       legend = list(orientation = "h", x = 0, y = -0.18),
       hovermode = "closest"
-    )
+    ), "plotly_click")
   }
 
   output$geo_transcript_ml_class_rank_plot <- renderPlotly({
@@ -14080,7 +14080,9 @@ server <- function(input, output, session) {
   output$remote_geo_metric_distribution <- plotly::renderPlotly({
     metric_data <- remote_geo_metric_values()
     if (is.null(metric_data) || length(metric_data$values) == 0) {
-      return(plotly::plot_ly() |>
+      return(plotly::plot_ly(
+        x = numeric(0), y = numeric(0), type = "scatter", mode = "markers"
+      ) |>
         plotly::layout(
           annotations = list(
             text = "Waiting for metric summary",
@@ -14098,10 +14100,9 @@ server <- function(input, output, session) {
 
     values <- metric_data$values
     nbins <- max(5L, min(24L, ceiling(sqrt(length(values)) * 2)))
-    plot_obj <- plotly::plot_ly()
-    plot_obj <- plotly::add_histogram(
-      plot_obj,
+    plot_obj <- plotly::plot_ly(
       x = values,
+      type = "histogram",
       nbinsx = nbins,
       histnorm = "probability density",
       marker = list(color = "#ccfbf1", line = list(color = "#14b8a6", width = 1)),
@@ -14175,7 +14176,9 @@ server <- function(input, output, session) {
   output$remote_job_metric_distribution <- plotly::renderPlotly({
     metric_data <- remote_job_metric_values()
     if (is.null(metric_data) || length(metric_data$values) == 0) {
-      return(plotly::plot_ly() |>
+      return(plotly::plot_ly(
+        x = numeric(0), y = numeric(0), type = "scatter", mode = "markers"
+      ) |>
         plotly::layout(
           annotations = list(
             text = "Waiting for metric results",

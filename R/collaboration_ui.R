@@ -114,7 +114,9 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       if (length(matches) == 0L) NULL else utils::tail(matches, 1L)[[1]]
     }
     empty_plot <- function(message) {
-      plotly::plot_ly() %>% plotly::layout(
+      plotly::plot_ly(
+        x = numeric(0), y = numeric(0), type = "scatter", mode = "markers"
+      ) %>% plotly::layout(
         xaxis = list(visible = FALSE), yaxis = list(visible = FALSE),
         annotations = list(list(text = message, showarrow = FALSE))
       )
@@ -469,7 +471,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           ), launcher_path, useBytes = TRUE)
           lib_paths_path <- tempfile("ugplot-collab-libs-", fileext = ".rds")
           saveRDS(.libPaths(), lib_paths_path)
-          current_files <- process_files()
+          current_files <- shiny::isolate(process_files())
           current_files$lib_paths <- lib_paths_path
           process_files(current_files)
           processx::process$new(
@@ -491,7 +493,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           lease_server_url("")
           network_note(paste("Could not start experiment:", conditionMessage(worker)))
           state("error")
-          files <- process_files()
+          files <- shiny::isolate(process_files())
           unlink(unlist(files[c("events", "result", "payload", "launcher", "stdout", "stderr", "lib_paths")]), force = TRUE)
           process_files(list())
           return()
