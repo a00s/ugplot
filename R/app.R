@@ -531,12 +531,41 @@ ui <- fluidPage(
         tags$img(src = getImage("ugplot.png"), height = "50px", alt = "ugPlot"),
         tags$span(paste("version", ugplot_build_version()), class = "ugplot-app-version")
       ),
-      tags$a(
+      tags$button(
         class = "ugplot-doi-link",
-        href = "https://doi.org/10.64898/2026.02.09.704870",
-        target = "_blank",
-        rel = "noopener noreferrer",
-        title = "Open the ugPlot preprint",
+        type = "button",
+        `data-doi` = "https://doi.org/10.64898/2026.02.09.704870",
+        title = "Copy the ugPlot DOI",
+        onclick = "
+          (function(button) {
+            var doi = button.getAttribute('data-doi');
+            var report = function(ok) {
+              Shiny.setInputValue(
+                'ugplot_doi_copy_result',
+                { ok: ok, nonce: Date.now() },
+                { priority: 'event' }
+              );
+            };
+            var fallback = function() {
+              var field = document.createElement('textarea');
+              field.value = doi;
+              field.setAttribute('readonly', '');
+              field.style.position = 'fixed';
+              field.style.opacity = '0';
+              document.body.appendChild(field);
+              field.select();
+              var copied = false;
+              try { copied = document.execCommand('copy'); } catch (error) { copied = false; }
+              document.body.removeChild(field);
+              report(copied);
+            };
+            if (navigator.clipboard && window.isSecureContext) {
+              navigator.clipboard.writeText(doi).then(function() { report(true); }).catch(fallback);
+            } else {
+              fallback();
+            }
+          })(this);
+        ",
         tags$span(class = "ugplot-doi-label", "CITE UGPLOT"),
         tags$span("doi.org/10.64898/2026.02.09.704870")
       )
@@ -1858,6 +1887,15 @@ ugPlot <- function(dataset = data.frame()) {
 
 # Define the server function
 server <- function(input, output, session) {
+  observeEvent(input$ugplot_doi_copy_result, {
+    copied <- isTRUE(input$ugplot_doi_copy_result$ok)
+    showNotification(
+      if (copied) "ugPlot DOI copied to the clipboard." else "Could not copy the DOI automatically.",
+      type = if (copied) "message" else "warning",
+      duration = 3
+    )
+  }, ignoreInit = TRUE)
+
   # Define reactive to store the loaded model
   loaded_model <- reactiveVal(NULL)
   remote_servers <- reactiveVal(ugplot_read_remote_servers())

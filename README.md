@@ -180,6 +180,8 @@ Think of the tabs as checkpoints:
 - **MODEL ANALYSIS** answers: "Does a saved model behave sensibly on this dataset?"
 - **GEO IMPORT** answers: "Can a public methylation accession be turned into CpG/transcript-level hypotheses?"
 
+The **CITE UGPLOT** button in the top-right header copies the preprint DOI to the clipboard and confirms the action inside the app. It does not open a new RStudio Viewer window.
+
 ---
 
 ## 1) LOAD DATA — bring your dataset correctly
