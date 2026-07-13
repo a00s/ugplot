@@ -74,6 +74,32 @@ test_that("collaboration accepts only the active lease and first result", {
   expect_equal(take_result("task-1", root)$result$answer, 42)
 })
 
+test_that("claim skips unavailable tasks and continues through the queue", {
+  root <- tempfile("collaboration-")
+  dir.create(root)
+  publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
+  claim <- ugplot_test_internal("ugplot_collaboration_claim_task")
+  complete <- ugplot_test_internal("ugplot_collaboration_complete_task")
+
+  first <- publish(
+    "a-unavailable", "parent", list(value = 1),
+    requirements = list(models = "lm"), jobs_dir = root
+  )
+  first_lease <- claim("first-client", list(models = "lm"), jobs_dir = root)$task
+  expect_true(complete(
+    first$task_id, first_lease$lease_id, "first-client", list(answer = 1), jobs_dir = root
+  )$accepted)
+
+  publish(
+    "b-compatible", "parent", list(value = 2),
+    requirements = list(models = "lm"), jobs_dir = root
+  )
+  claimed <- claim("second-client", list(models = "lm"), jobs_dir = root)
+
+  expect_equal(claimed$task$task_id, "b-compatible")
+  expect_equal(claimed$payload$value, 2)
+})
+
 test_that("collaboration runner emits structured scientific events", {
   run_payload <- ugplot_test_internal("ugplot_collaboration_run_payload")
   event_path <- tempfile(fileext = ".rds")

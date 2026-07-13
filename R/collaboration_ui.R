@@ -326,6 +326,12 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           )
         }) else list()
         supported <- Filter(function(value) is.list(value) && !inherits(value, "error"), diagnostics)
+        compatible_count <- sum(vapply(supported, function(value) {
+          suppressWarnings(as.integer(value$compatible %||% 0L))
+        }, integer(1)), na.rm = TRUE)
+        pending_count <- sum(vapply(supported, function(value) {
+          suppressWarnings(as.integer(value$pending %||% 0L))
+        }, integer(1)), na.rm = TRUE)
         missing_models <- unique(unlist(lapply(supported, function(value) {
           missions <- value$missions %||% list()
           if (is.data.frame(missions) && "missing_models" %in% names(missions)) {
@@ -336,14 +342,21 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         missing_models <- missing_models[nzchar(as.character(missing_models))]
         if (length(claim_errors) > 0L) {
           network_note(paste("Could not reserve mission:", paste(unique(claim_errors), collapse = " | ")))
+        } else if (compatible_count > 0L) {
+          network_note(paste0(
+            compatible_count, " compatible mission(s) found, but the coordinator did not reserve one. ",
+            "The queue may be changing; retry shortly or update the coordinator."
+          ))
         } else if (length(missing_models) > 0L) {
           preview <- paste(utils::head(missing_models, 6L), collapse = ", ")
           suffix <- if (length(missing_models) > 6L) paste0(" +", length(missing_models) - 6L, " more") else ""
           network_note(paste0("Incompatible mission: missing ", preview, suffix))
         } else if (length(supported) == 0L && grepl("mission(s) found", network_note(), fixed = TRUE)) {
           network_note("Legacy missions found; update the coordinator to display exact incompatibilities")
+        } else if (pending_count > 0L) {
+          network_note(paste(pending_count, "mission(s) are waiting, but none match this workstation"))
         } else {
-          network_note("No compatible mission is currently available")
+          network_note("No mission is currently queued by the coordinators")
         }
         state("waiting")
         return()

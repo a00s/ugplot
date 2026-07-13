@@ -150,18 +150,19 @@ ugplot_collaboration_claim_task <- function(client_id, capabilities = list(),
       if (!is.list(task) || !identical(task$state %||% "", "pending") ||
           !ugplot_collaboration_models_compatible(task$requirements %||% list(), capabilities)) {
         if (is.list(task)) ugplot_collaboration_write_task(task, jobs_dir)
-        return(NULL)
+        NULL
+      } else {
+        lease_id <- paste0(format(Sys.time(), "%Y%m%d%H%M%S"), "-", paste(sample(c(letters, LETTERS, 0:9), 12L, TRUE), collapse = ""))
+        task$state <- "leased"
+        task$lease_id <- lease_id
+        task$client_id <- client_id
+        task$heartbeat_at <- Sys.time()
+        task$lease_expires_at <- Sys.time() + max(30, as.numeric(lease_seconds))
+        task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+        ugplot_collaboration_write_task(task, jobs_dir)
+        payload <- readRDS(task$payload_path)
+        list(task = task, payload = payload)
       }
-      lease_id <- paste0(format(Sys.time(), "%Y%m%d%H%M%S"), "-", paste(sample(c(letters, LETTERS, 0:9), 12L, TRUE), collapse = ""))
-      task$state <- "leased"
-      task$lease_id <- lease_id
-      task$client_id <- client_id
-      task$heartbeat_at <- Sys.time()
-      task$lease_expires_at <- Sys.time() + max(30, as.numeric(lease_seconds))
-      task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
-      ugplot_collaboration_write_task(task, jobs_dir)
-      payload <- readRDS(task$payload_path)
-      list(task = task, payload = payload)
     })
     if (!is.null(claimed)) return(claimed)
   }
