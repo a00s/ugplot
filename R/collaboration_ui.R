@@ -184,7 +184,9 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           ), silent = TRUE)
         }
         process(NULL)
-        if (length(files) > 0L) unlink(unlist(files[c("events", "result", "payload")]), force = TRUE)
+        if (length(files) > 0L) {
+          unlink(unlist(files[c("events", "result", "payload", "launcher", "stdout", "stderr", "lib_paths")]), force = TRUE)
+        }
         process_files(list())
         lease(NULL)
         lease_server_url("")
@@ -302,7 +304,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
             state("accepted")
           } else state("waiting")
         } else state("waiting")
-        unlink(unlist(files[c("events", "result", "payload")]), force = TRUE)
+        unlink(unlist(files[c("events", "result", "payload", "launcher", "stdout", "stderr", "lib_paths")]), force = TRUE)
         process(NULL)
         process_files(list())
         lease(NULL)
@@ -421,6 +423,9 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       event_path <- tempfile("ugplot-collab-events-", fileext = ".rds")
       result_path <- tempfile("ugplot-collab-result-", fileext = ".rds")
       payload_path <- as.character(claimed$payload_path %||% "")
+      launcher_path <- tempfile("ugplot-collab-launcher-", fileext = ".R")
+      stdout_path <- tempfile("ugplot-collab-worker-", fileext = ".stdout.log")
+      stderr_path <- tempfile("ugplot-collab-worker-", fileext = ".stderr.log")
       cpu_limit <- as.integer(input$cpu_limit %||% 1L)
       mission(claimed$task$mission %||% list())
       events(list())
@@ -432,6 +437,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       last_heartbeat_at(as.POSIXct(NA))
       process_files(list(
         events = event_path, result = result_path, payload = payload_path,
+        launcher = launcher_path, stdout = stdout_path, stderr = stderr_path,
         started_at = Sys.time()
       ))
       launch_pending(TRUE)
@@ -444,27 +450,38 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           identical(as.character(active_lease$task_id %||% ""), scheduled_task_id)
         if (!still_reserved) {
           launch_pending(FALSE)
-          unlink(c(event_path, result_path, payload_path), force = TRUE)
+          unlink(c(event_path, result_path, payload_path, launcher_path, stdout_path, stderr_path), force = TRUE)
           process_files(list())
           return()
         }
-        worker <- tryCatch(
-          callr::r_bg(
-            func = function(payload_path, cpu_limit, event_path, result_path, lib_paths) {
-              .libPaths(lib_paths)
-              library(ugplot)
-              runner <- get("ugplot_collaboration_run_payload", envir = asNamespace("ugplot"))
-              payload <- readRDS(payload_path)
-              saveRDS(runner(payload, cpu_limit = cpu_limit, event_path = event_path), result_path)
-            },
-            args = list(
-              payload_path = payload_path, cpu_limit = cpu_limit, event_path = event_path,
-              result_path = result_path, lib_paths = .libPaths()
-            ),
-            supervise = TRUE, cleanup = FALSE, poll_connection = FALSE
-          ),
-          error = function(e) e
-        )
+        worker <- tryCatch({
+          if (!requireNamespace("processx", quietly = TRUE)) {
+            stop("Package 'processx' is required to start a collaborative experiment.", call. = FALSE)
+          }
+          writeLines(c(
+            "args <- commandArgs(trailingOnly = TRUE)",
+            ".libPaths(readRDS(args[[5]]))",
+            "library(ugplot)",
+            "runner <- get('ugplot_collaboration_run_payload', envir = asNamespace('ugplot'))",
+            "payload <- readRDS(args[[1]])",
+            "result <- runner(payload, cpu_limit = as.integer(args[[2]]), event_path = args[[3]])",
+            "saveRDS(result, args[[4]])"
+          ), launcher_path, useBytes = TRUE)
+          lib_paths_path <- tempfile("ugplot-collab-libs-", fileext = ".rds")
+          saveRDS(.libPaths(), lib_paths_path)
+          current_files <- process_files()
+          current_files$lib_paths <- lib_paths_path
+          process_files(current_files)
+          processx::process$new(
+            command = file.path(R.home("bin"), "Rscript"),
+            args = c("--vanilla", launcher_path, payload_path, as.character(cpu_limit), event_path, result_path, lib_paths_path),
+            stdout = stdout_path,
+            stderr = stderr_path,
+            cleanup = TRUE,
+            cleanup_tree = TRUE,
+            windows_hide_window = TRUE
+          )
+        }, error = function(e) e)
         if (inherits(worker, "error")) {
           try(ugplot_remote_collaboration_release(
             claimed_server_url, claimed$task$task_id, claimed$task$lease_id, client_id
@@ -474,7 +491,8 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           lease_server_url("")
           network_note(paste("Could not start experiment:", conditionMessage(worker)))
           state("error")
-          unlink(c(event_path, result_path, payload_path), force = TRUE)
+          files <- process_files()
+          unlink(unlist(files[c("events", "result", "payload", "launcher", "stdout", "stderr", "lib_paths")]), force = TRUE)
           process_files(list())
           return()
         }
@@ -634,7 +652,9 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       worker <- shiny::isolate(process())
       if (!is.null(worker) && worker$is_alive()) try(worker$kill(), silent = TRUE)
       files <- shiny::isolate(process_files())
-      if (length(files) > 0L) unlink(unlist(files[c("events", "result", "payload")]), force = TRUE)
+      if (length(files) > 0L) {
+        unlink(unlist(files[c("events", "result", "payload", "launcher", "stdout", "stderr", "lib_paths")]), force = TRUE)
+      }
     })
   })
 }
