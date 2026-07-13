@@ -610,6 +610,67 @@ table.dataTable th.dt-error-column {
 .job-resource-warning { border-left-color: #f0ad4e; background: #fffbeb; }
 .job-resource-critical { border-left-color: #d9534f; background: #fff1f0; }
 
+.remote-group-activity {
+  margin: 14px 0;
+  padding: 16px 18px;
+  border: 1px solid rgba(112, 91, 255, .16);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(255,255,255,.96), rgba(242,247,255,.92));
+  box-shadow: 0 14px 34px rgba(45, 55, 95, .08);
+}
+.remote-group-activity-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.remote-group-activity-title { color: #18243f; font-size: 16px; font-weight: 800; }
+.remote-group-activity-subtitle { color: #6d7790; font-size: 12px; margin-top: 3px; }
+.remote-group-legend { display: flex; gap: 12px; flex-wrap: wrap; color: #65708a; font-size: 11px; font-weight: 700; }
+.remote-group-legend span::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 50%;
+}
+.remote-group-legend .completed::before { background: #20b77a; }
+.remote-group-legend .processing::before { background: #ff9d42; }
+.remote-group-legend .pending::before { background: #d9dfeb; }
+.remote-group-workers { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 9px; }
+.remote-group-worker {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 157, 66, .28);
+  border-radius: 999px;
+  background: rgba(255, 157, 66, .09);
+  color: #526078;
+  font-size: 11px;
+}
+.remote-group-worker strong { color: #26344f; }
+.remote-group-worker-dot { width: 7px; height: 7px; border-radius: 50%; background: #ff9d42; box-shadow: 0 0 0 4px rgba(255,157,66,.13); }
+.remote-group-stripe {
+  display: grid;
+  width: 100%;
+  height: 38px;
+  gap: 1px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #edf0f6;
+  box-shadow: inset 0 0 0 1px rgba(60, 74, 110, .08);
+}
+.remote-group-segment { display: block; min-width: 1px; height: 100%; cursor: help; transition: filter .15s ease, transform .15s ease; }
+.remote-group-segment:hover { filter: brightness(.88) saturate(1.2); transform: scaleY(1.08); z-index: 2; }
+.remote-group-segment-completed { background: #20b77a; }
+.remote-group-segment-processing { background: linear-gradient(180deg, #ffb35f, #ff8848); animation: remote-group-pulse 1.7s ease-in-out infinite alternate; }
+.remote-group-segment-pending { background: #d9dfeb; }
+.remote-group-hover-note { margin-top: 7px; color: #8a93a8; font-size: 10px; }
+@keyframes remote-group-pulse { from { opacity: .72; } to { opacity: 1; } }
+
 .remote-geo-report {
   margin: 12px 0;
   padding: 14px;

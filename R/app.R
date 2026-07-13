@@ -966,6 +966,7 @@ ui <- fluidPage(
         ),
         DT::DTOutput("remote_jobs_table"),
         uiOutput("remote_job_status_panel"),
+        uiOutput("remote_job_group_activity"),
         uiOutput("remote_job_geo_progress_report"),
         uiOutput("remote_job_resources"),
         uiOutput("remote_job_metric_panel"),
@@ -2472,6 +2473,7 @@ server <- function(input, output, session) {
   remote_job_status_text <- reactiveVal("")
   remote_job_log_text <- reactiveVal("")
   remote_job_resources_data <- reactiveVal(data.frame())
+  remote_job_groups_data <- reactiveVal(list(groups = data.frame()))
   remote_job_preview_status <- reactiveVal(NULL)
   remote_job_preview_result <- reactiveVal(NULL)
   remote_job_progress_estimates <- reactiveVal(list())
@@ -12615,6 +12617,19 @@ server <- function(input, output, session) {
       )
     }
     remote_job_preview_status(status)
+    groups <- if (remote_server_supports("job_group_activity", server$name[[1]])) {
+      tryCatch(
+        ugplot_remote_job_groups(
+          server_url = server$url,
+          job_id = job_id,
+          token = server$token %||% ""
+        ),
+        error = function(e) list(groups = data.frame())
+      )
+    } else {
+      list(groups = data.frame())
+    }
+    remote_job_groups_data(groups)
     geo_remote_pipeline_job_id(job_id)
     if (remote_config_is_geo(config)) {
       apply_remote_geo_config(config, job_id = job_id, server = server, status = status)
@@ -12665,6 +12680,19 @@ server <- function(input, output, session) {
       token = server$token %||% ""
     )
     remote_job_preview_status(status)
+    groups <- if (remote_server_supports("job_group_activity", server$name[[1]])) {
+      tryCatch(
+        ugplot_remote_job_groups(
+          server_url = server$url,
+          job_id = job_id,
+          token = server$token %||% ""
+        ),
+        error = function(e) list(groups = data.frame())
+      )
+    } else {
+      list(groups = data.frame())
+    }
+    remote_job_groups_data(groups)
     status_text <- remote_status_summary_text(status)
     if (remote_status_is_geo(status)) {
       activate_geo_remote_server_for_job(server)
@@ -12765,24 +12793,40 @@ server <- function(input, output, session) {
     remote_resource_refresh_timer()
     job_id <- input$remote_job_id %||% ""
     if (!nzchar(job_id)) {
+      remote_job_groups_data(list(groups = data.frame()))
       return()
     }
     server <- tryCatch(remote_server_by_name(remote_server_name_for_job(job_id)), error = function(e) NULL)
-    if (is.null(server) || !remote_server_supports("job_resource_monitor", server$name[[1]])) {
+    if (is.null(server)) {
       remote_job_resources_data(data.frame())
       return()
     }
-    resources <- tryCatch(
-      ugplot_remote_job_resources(
-        server_url = server$url,
-        job_id = job_id,
-        token = server$token %||% "",
-        max_lines = 60L
-      ),
-      error = function(e) NULL
-    )
+    resources <- if (remote_server_supports("job_resource_monitor", server$name[[1]])) {
+      tryCatch(
+        ugplot_remote_job_resources(
+          server_url = server$url,
+          job_id = job_id,
+          token = server$token %||% "",
+          max_lines = 60L
+        ),
+        error = function(e) NULL
+      )
+    } else {
+      data.frame()
+    }
     if (is.data.frame(resources)) {
       remote_job_resources_data(resources)
+    }
+    if (remote_server_supports("job_group_activity", server$name[[1]])) {
+      groups <- tryCatch(
+        ugplot_remote_job_groups(
+          server_url = server$url,
+          job_id = job_id,
+          token = server$token %||% ""
+        ),
+        error = function(e) NULL
+      )
+      if (is.list(groups)) remote_job_groups_data(groups)
     }
   })
 
@@ -13023,6 +13067,42 @@ server <- function(input, output, session) {
         )
         remote_job_progress_label(jobs$progress[[i]], status = row_status)
       }, character(1))
+    }
+    activity <- remote_job_groups_data()
+    activity_job_id <- as.character(activity$job_id %||% "")
+    activity_groups <- activity$groups %||% data.frame()
+    if (is.list(activity_groups) && !is.data.frame(activity_groups) && length(activity_groups) > 0L) {
+      activity_groups <- tryCatch(
+        as.data.frame(activity_groups, stringsAsFactors = FALSE),
+        error = function(e) data.frame()
+      )
+    }
+    if (nrow(jobs) > 0L && "message" %in% names(jobs) && "id" %in% names(raw_jobs) &&
+        nzchar(activity_job_id) && is.data.frame(activity_groups) && nrow(activity_groups) > 0L &&
+        all(c("state", "executor_type", "executor", "group_id", "progress") %in% names(activity_groups))) {
+      collaborative <- activity_groups[
+        as.character(activity_groups$state) == "processing" &
+          as.character(activity_groups$executor_type) == "collaboration",
+        , drop = FALSE
+      ]
+      if (nrow(collaborative) > 0L) {
+        collaborators <- vapply(seq_len(nrow(collaborative)), function(i) {
+          progress <- suppressWarnings(as.numeric(collaborative$progress[[i]] %||% 0))
+          if (!is.finite(progress)) progress <- 0
+          paste0(
+            as.character(collaborative$executor[[i]] %||% "Public scientist"), ":",
+            as.character(collaborative$group_id[[i]] %||% "group"), " ",
+            round(100 * max(0, min(1, progress))), "%"
+          )
+        }, character(1))
+        row_index <- which(as.character(raw_jobs$id) == activity_job_id)
+        if (length(row_index) > 0L) {
+          jobs$message[[row_index[[1]]]] <- paste0(
+            as.character(jobs$message[[row_index[[1]]]] %||% ""),
+            "; public client ", paste(collaborators, collapse = ", ")
+          )
+        }
+      }
     }
     raw_model_values <- if ("models" %in% names(raw_jobs)) as.character(raw_jobs$models) else character(0)
     character_columns <- names(jobs)[vapply(jobs, is.character, logical(1))]
@@ -13406,6 +13486,85 @@ server <- function(input, output, session) {
     tags$div(
       style = "display: flex; gap: 8px; flex-wrap: wrap; margin: 0;",
       cards
+    )
+  })
+
+  output$remote_job_group_activity <- renderUI({
+    activity <- remote_job_groups_data()
+    groups <- activity$groups %||% data.frame()
+    if (is.list(groups) && !is.data.frame(groups) && length(groups) > 0L) {
+      groups <- tryCatch(as.data.frame(groups, stringsAsFactors = FALSE), error = function(e) data.frame())
+    }
+    if (!is.data.frame(groups) || nrow(groups) == 0L) return(NULL)
+    scalar <- function(value, default = "") {
+      value <- unlist(value %||% default, use.names = FALSE)
+      if (length(value) == 0L || is.na(value[[1]])) default else value[[1]]
+    }
+    states <- vapply(seq_len(nrow(groups)), function(i) {
+      as.character(scalar(groups$state[[i]], "pending"))
+    }, character(1))
+    active_rows <- which(states == "processing")
+    active_cards <- lapply(active_rows, function(i) {
+      executor <- as.character(scalar(groups$executor[[i]], "Worker"))
+      group_id <- as.character(scalar(groups$group_id[[i]], "Group"))
+      progress <- suppressWarnings(as.numeric(scalar(groups$progress[[i]], 0)))
+      if (!is.finite(progress)) progress <- 0
+      tags$div(
+        class = "remote-group-worker",
+        tags$span(class = "remote-group-worker-dot"),
+        tags$strong(htmltools::htmlEscape(executor)),
+        tags$span(htmltools::htmlEscape(group_id)),
+        tags$span(paste0(round(100 * max(0, min(1, progress))), "%"))
+      )
+    })
+    segments <- lapply(seq_len(nrow(groups)), function(i) {
+      group_id <- as.character(scalar(groups$group_id[[i]], paste0("Group ", i)))
+      state <- states[[i]]
+      executor <- as.character(scalar(groups$executor[[i]], "Not assigned"))
+      message <- as.character(scalar(groups$message[[i]], ""))
+      progress <- suppressWarnings(as.numeric(scalar(groups$progress[[i]], 0)))
+      if (!is.finite(progress)) progress <- 0
+      tooltip <- paste0(
+        group_id, " · ", tools::toTitleCase(state),
+        " · ", round(100 * max(0, min(1, progress))), "%",
+        if (nzchar(executor)) paste0(" · ", executor) else "",
+        if (nzchar(message)) paste0(" · ", message) else ""
+      )
+      tags$span(
+        class = paste("remote-group-segment", paste0("remote-group-segment-", state)),
+        title = tooltip,
+        `aria-label` = tooltip
+      )
+    })
+    tags$section(
+      class = "remote-group-activity",
+      tags$div(
+        class = "remote-group-activity-header",
+        tags$div(
+          tags$div(class = "remote-group-activity-title", "Distributed group activity"),
+          tags$div(
+            class = "remote-group-activity-subtitle",
+            paste0(
+              sum(states == "completed"), " completed · ",
+              sum(states == "processing"), " processing · ",
+              sum(states == "pending"), " waiting"
+            )
+          )
+        ),
+        tags$div(
+          class = "remote-group-legend",
+          tags$span(class = "completed", "Completed"),
+          tags$span(class = "processing", "Processing"),
+          tags$span(class = "pending", "Waiting")
+        )
+      ),
+      if (length(active_cards) > 0L) tags$div(class = "remote-group-workers", active_cards),
+      tags$div(
+        class = "remote-group-stripe",
+        style = paste0("grid-template-columns: repeat(", nrow(groups), ", minmax(1px, 1fr));"),
+        segments
+      ),
+      tags$div(class = "remote-group-hover-note", "Hover a segment to see its group, executor, progress, and current activity.")
     )
   })
 

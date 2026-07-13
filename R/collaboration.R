@@ -102,6 +102,10 @@ ugplot_collaboration_publish_task <- function(task_id, parent_job_id, payload,
       payload_path = payload_path,
       lease_id = "",
       client_id = "",
+      scientist_name = "",
+      client_progress = 0,
+      client_message = "",
+      client_candidate = "",
       lease_expires_at = as.POSIXct(NA),
       heartbeat_at = as.POSIXct(NA),
       completed_at = as.POSIXct(NA),
@@ -158,6 +162,10 @@ ugplot_collaboration_reap_task <- function(task, now = Sys.time()) {
       task$state <- "pending"
       task$lease_id <- ""
       task$client_id <- ""
+      task$scientist_name <- ""
+      task$client_progress <- 0
+      task$client_message <- "Waiting for a contributor"
+      task$client_candidate <- ""
       task$lease_expires_at <- as.POSIXct(NA)
       task$lease_expired_count <- as.integer(task$lease_expired_count %||% 0L) + 1L
       task$fallback_requested <- TRUE
@@ -220,6 +228,10 @@ ugplot_collaboration_claim_task <- function(client_id, capabilities = list(),
         task$state <- "leased"
         task$lease_id <- lease_id
         task$client_id <- client_id
+        task$scientist_name <- trimws(as.character(capabilities$scientist_name %||% client_id))
+        task$client_progress <- 0
+        task$client_message <- "Mission reserved"
+        task$client_candidate <- ""
         task$heartbeat_at <- Sys.time()
         task$lease_expires_at <- Sys.time() + max(30, as.numeric(lease_seconds))
         task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
@@ -235,6 +247,7 @@ ugplot_collaboration_claim_task <- function(client_id, capabilities = list(),
 
 ugplot_collaboration_heartbeat <- function(task_id, lease_id, client_id,
                                           lease_seconds = 120,
+                                          telemetry = list(),
                                           jobs_dir = ugplot_default_jobs_dir()) {
   task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
   ugplot_collaboration_with_lock(task_dir, {
@@ -245,6 +258,15 @@ ugplot_collaboration_heartbeat <- function(task_id, lease_id, client_id,
     if (!valid) return(list(accepted = FALSE, reason = "lease_not_active"))
     task$heartbeat_at <- Sys.time()
     task$lease_expires_at <- Sys.time() + max(30, as.numeric(lease_seconds))
+    if (is.list(telemetry)) {
+      progress <- suppressWarnings(as.numeric(telemetry$progress %||% task$client_progress %||% 0))
+      if (length(progress) == 1L && is.finite(progress)) {
+        task$client_progress <- max(0, min(1, progress))
+      }
+      task$client_message <- as.character(telemetry$message %||% task$client_message %||% "")
+      task$client_candidate <- as.character(telemetry$candidate %||% task$client_candidate %||% "")
+      task$client_completed <- suppressWarnings(as.integer(telemetry$completed %||% task$client_completed %||% 0L))
+    }
     task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
     ugplot_collaboration_write_task(task, jobs_dir)
     list(accepted = TRUE, lease_expires_at = task$lease_expires_at)
@@ -263,6 +285,10 @@ ugplot_collaboration_release_task <- function(task_id, lease_id, client_id,
     task$state <- "pending"
     task$lease_id <- ""
     task$client_id <- ""
+    task$scientist_name <- ""
+    task$client_progress <- 0
+    task$client_message <- "Waiting for a contributor"
+    task$client_candidate <- ""
     task$lease_expires_at <- as.POSIXct(NA)
     task$heartbeat_at <- as.POSIXct(NA)
     task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
@@ -437,6 +463,105 @@ ugplot_collaboration_compatibility <- function(capabilities = list(),
       parent_job_id = as.character(item$parent$parent_job_id %||% ""),
       parent_state = as.character(item$parent$state %||% "unknown")
     ))
+  )
+}
+
+ugplot_collaboration_job_group_activity <- function(job_id,
+                                                    jobs_dir = ugplot_default_jobs_dir()) {
+  job_id <- ugplot_validate_job_id(job_id)
+  config_path <- file.path(ugplot_job_dir(job_id, jobs_dir), "config.rds")
+  if (!file.exists(config_path)) stop("Job config is not available: ", job_id, call. = FALSE)
+  config <- readRDS(config_path)
+  if (!identical(as.character(config$type %||% "geo"), "geo") &&
+      !identical(as.character(config$runner %||% ""), "ugplot_run_geo_pipeline_job")) {
+    return(list(job_id = job_id, total = 0L, completed = 0L, processing = 0L, pending = 0L, groups = data.frame()))
+  }
+  accession <- trimws(as.character(config$accession %||% ""))
+  source <- as.character(config$matrix_source %||% "processed")
+  target <- as.character(config$target_column %||% "")
+  threshold <- suppressWarnings(as.numeric(config$transcript_absrho_threshold %||% 0.8))
+  min_samples <- suppressWarnings(as.numeric(config$transcript_min_samples %||% 80))
+  run_key <- as.character(config$geo_transcript_ml_run_key %||% "")
+  if (!nzchar(run_key) && nzchar(target) && is.finite(threshold) && is.finite(min_samples)) {
+    run_key <- ugplot_geo_transcript_ml_run_key(target, threshold, min_samples)
+  }
+  pipeline_dir <- if (nzchar(accession)) {
+    ugplot_geo_transcript_ml_dir(ugplot_geo_cache_dir(accession), source, run_key)
+  } else {
+    ""
+  }
+  manifest_path <- if (nzchar(pipeline_dir)) ugplot_geo_distributed_manifest_path(pipeline_dir) else ""
+  if (!nzchar(manifest_path) || !file.exists(manifest_path)) {
+    return(list(job_id = job_id, total = 0L, completed = 0L, processing = 0L, pending = 0L, groups = data.frame()))
+  }
+  manifest <- tryCatch(readRDS(manifest_path), error = function(e) data.frame())
+  if (!is.data.frame(manifest) || nrow(manifest) == 0L || !"GroupID" %in% names(manifest)) {
+    return(list(job_id = job_id, total = 0L, completed = 0L, processing = 0L, pending = 0L, groups = data.frame()))
+  }
+  value_at <- function(column, index, default = "") {
+    if (!(column %in% names(manifest))) return(default)
+    value <- manifest[[column]][[index]]
+    if (length(value) == 0L || is.na(value)) default else value
+  }
+  rows <- lapply(seq_len(nrow(manifest)), function(index) {
+    group_id <- as.character(manifest$GroupID[[index]])
+    manifest_state <- as.character(value_at("State", index, "pending"))
+    worker <- as.character(value_at("Worker", index, ""))
+    progress <- suppressWarnings(as.numeric(value_at("Progress", index, 0)))
+    if (!is.finite(progress)) progress <- 0
+    message <- as.character(value_at("Message", index, value_at("Error", index, "")))
+    task <- ugplot_collaboration_read_task(paste(job_id, "screen", group_id, sep = ":"), jobs_dir)
+    task <- ugplot_collaboration_reap_task(task)
+    task_state <- if (is.list(task)) as.character(task$state %||% "") else ""
+    state <- "pending"
+    executor <- ""
+    executor_type <- ""
+    if (identical(manifest_state, "completed")) {
+      state <- "completed"
+      progress <- 1
+      executor <- if (is.list(task) && nzchar(task$scientist_name %||% "")) {
+        as.character(task$scientist_name)
+      } else {
+        worker
+      }
+    } else if (identical(task_state, "leased")) {
+      state <- "processing"
+      executor <- as.character(task$scientist_name %||% task$client_id %||% "Public scientist")
+      executor_type <- "collaboration"
+      progress <- suppressWarnings(as.numeric(task$client_progress %||% 0))
+      if (!is.finite(progress)) progress <- 0
+      message <- as.character(task$client_message %||% "Collaborative experiment running")
+      candidate <- as.character(task$client_candidate %||% "")
+      if (nzchar(candidate)) message <- paste(message, "—", candidate)
+    } else if (manifest_state %in% c("dispatching", "submitted", "running")) {
+      state <- "processing"
+      executor <- worker
+      executor_type <- "server"
+    } else if (identical(task_state, "completed")) {
+      state <- "processing"
+      progress <- 1
+      executor <- as.character(task$scientist_name %||% task$client_id %||% "Public scientist")
+      executor_type <- "collaboration"
+      message <- "Contribution returned; validating"
+    }
+    data.frame(
+      group_id = group_id,
+      state = state,
+      progress = max(0, min(1, progress)),
+      executor = executor,
+      executor_type = executor_type,
+      message = message,
+      stringsAsFactors = FALSE
+    )
+  })
+  groups <- do.call(rbind, rows)
+  list(
+    job_id = job_id,
+    total = nrow(groups),
+    completed = sum(groups$state == "completed"),
+    processing = sum(groups$state == "processing"),
+    pending = sum(groups$state == "pending"),
+    groups = groups
   )
 }
 

@@ -75,6 +75,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
     lease <- shiny::reactiveVal(NULL)
     lease_server_url <- shiny::reactiveVal("")
     process <- shiny::reactiveVal(NULL)
+    launch_pending <- shiny::reactiveVal(FALSE)
     process_files <- shiny::reactiveVal(list())
     compatible_models <- shiny::reactiveVal(character(0))
     claim_models <- shiny::reactiveVal(character(0))
@@ -133,12 +134,13 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
     output$connection_badge <- shiny::renderUI({
       labels <- c(
         idle = "○ READY TO CONNECT", connecting = "◌ CONNECTING", waiting = "◉ WAITING FOR MISSION",
+        preparing = "◌ PREPARING EXPERIMENT",
         computing = "● EXPERIMENT RUNNING", uploading = "↑ RETURNING DISCOVERY",
         accepted = "✓ CONTRIBUTION ACCEPTED", error = "! ATTENTION NEEDED"
       )
       current <- state()
       shiny::tags$div(
-        class = paste("collab-connection-badge", if (current %in% c("waiting", "computing", "uploading", "accepted")) "active" else ""),
+        class = paste("collab-connection-badge", if (current %in% c("waiting", "preparing", "computing", "uploading", "accepted")) "active" else ""),
         labels[[current]] %||% toupper(current)
       )
     })
@@ -170,6 +172,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
     shiny::observeEvent(input$toggle, {
       if (isTRUE(enabled())) {
         enabled(FALSE)
+        launch_pending(FALSE)
         worker <- process()
         if (!is.null(worker) && worker$is_alive()) try(worker$kill(), silent = TRUE)
         active_lease <- lease()
@@ -242,8 +245,20 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
           }
           heartbeat_at <- last_heartbeat_at()
           if (is.list(active_lease) && (is.na(heartbeat_at) || difftime(Sys.time(), heartbeat_at, units = "secs") >= 25)) {
+            progress_event <- latest_event("progress_updated") %||% latest_event("experiment_started")
+            metric_event <- latest_event("metric_updated")
+            telemetry_data <- progress_event$data %||% list()
+            metric_data <- metric_event$data %||% list()
             heartbeat <- tryCatch(
-              ugplot_remote_collaboration_heartbeat(server_url, active_lease$task_id, active_lease$lease_id, client_id),
+              ugplot_remote_collaboration_heartbeat(
+                server_url, active_lease$task_id, active_lease$lease_id, client_id,
+                telemetry = list(
+                  progress = telemetry_data$progress %||% 0,
+                  message = telemetry_data$message %||% "Experiment running",
+                  candidate = telemetry_data$candidate %||% metric_data$candidate %||% "",
+                  completed = metric_data$completed %||% 0L
+                )
+              ),
               error = function(e) NULL
             )
             if (is.list(heartbeat) && isTRUE(heartbeat$accepted)) last_heartbeat_at(Sys.time())
@@ -279,6 +294,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
         last_claim_at(Sys.time())
         return()
       }
+      if (isTRUE(launch_pending())) return()
 
       claimed_at <- last_claim_at()
       if (!is.na(claimed_at) && difftime(Sys.time(), claimed_at, units = "secs") < 6) return()
@@ -387,28 +403,59 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       event_path <- tempfile("ugplot-collab-events-", fileext = ".rds")
       result_path <- tempfile("ugplot-collab-result-", fileext = ".rds")
       cpu_limit <- as.integer(input$cpu_limit %||% 1L)
-      worker <- callr::r_bg(
-        func = function(payload, cpu_limit, event_path, result_path, lib_paths) {
-          .libPaths(lib_paths)
-          library(ugplot)
-          runner <- get("ugplot_collaboration_run_payload", envir = asNamespace("ugplot"))
-          saveRDS(runner(payload, cpu_limit = cpu_limit, event_path = event_path), result_path)
-        },
-        args = list(
-          payload = claimed$payload, cpu_limit = cpu_limit, event_path = event_path,
-          result_path = result_path, lib_paths = .libPaths()
-        ),
-        supervise = TRUE, cleanup = FALSE, poll_connection = FALSE
-      )
       mission(claimed$task$mission %||% list())
       events(list())
+      append_local_event("mission_received", list(message = "Mission secured; preparing the scientific workspace"))
       lease(claimed$task)
       lease_server_url(claimed_server_url)
-      process_files(list(events = event_path, result = result_path, started_at = Sys.time()))
-      process(worker)
       resource_history(data.frame())
       last_heartbeat_at(as.POSIXct(NA))
-      state("computing")
+      launch_pending(TRUE)
+      state("preparing")
+      scheduled_task_id <- as.character(claimed$task$task_id %||% "")
+      session$onFlushed(function() {
+        active <- shiny::isolate(enabled())
+        active_lease <- shiny::isolate(lease())
+        still_reserved <- isTRUE(active) && is.list(active_lease) &&
+          identical(as.character(active_lease$task_id %||% ""), scheduled_task_id)
+        if (!still_reserved) {
+          launch_pending(FALSE)
+          unlink(c(event_path, result_path), force = TRUE)
+          return()
+        }
+        worker <- tryCatch(
+          callr::r_bg(
+            func = function(payload, cpu_limit, event_path, result_path, lib_paths) {
+              .libPaths(lib_paths)
+              library(ugplot)
+              runner <- get("ugplot_collaboration_run_payload", envir = asNamespace("ugplot"))
+              saveRDS(runner(payload, cpu_limit = cpu_limit, event_path = event_path), result_path)
+            },
+            args = list(
+              payload = claimed$payload, cpu_limit = cpu_limit, event_path = event_path,
+              result_path = result_path, lib_paths = .libPaths()
+            ),
+            supervise = TRUE, cleanup = FALSE, poll_connection = FALSE
+          ),
+          error = function(e) e
+        )
+        if (inherits(worker, "error")) {
+          try(ugplot_remote_collaboration_release(
+            claimed_server_url, claimed$task$task_id, claimed$task$lease_id, client_id
+          ), silent = TRUE)
+          launch_pending(FALSE)
+          lease(NULL)
+          lease_server_url("")
+          network_note(paste("Could not start experiment:", conditionMessage(worker)))
+          state("error")
+          unlink(c(event_path, result_path), force = TRUE)
+          return()
+        }
+        process_files(list(events = event_path, result = result_path, started_at = Sys.time()))
+        process(worker)
+        launch_pending(FALSE)
+        state("computing")
+      }, once = TRUE)
     })
 
     event_types <- shiny::reactive(vapply(events(), function(event) as.character(event$type %||% ""), character(1)))
@@ -456,6 +503,13 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
     output$current_experiment <- shiny::renderUI({
       current <- latest_event("experiment_started")
       if (is.null(current) && is.null(latest_event("metric_updated"))) {
+        if (identical(state(), "preparing")) {
+          return(shiny::tags$div(
+            class = "collab-candidate",
+            shiny::icon("flask"),
+            "Preparing the scientific workspace and dataset"
+          ))
+        }
         return(shiny::tags$div(
           class = "collab-empty-visual",
           shiny::tags$div(shiny::tags$span(class = "collab-empty-icon", shiny::icon("atom")), "Candidates will appear here as the experiment begins.")

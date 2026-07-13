@@ -95,10 +95,11 @@ ugplot_remote_collaboration_compatibility <- function(server_url, capabilities, 
   )
 }
 
-ugplot_remote_collaboration_heartbeat <- function(server_url, task_id, lease_id, client_id) {
+ugplot_remote_collaboration_heartbeat <- function(server_url, task_id, lease_id, client_id,
+                                                  telemetry = list()) {
   ugplot_collaboration_post_json(
     server_url, paste0("collaboration/", task_id, "/heartbeat"),
-    list(lease_id = lease_id, client_id = client_id)
+    list(lease_id = lease_id, client_id = client_id, telemetry = telemetry)
   )
 }
 
@@ -177,6 +178,17 @@ ugplot_remote_job_resources <- function(server_url, job_id, token = "", max_line
     return(as.data.frame(resources, stringsAsFactors = FALSE))
   }
   data.frame()
+}
+
+ugplot_remote_job_groups <- function(server_url, job_id, token = "", timeout_seconds = 15) {
+  request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/groups"), token)
+  parsed <- ugplot_remote_parse(httr::GET(request$url, request$headers, httr::timeout(timeout_seconds)))
+  groups <- parsed$groups %||% data.frame()
+  if (is.list(groups) && !is.data.frame(groups) && length(groups) > 0L) {
+    groups <- as.data.frame(groups, stringsAsFactors = FALSE)
+  }
+  parsed$groups <- groups
+  parsed
 }
 
 ugplot_remote_geo_cpg_summary <- function(server_url, job_id, threshold,

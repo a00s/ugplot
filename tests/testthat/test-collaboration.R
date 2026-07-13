@@ -293,3 +293,61 @@ test_that("collaboration parent checks do not refresh the full job configuration
   expect_true(result$active)
   expect_equal(result$state, "running")
 })
+
+test_that("job group activity identifies collaborative and server executors", {
+  root <- tempfile("collaboration-")
+  cache_root <- tempfile("geo-cache-")
+  dir.create(root)
+  dir.create(cache_root)
+  job_id <- "parent-job"
+  ugplot_test_active_collaboration_parent(root, job_id)
+  saveRDS(
+    list(
+      type = "geo", runner = "ugplot_run_geo_pipeline_job", accession = "GSE1",
+      matrix_source = "processed", target_column = "age",
+      transcript_absrho_threshold = 0.7, transcript_min_samples = 80
+    ),
+    file.path(root, job_id, "config.rds")
+  )
+  ugplot_test_local_namespace_binding("ugplot_geo_cache_dir", function(accession) cache_root)
+  run_key <- ugplot_test_internal("ugplot_geo_transcript_ml_run_key")("age", 0.7, 80)
+  pipeline_dir <- ugplot_test_internal("ugplot_geo_transcript_ml_dir")(cache_root, "processed", run_key)
+  saveRDS(
+    data.frame(
+      GroupID = c("TG1", "TG2", "TG3"), Worker = c("Fy2", "", "Fy3"),
+      JobID = c("done", "", "worker-job"), State = c("completed", "pending", "running"),
+      Progress = c(1, 0, 0.35), Message = c("Completed", "Waiting", "Training model"),
+      stringsAsFactors = FALSE
+    ),
+    file.path(pipeline_dir, "distributed-screening.rds")
+  )
+  publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
+  claim <- ugplot_test_internal("ugplot_collaboration_claim_task")
+  heartbeat <- ugplot_test_internal("ugplot_collaboration_heartbeat")
+  activity <- ugplot_test_internal("ugplot_collaboration_job_group_activity")
+  publish(
+    paste(job_id, "screen", "TG2", sep = ":"), job_id, list(value = 1),
+    requirements = list(models = "lm"), jobs_dir = root
+  )
+  leased <- claim(
+    "scientist-client", list(models = "lm", scientist_name = "Alice"), jobs_dir = root
+  )$task
+  expect_true(heartbeat(
+    leased$task_id, leased$lease_id, "scientist-client",
+    telemetry = list(progress = 0.42, message = "Comparing models", candidate = "ranger"),
+    jobs_dir = root
+  )$accepted)
+
+  result <- activity(job_id, root)
+  collaborative <- result$groups[result$groups$group_id == "TG2", , drop = FALSE]
+  fixed <- result$groups[result$groups$group_id == "TG3", , drop = FALSE]
+
+  expect_equal(result$completed, 1L)
+  expect_equal(result$processing, 2L)
+  expect_equal(collaborative$executor, "Alice")
+  expect_equal(collaborative$executor_type, "collaboration")
+  expect_equal(collaborative$progress, 0.42)
+  expect_match(collaborative$message, "ranger")
+  expect_equal(fixed$executor, "Fy3")
+  expect_equal(fixed$progress, 0.35)
+})

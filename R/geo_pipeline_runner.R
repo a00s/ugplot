@@ -1397,13 +1397,17 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
   } else {
     data.frame()
   }
-  required <- c("GroupID", "Worker", "JobID", "State", "Attempts", "PollFailures", "Error")
+  required <- c(
+    "GroupID", "Worker", "JobID", "State", "Progress", "Message", "UpdatedAt",
+    "Attempts", "PollFailures", "Error"
+  )
   if (!is.data.frame(manifest)) {
     manifest <- data.frame()
   }
   for (column_name in setdiff(required, names(manifest))) {
     manifest[[column_name]] <- switch(
       column_name,
+      Progress = numeric(nrow(manifest)),
       Attempts = integer(nrow(manifest)),
       PollFailures = integer(nrow(manifest)),
       rep("", nrow(manifest))
@@ -1422,6 +1426,9 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         Worker = "",
         JobID = "",
         State = "pending",
+        Progress = 0,
+        Message = "Waiting for worker",
+        UpdatedAt = "",
         Attempts = 0L,
         PollFailures = 0L,
         Error = "",
@@ -1478,6 +1485,9 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
     summaries <<- ugplot_geo_ml_rank_summary(summaries)
     utils::write.csv(summaries, summary_path, row.names = FALSE)
     manifest$State[[row_index]] <<- "completed"
+    manifest$Progress[[row_index]] <<- 1
+    manifest$Message[[row_index]] <<- "Completed"
+    manifest$UpdatedAt[[row_index]] <<- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
     manifest$PollFailures[[row_index]] <<- 0L
     manifest$Error[[row_index]] <<- ""
     collaboration_task_id <- paste(parent_job_id, "screen", group_id, sep = ":")
@@ -1623,6 +1633,11 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
       }
       manifest$PollFailures[[row_index]] <- 0L
       remote_state <- as.character(status$state %||% "")
+      remote_progress <- suppressWarnings(as.numeric(status$progress %||% 0))
+      if (length(remote_progress) != 1L || !is.finite(remote_progress)) remote_progress <- 0
+      manifest$Progress[[row_index]] <- max(0, min(1, remote_progress))
+      manifest$Message[[row_index]] <- as.character(status$message %||% remote_state)
+      manifest$UpdatedAt[[row_index]] <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
       if (identical(remote_state, "finished")) {
         remote_result <- ugplot_remote_get_result(
           worker$url,
@@ -1745,6 +1760,9 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         task_config$request_id <- paste(parent_job_id, "screen", manifest$GroupID[[row_index]], sep = ":")
         manifest$Worker[[row_index]] <- as.character(worker$name)
         manifest$State[[row_index]] <- "dispatching"
+        manifest$Progress[[row_index]] <- 0
+        manifest$Message[[row_index]] <- paste("Assigning to", as.character(worker$name))
+        manifest$UpdatedAt[[row_index]] <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
         manifest$Attempts[[row_index]] <- manifest$Attempts[[row_index]] + 1L
         manifest$Error[[row_index]] <- ""
         ugplot_geo_write_distributed_manifest(manifest, manifest_path)

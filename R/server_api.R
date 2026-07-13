@@ -251,7 +251,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
       body <- ugplot_request_json_body(req)
       ugplot_collaboration_heartbeat(
         task_id, body$lease_id %||% "", body$client_id %||% "",
-        lease_seconds = 120, jobs_dir = jobs_dir
+        lease_seconds = 120, telemetry = body$telemetry %||% list(), jobs_dir = jobs_dir
       )
     }, error = function(e) {
       res$status <- 400
@@ -306,6 +306,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         job_preview = TRUE,
         job_config_summary = TRUE,
         job_resource_monitor = !is.null(auto_resume_process),
+        job_group_activity = TRUE,
         server_resources = TRUE,
         geo_pipeline = TRUE,
         geo_cpg_summary = TRUE,
@@ -364,6 +365,16 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
       res$status <- 404
       list(error = conditionMessage(e))
     })
+  })
+
+  pr$handle("GET", "/jobs/<job_id>/groups", function(job_id, res) {
+    tryCatch(
+      ugplot_collaboration_job_group_activity(job_id, jobs_dir),
+      error = function(e) {
+        res$status <- 404
+        list(error = conditionMessage(e))
+      }
+    )
   })
 
   pr$handle("GET", "/jobs/<job_id>/geo-cpg-summary", function(job_id, req, res) {
