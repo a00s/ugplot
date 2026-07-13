@@ -157,7 +157,7 @@ Treat ugPlot as a guided workbench: each tab helps answer a specific question be
 
 ## 0) Interface overview
 
-![doc1 - initial screen](man/img/doc1.png)
+![ugPlot LOAD DATA opening screen](man/img/doc1.png)
 
 The workflow is linear:
 
