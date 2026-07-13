@@ -207,7 +207,7 @@ If any answer looks wrong, fix it here. Later tabs assume the imported table sha
 
 ### 1.2 Confirm detected columns and rows
 
-![doc3 - load tab after upload](man/img/doc3.png)
+![ugPlot detected columns and rows after upload](man/img/doc3.png)
 
 After upload, ugPlot shows:
 
@@ -220,9 +220,9 @@ Buttons below each box:
 - **Remove all**: clear all selections.
 - **Join columns**: normalize text list into a merged selection.
 
-Then click **GO TO STEP 2 (TABLE)**.
+Then click **Continue to table**.
 
-If you just want to test the app first, click **Click here to load an example**.
+If you just want to test the app first, click **Explore example dataset**.
 
 For most biomedical tables, include all columns/samples at first, then remove or mark items in **TABLE**. Starting broad keeps the original context visible while you decide what belongs in the final analysis.
 
@@ -230,7 +230,7 @@ For most biomedical tables, include all columns/samples at first, then remove or
 
 ## 2) TABLE — the most important preprocessing page
 
-![doc4 - table tab controls](man/img/doc4.png)
+![ugPlot TABLE workspace](man/img/doc4.png)
 
 Think of this tab as your "quality gate" before plotting/training.
 
@@ -282,7 +282,7 @@ This is the best place to catch practical problems: hidden missing values, unexp
 
 ## 3) HEATMAP PLOT — fast visual diagnostics + editable code
 
-![doc5 - heatmap plot tab](man/img/doc5.png)
+![ugPlot HEATMAP PLOT workspace](man/img/doc5.png)
 
 Use heatmaps early, before ML, to see whether the dataset has broad structure. A useful heatmap can reveal sample clusters, batch effects, outliers, and groups of correlated variables. A confusing heatmap is also informative: it may mean the selected features are too noisy, too many, or not scaled/filtered appropriately.
 
