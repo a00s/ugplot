@@ -523,10 +523,25 @@ ui <- fluidPage(
   includeCSS(path_to_css()),
   add_busy_spinner(spin = "fading-circle"),
   useShinyjs(),
-  titlePanel(tags$img(
-    src = getImage("ugplot.png"), height = "50px",
-    tags$span(paste("version", ugplot_build_version()), style = "color: gray; font-size: 11px;")
-  )),
+  titlePanel(
+    tags$div(
+      class = "ugplot-app-titlebar",
+      tags$div(
+        class = "ugplot-app-brand",
+        tags$img(src = getImage("ugplot.png"), height = "50px", alt = "ugPlot"),
+        tags$span(paste("version", ugplot_build_version()), class = "ugplot-app-version")
+      ),
+      tags$a(
+        class = "ugplot-doi-link",
+        href = "https://doi.org/10.64898/2026.02.09.704870",
+        target = "_blank",
+        rel = "noopener noreferrer",
+        title = "Open the ugPlot preprint",
+        tags$span(class = "ugplot-doi-label", "CITE UGPLOT"),
+        tags$span("doi.org/10.64898/2026.02.09.704870")
+      )
+    )
+  ),
   tabsetPanel(
     id = "tabs",
     tabPanel("LOAD DATA",
