@@ -16,6 +16,15 @@ test_that("job store creates and lists jobs", {
   expect_equal(listed$id, status$id)
 })
 
+test_that("Windows tasklist receives its PID filter as one quoted argument", {
+  tasklist_args <- ugplot_test_internal("ugplot_windows_tasklist_args")(12345)
+
+  expect_length(tasklist_args, 3L)
+  expect_equal(tasklist_args[c(1, 3)], c("/FI", "/NH"))
+  expect_match(tasklist_args[[2]], "PID eq 12345", fixed = TRUE)
+  expect_true(grepl("^['\"].*['\"]$", tasklist_args[[2]]))
+})
+
 test_that("internal worker jobs are hidden and request ids are idempotent", {
   jobs_dir <- tempfile("ugplot-worker-jobs-")
   dir.create(jobs_dir)

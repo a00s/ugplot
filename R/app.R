@@ -583,34 +583,63 @@ ui <- fluidPage(
     id = "tabs",
     tabPanel("LOAD DATA",
       tags$div(
-        style = "display: inline-block; vertical-align: top;",
-        class = "small-input",
-        numericInput("startfromline", "Start at line", value = 1, min = 1, step = 1)
-      ),
-      tags$div(
-        style = "display: inline-block; vertical-align: top;",
-        class = "small-input",
-        selectInput(inputId = "separator",
-          label = "Separator",
-          choices = c("space" = " ", "tab" = "\t", ";", ",", "|"),
-          selected = ",")
-      ),
-      tags$div(
-        style = "display: inline-block; vertical-align: top;",
-        fileInput("file1", "Choose a CSV file", multiple = FALSE,
-          accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
-      ),
-      tags$div(
-        style = "display: inline-block; vertical-align: top;",
+        class = "load-data-page",
         tags$div(
-          tags$span(style = "font-size: 17px; color: white;", ".")
+          class = "load-data-intro",
+          tags$span(class = "load-data-kicker", "START A NEW ANALYSIS"),
+          tags$h3("Bring your dataset into ugPlot"),
+          tags$p("Upload a CSV file or explore the workflow first with the included example dataset.")
         ),
         tags$div(
-          actionButton("process_table_content", "Load data")
+          class = "load-data-upload-card",
+          tags$div(
+            class = "load-data-field load-data-line",
+            numericInput("startfromline", "Start at line", value = 1, min = 1, step = 1)
+          ),
+          tags$div(
+            class = "load-data-field load-data-separator",
+            selectInput(inputId = "separator",
+              label = "Separator",
+              choices = c("space" = " ", "tab" = "\t", ";", ",", "|"),
+              selected = ",")
+          ),
+          tags$div(
+            class = "load-data-field load-data-file",
+            fileInput("file1", "Choose a CSV file", multiple = FALSE,
+              accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
+          ),
+          tags$div(
+            class = "load-data-action",
+            actionButton(
+              "process_table_content",
+              "Continue to table",
+              icon = icon("arrow-right"),
+              class = "btn-primary"
+            )
+          )
+        ),
+        tags$div(
+          class = "load-data-example-card",
+          tags$div(
+            class = "load-data-example-icon",
+            icon("flask")
+          ),
+          tags$div(
+            class = "load-data-example-copy",
+            tags$strong("New to ugPlot?"),
+            tags$span("Load a ready-to-use example and explore tables, plots, and machine learning without preparing a file.")
+          ),
+          actionButton(
+            "load_sample",
+            "Explore example dataset",
+            icon = icon("play"),
+            class = "load-data-example-button"
+          )
         )
       ),
       conditionalPanel(
         condition = "input.textarea_columns != '' || input.textarea_rows != ''",
+        class = "load-data-selection-panel",
         tags$div(
           style = "display: inline-block; text-align: center; vertical-align: top;",
           textAreaInput("textarea_columns", label = "", rows = 20, cols = 50),
@@ -625,10 +654,6 @@ ui <- fluidPage(
           actionButton("remove_all_rows", "Remove all"),
           actionButton("merge_all_rows", "Join columns")
         )
-      ),
-      tags$div(
-        br(),
-        actionButton("load_sample", "Click here to load an example")
       )
     ),
     tabPanel("GEO IMPORT",

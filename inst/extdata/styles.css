@@ -1641,6 +1641,29 @@ table.dataTable tbody td:last-child { border-right: 1px solid #edf0f7; border-ra
 .progress { height: 13px; border-radius: 999px; background: #e8edf7; box-shadow: none; }
 .progress-bar { border-radius: 999px; background: linear-gradient(90deg, var(--ug-violet), var(--ug-blue), var(--ug-cyan)); }
 
+/* Load data landing page */
+.load-data-page { max-width: 1080px; margin: 18px auto 0; }
+.load-data-intro { margin-bottom: 20px; }
+.load-data-kicker { display: block; margin-bottom: 7px; color: var(--ug-violet); font-size: 10px; font-weight: 900; letter-spacing: .14em; }
+.load-data-intro h3 { margin: 0 0 7px; font-size: 28px; }
+.load-data-intro p { max-width: 650px; margin: 0; color: var(--ug-muted); font-size: 14px; line-height: 1.55; }
+.load-data-upload-card { display: grid; grid-template-columns: 120px 150px minmax(300px, 1fr) auto; align-items: end; gap: 18px; padding: 24px; border: 1px solid var(--ug-border); border-radius: 20px; background: rgba(255,255,255,.92); box-shadow: var(--ug-shadow); }
+.load-data-field, .load-data-field .form-group { min-width: 0; margin-bottom: 0; }
+.load-data-file .form-group { width: 100%; }
+.load-data-file .input-group { width: 100%; }
+.load-data-action { padding-bottom: 1px; }
+.load-data-action .btn { min-height: 40px; padding-right: 18px; padding-left: 18px; white-space: nowrap; }
+.load-data-example-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 16px; margin-top: 18px; padding: 18px 20px; border: 1px solid rgba(117,87,255,.16); border-radius: 18px; background: linear-gradient(115deg, rgba(255,255,255,.90), rgba(241,238,255,.88), rgba(231,250,255,.82)); box-shadow: 0 12px 28px rgba(54,68,115,.08); }
+.load-data-example-icon { display: grid; width: 46px; height: 46px; place-items: center; border-radius: 14px; color: #fff; background: linear-gradient(135deg, var(--ug-violet), var(--ug-blue), var(--ug-cyan)); box-shadow: 0 8px 18px rgba(83,87,218,.22); font-size: 18px; }
+.load-data-example-copy { display: grid; gap: 3px; }
+.load-data-example-copy strong { color: var(--ug-ink); font-size: 14px; }
+.load-data-example-copy span { color: var(--ug-muted); font-size: 12px; line-height: 1.45; }
+.load-data-example-button { min-height: 42px; padding: 9px 17px !important; border-color: rgba(117,87,255,.20) !important; color: #5143bd !important; background: #fff !important; box-shadow: 0 7px 16px rgba(68,76,130,.09); white-space: nowrap; }
+.load-data-example-button:hover, .load-data-example-button:focus { border-color: rgba(117,87,255,.42) !important; color: #4035a3 !important; }
+.load-data-selection-panel { max-width: 1080px; margin: 22px auto 0; padding: 20px; border: 1px solid var(--ug-border); border-radius: 20px; background: rgba(255,255,255,.90); box-shadow: var(--ug-shadow); }
+@media (max-width: 900px) { .load-data-upload-card { grid-template-columns: 1fr 1fr; } .load-data-file { grid-column: 1 / -1; } .load-data-action { grid-column: 1 / -1; } .load-data-action .btn { width: 100%; } }
+@media (max-width: 620px) { .load-data-page { margin-top: 4px; } .load-data-upload-card { grid-template-columns: 1fr; padding: 18px; } .load-data-file, .load-data-action { grid-column: auto; } .load-data-example-card { grid-template-columns: auto 1fr; } .load-data-example-button { grid-column: 1 / -1; width: 100%; } }
+
 /* Visual workspaces: keep data readable while carrying the Science Collab identity. */
 .heatmap-workspace {
   display: flex;

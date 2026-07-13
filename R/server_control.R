@@ -26,7 +26,7 @@ ugplot_process_alive <- function(pid) {
   }
   if (.Platform$OS.type == "windows") {
     output <- tryCatch(
-      suppressWarnings(system2("tasklist", c("/FI", paste0("PID eq ", pid), "/NH"), stdout = TRUE, stderr = FALSE)),
+      suppressWarnings(system2("tasklist", ugplot_windows_tasklist_args(pid), stdout = TRUE, stderr = FALSE)),
       error = function(e) character()
     )
     return(any(grepl(paste0("\\b", pid, "\\b"), output)))

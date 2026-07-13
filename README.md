@@ -953,185 +953,65 @@ Use this plot after selecting a transcript group to decide whether the model is 
 
 ![SCIENCE COLLAB mission and dataset view](man/img/science-collab-overview.png)
 
-Use **SCIENCE COLLAB** when a remote ugPlot server is already processing a long GEO transcript-model screening job and you want another computer to help with one of its pending transcript groups. The contributor does not start a separate GEO job and does not search arbitrary historical jobs. It joins the active job selected by the coordinator, receives one compatible group, runs that group's machine-learning experiments locally, and returns the result.
-
-The page is intentionally public and does not ask the contributor for the remote server's administrative token. Only the assigned mission payload is downloaded. Administrative job creation, deletion, stopping, and server configuration remain separate from the public collaboration endpoints.
+Use **SCIENCE COLLAB** to lend part of your computer's processing power to an experiment already running on an ugPlot server. While your computer helps, the page turns the work into a visual scientific journey: it shows the dataset, the current experiment, live results, and the contribution you made.
 
 ### 10.1 When to use Science Collab
 
-Science Collab is useful when:
+Science Collab is most useful when a long analysis is in progress and additional computers can help finish it sooner. It is not necessary for a small local analysis or for viewing a job that has already finished.
 
-- GEO Step 9 is screening many transcript groups and one server would take too long;
-- several workstations can temporarily contribute spare CPU;
-- participants should see the scientific context and live results rather than a technical log;
-- a contributor may disconnect without forcing the parent job to restart from zero.
+### 10.2 Before you start
 
-It is not needed for a small local model run, for merely viewing a completed job, or when no compatible GEO transcript-screening job is active. A contributor accelerates existing pending work; it does not create the biological question, target, dataset, or transcript groups.
+- Add the server in **CONFIGURATIONS**.
+- Make sure that server has an active collaborative job.
+- Choose a number of CPU cores that still leaves your computer comfortable to use.
+- Keep the ugPlot window open while contributing.
 
-### 10.2 How collaborative execution works
-
-The unit of collaboration is a **task**, normally one transcript group such as `TG12`, taken from an active parent GEO job.
-
-1. The active server job prepares a limited queue of pending groups.
-2. Each task declares the caret models and protocol version it requires.
-3. The workstation reports its installed compatible models and requested CPU limit.
-4. The coordinator leases one matching task to that workstation and sends only its payload.
-5. The workstation runs the same ugPlot screening runner in a separate R process and sends periodic heartbeats and progress telemetry.
-6. When the task finishes, the client returns the result. The server accepts it only if the lease is still valid and the group is still needed.
-7. The parent job consumes the accepted result and marks that group complete.
-
-The lease makes collaboration fault tolerant. If the workstation closes, loses its network connection, or never returns a result, the lease expires and the task becomes available again. The parent job can then execute it locally or offer it to another contributor. Completed groups already stored by the parent job are preserved.
-
-### 10.3 Before connecting
-
-Confirm the following:
-
-1. At least one coordinator is configured in **CONFIGURATIONS** and is reachable from the workstation.
-2. The coordinator runs the same compatible ugPlot collaboration protocol.
-3. A GEO job is actively screening transcript groups; completed or inactive parent jobs are not offered.
-4. The workstation has the caret model packages required by at least one pending group.
-5. The selected CPU count leaves enough capacity for the operating system and other work.
-
-The compatibility box explains why no mission can be claimed. Typical messages include no queued mission, an inactive parent job, missing model packages, a changing queue, a coordinator connection error, or a legacy coordinator that cannot report detailed incompatibilities.
-
-### 10.4 Start contributing
+### 10.3 Start contributing
 
 1. Open **SCIENCE COLLAB**.
-2. Choose the **Preferred coordinator**. ugPlot can inspect the other configured coordinators too, but the selected server is tried first when priorities are otherwise equal.
-3. Enter a **Scientist name**. This name identifies the contributor in server-side group activity and telemetry; it does not create an authenticated account.
-4. Choose **CPU cores to contribute**. This limits the local parallel worker count for the mission.
-5. Wait for **Workstation ready**. The panel shows how many locally installed caret candidates are available and any queue or compatibility explanation.
+2. Choose the **Preferred coordinator**.
+3. Enter the name you want to display as the contributing scientist.
+4. Choose how many **CPU cores to contribute**.
+5. Check the readiness message. If no mission is available, ugPlot explains what is missing or why the workstation cannot join yet.
 6. Click **Start contributing**.
 
-The page first connects, checks compatibility, and waits if no task is immediately available. Leave the tab open while contributing. When a compatible group is leased, the status changes from **WAITING FOR MISSION** to **PREPARING EXPERIMENT** and then **EXPERIMENT RUNNING**.
+ugPlot may wait briefly for a suitable mission. Once one is received, the scientific panels begin to fill automatically.
 
-### 10.5 Top status and scientific journey
+### 10.4 What you will see
 
-The status badge at the top summarizes the workstation state:
+The page updates automatically as the mission advances:
 
-- **READY TO CONNECT**: contribution has not started.
-- **CONNECTING**: coordinators and local model capabilities are being checked.
-- **WAITING FOR MISSION**: connected, but no compatible task is currently available.
-- **PREPARING EXPERIMENT**: a task was accepted and its isolated R worker is starting.
-- **EXPERIMENT RUNNING**: model candidates are being evaluated.
-- **RETURNING DISCOVERY**: the result is being uploaded to the coordinator.
-- **CONTRIBUTION ACCEPTED**: the server accepted the completed task.
-- **ATTENTION NEEDED**: the coordinator, payload, dependency, or worker launch requires attention.
+- **Scientific journey** shows the current stage, from receiving the mission to delivering the contribution.
+- **Current mission** identifies the group being studied and summarizes its samples, variables, values, missing data, and CPU allocation.
+- **Workstation pulse** shows live CPU and memory use. High CPU during an experiment is normal.
+- **Dataset** presents the target, variables, gene or transcript information when available, and the target distribution.
+- **Experiment arena** compares the models already tested and follows the model currently running.
+- **Discovery emerging** highlights the strongest result found so far.
+- **Your scientific impact** counts completed experiments, accepted contributions, and donated computing time during the session.
 
-The six-step journey directly below the hero panel is a scientific view of the same lifecycle:
-
-- **Mission**: a transcript-group task was received.
-- **Explore**: the task dataset was profiled.
-- **Experiment**: candidate model training started.
-- **Compare**: real evaluation metrics are arriving.
-- **Validate**: the local result passed the runner's final validation stage.
-- **Contribute**: the coordinator accepted the returned result.
-
-Green steps are complete. The violet ring marks the next active stage.
-
-### 10.6 Your workstation controls
-
-The left card controls only the contributor:
-
-- **Preferred coordinator** selects which configured remote server should coordinate the mission.
-- **Scientist name** is the public display identity associated with the lease.
-- **CPU cores to contribute** controls local parallelism; increasing it can make compatible models faster but also increases CPU and memory pressure.
-- **Workstation ready** reports installed model capacity and queue compatibility.
-- **Start contributing** enables automatic claiming.
-- **Stop after current mission** stops local contribution and releases unfinished work back to the coordinator. If retaining the current group's result matters, wait until the page reaches **CONTRIBUTION ACCEPTED** before closing the app.
-
-Stopping or closing the contributor does not delete the parent job. An incomplete leased group can be reassigned, while parent-job checkpoints and already completed groups remain on the server.
-
-### 10.7 Current mission
-
-The blue **CURRENT MISSION** card identifies the active scientific unit, for example **Analyze TG12**. It reports:
-
-- number of observations/samples;
-- number of variables;
-- total measured values;
-- percentage of missing values;
-- CPU cores assigned locally.
-
-These values describe the task payload received by the workstation, not necessarily the full GEO accession. A transcript task normally contains the target plus the CpGs retained for that transcript group.
-
-### 10.8 Workstation pulse
-
-**WORKSTATION PULSE** displays live resource use by the isolated collaboration worker:
-
-- the violet series is the worker's CPU share;
-- the cyan series is resident memory in GB.
-
-Use this panel to decide whether the selected CPU limit is appropriate. High CPU is expected during model training. Continually rising memory, system swapping, or an unresponsive desktop suggests lowering the CPU allocation for the next mission. The chart measures the collaboration process, not total machine utilization.
-
-### 10.9 Dataset
-
-The **DATASET** panel explains what the workstation is calculating rather than exposing a raw technical log.
-
-The left side shows:
-
-- **Target**: the outcome being predicted, such as age;
-- **Group ID**: the transcript task identifier;
-- **Principal transcript** and **Gene**, when supplied by the parent job;
-- sample, column, transcript, trigger CpG, and trigger `rho` metadata;
-- target minimum, median, maximum, and distinct-value count;
-- variable chips listing the target and predictor CpGs with their detected types.
-
-Metadata is generic: the panel displays useful fields supplied by the mission rather than applying dataset-specific biological rules. If the server provides a gene, transcript, phenotype label, or other safe scientific context, the contributor can see it here.
-
-The right side shows the target distribution. For a numeric target it is a histogram; hover a bar to see its interval and observation count. Use this chart to notice narrow ranges, skew, sparse extremes, or target imbalance before interpreting model quality.
-
-### 10.10 Experiment arena
+### 10.5 Understanding the results
 
 ![SCIENCE COLLAB live experiment metrics](man/img/science-collab-results.png)
 
-**EXPERIMENT ARENA** shows the candidate currently running, its progress, and the accumulated result history for the mission.
+In **EXPERIMENT ARENA**, each point represents a completed model experiment:
 
-The candidate badge names the caret model and reports progress. The message below it provides the current dataset/training seed and isolated worker status. This is live telemetry; it is not a separate second job.
+- **R²** is the main quality measure: higher values indicate better predictive performance.
+- **MAE** and **RMSE** measure prediction error: lower values are better.
+- Hover over a point to see the model and its exact result.
 
-The chart keeps all completed experiments from the current mission in one view:
+The highlighted result is the best result found so far, not a final biological conclusion. Interpret it together with the sample size, target distribution, consistency across experiments, and the final reports produced by the main job.
 
-- **R²** is the primary metric on the left axis, fixed from `0` to `1` in steps of `0.1`.
-- **MAE** and **RMSE** are secondary error metrics on the right axis and retain their own numeric scale.
-- Hover a point to see the candidate, metric, experiment number, and exact value.
+### 10.6 Stop contributing
 
-For regression, higher R² is generally better, while lower MAE and RMSE are better. Do not compare the vertical height of R² directly with MAE/RMSE because they use different axes and meanings. Also do not treat a strong exploratory R² as biological proof: validate the result, inspect sample size and target distribution, check leakage, and compare stability across seeds and relevant groups.
+Click **Stop after current mission** when you no longer want to receive new work. ugPlot finishes the current mission when possible and then stops. Closing the contributor does not erase the main job or make its completed groups start over.
 
-### 10.11 Discovery emerging
+### 10.7 If no mission starts
 
-**DISCOVERY EMERGING** highlights the best finite R² observed so far and names the candidate that produced it. It updates while experiments arrive, so it is a live leader rather than the final stabilized result.
+Read the message below **Workstation ready**. It normally tells you whether there is no active work, the server is unreachable, ugPlot needs an update, or a required model is unavailable. Correct the indicated item and click **Start contributing** again.
 
-Use it as a quick answer to “what is currently strongest?”, then use the full experiment chart and the parent job's final reports for interpretation. The validation badge appears when the mission completes its local validation stage.
+### 10.8 Data privacy
 
-### 10.12 Your scientific impact
-
-The bottom panel summarizes the current app session:
-
-- **Accepted contributions**: missions whose returned results were accepted by a coordinator;
-- **Experiments conducted**: completed candidate evaluations in the current and accepted missions;
-- **Compute donated**: elapsed contribution time;
-- **Laboratory status**: whether collaboration is online or ready.
-
-These are session-level contribution indicators, not a permanent user account or publication-impact score.
-
-### 10.13 What the server operator sees
-
-In **JOBS**, the parent job remains the authoritative record. Its group activity strip shows completed, processing, and pending transcript groups. A leased group can identify the collaboration client/scientist and report current progress on hover. The server uses the first valid completed result; a late duplicate or a result for a group completed elsewhere is not accepted twice.
-
-### 10.14 Troubleshooting
-
-- **Waiting for mission**: read the compatibility explanation. There may be no active parent job, no pending group, missing caret models, or a coordinator/version problem.
-- **Preparing experiment for a long time**: inspect whether the local R worker exists and whether CPU activity begins. Package loading and payload preparation can take time, but the UI should move once events arrive.
-- **CPU active but the page does not update**: update the client to the current ugPlot version; older builds could block Shiny's reactive session while monitoring the worker.
-- **Missing model packages**: install the required caret dependencies locally, restart the client, and reconnect.
-- **Coordinator unreachable**: verify the configured URL, port, firewall, reverse proxy, and the server `/collaboration` endpoint.
-- **Mission result not accepted**: the lease may have expired or another worker/server may already have completed that group. The local run is then safely discarded rather than duplicated in the parent result.
-- **Contributor closes unexpectedly**: restart Science Collab when convenient. The expired lease will be reclaimed automatically; the parent job does not restart from zero.
-
-### 10.15 Privacy and trust boundary
-
-Science Collab is public by design in the current implementation. A contributor does not receive the coordinator's administrative token, full job directory, or unrelated datasets. It receives the assigned task payload, which necessarily contains the samples, target, predictors, configuration, and selected scientific metadata required to calculate that group.
-
-Only enable public collaboration for data that may legally and ethically be sent to an untrusted contributor. Do not publish missions containing confidential, identifiable, embargoed, or access-controlled data. Use a private network or disable collaboration for sensitive work.
+Use public collaboration only with data that may be shared with contributing computers. For confidential, identifiable, embargoed, or access-controlled data, keep collaboration inside a trusted private network or leave it disabled.
 
 ---
 
