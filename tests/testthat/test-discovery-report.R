@@ -84,6 +84,9 @@ test_that("discovery report HTML accepts a direct job link", {
   expect_false(grepl("Open report", report_html, fixed = TRUE))
   expect_match(report_html, "/reports/assets/ugplot.png", fixed = TRUE)
   expect_match(report_html, "Best CpG correlation", fixed = TRUE)
+  expect_match(report_html, "Best overall performance", fixed = TRUE)
+  expect_match(report_html, "(ml+cpg)/2", fixed = TRUE)
+  expect_match(report_html, 'class="controls"', fixed = TRUE)
 })
 
 test_that("discovery report snapshot is a reusable static JSON artifact", {
