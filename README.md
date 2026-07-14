@@ -438,6 +438,18 @@ If a server card shows **VERSION MISMATCH**, update the remote server package so
 
 After loading a job result, ugPlot displays the best-result summary, metric distribution, stability information, and job logs. For multi-seed jobs, prefer the median and interquartile range over the best single seed when reporting model performance.
 
+#### Live discovery report
+
+While a GEO job is running, click **Live report** in its **JOBS** row. You can also open the report directly:
+
+```text
+http://YOUR-SERVER:8080/reports/JOB-ID
+```
+
+The page is public and refreshes automatically. It shows each gene/transcript as soon as its screening finishes, without waiting for every group in the job. Orange **preliminary** rows are early screening evidence; green **stabilized** rows have completed the configured seed stability analysis. Use the search field to find a gene, transcript, CpG, model, or transcript group.
+
+Opening `http://YOUR-SERVER:8080/reports` displays a connection form where a user can paste the server address and job ID. The report transfers only a small summary table, not the full dataset or model files.
+
 ### 5.5 Interpreting output
 
 ![doc11 - machine learning results](man/img/doc11.png)

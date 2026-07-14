@@ -1,0 +1,65 @@
+test_that("incremental discovery report upgrades screened groups with stability", {
+  jobs_dir <- tempfile("ugplot-report-jobs-")
+  cache_dir <- tempfile("ugplot-report-cache-")
+  dir.create(jobs_dir, recursive = TRUE)
+  dir.create(cache_dir, recursive = TRUE)
+
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  report_paths <- ugplot_test_internal("ugplot_job_discovery_report_paths")
+  report_job <- ugplot_test_internal("ugplot_job_discovery_report")
+  write_atomic <- ugplot_test_internal("ugplot_write_rds_atomic")
+
+  ugplot_test_local_namespace_binding("ugplot_geo_cache_dir", function(accession) cache_dir)
+  status <- create_job(
+    data.frame(x = 1),
+    config = list(
+      runner = "ugplot_run_geo_pipeline_job",
+      accession = "GSE87571",
+      matrix_source = "processed",
+      target_column = "age",
+      transcript_absrho_threshold = 0.8,
+      transcript_min_samples = 80
+    ),
+    jobs_dir = jobs_dir,
+    type = "geo"
+  )
+  paths <- report_paths(status$id, jobs_dir)
+  dir.create(paths$pipeline_dir, recursive = TRUE, showWarnings = FALSE)
+
+  screening <- data.frame(
+    Source = "processed", Phase = "screening", GroupID = c("TG1", "TG2"),
+    PrincipalTranscript = c("ENST1", "ENST2"), Gene = c("GENE1", "GENE2"),
+    Columns = c(12, 9), Samples = c(714, 700), TriggerBestCpG = c("cg1", "cg2"),
+    TriggerBestRho = c(0.71, 0.82), BestModel = c("glmnet", "ranger"),
+    MedianMetric = c(0.84, 0.77), BestMetric = c(0.86, 0.79), SeedsRun = c(3, 3),
+    stringsAsFactors = FALSE
+  )
+  stability <- screening[1, , drop = FALSE]
+  stability$Phase <- "stability"
+  stability$MedianMetric <- 0.82
+  stability$MetricSE <- 0.004
+  stability$SeedsRun <- 90
+  stability$Stable <- TRUE
+  utils::write.csv(screening, paths$screening, row.names = FALSE)
+  utils::write.csv(stability, paths$stability, row.names = FALSE)
+  write_atomic(data.frame(GroupID = c("TG1", "TG2", "TG3")), paths$manifest)
+
+  report <- report_job(status$id, jobs_dir)
+  expect_equal(report$progress$total, 3L)
+  expect_equal(report$progress$screened, 2L)
+  expect_equal(report$progress$stabilized, 1L)
+  expect_length(report$discoveries, 2L)
+  expect_equal(report$discoveries[[1]]$status, "stabilized")
+  expect_equal(report$discoveries[[1]]$gene, "GENE1")
+  expect_equal(report$discoveries[[1]]$median_r2, 0.82)
+  expect_equal(report$discoveries[[2]]$status, "preliminary")
+  expect_false(any(grepl("Path$", names(report$discoveries[[1]]))))
+})
+
+test_that("discovery report HTML accepts a direct job link", {
+  report_html <- ugplot_test_internal("ugplot_discovery_report_html")("job-123")
+  expect_match(report_html, "UGPLOT LIVE DISCOVERY REPORT", fixed = TRUE)
+  expect_match(report_html, "job-123", fixed = TRUE)
+  expect_match(report_html, "Preliminary evidence", fixed = TRUE)
+  expect_match(report_html, "raw.map(normalize)", fixed = TRUE)
+})

@@ -201,6 +201,11 @@ ugplot_remote_job_groups <- function(server_url, job_id, token = "", timeout_sec
   parsed
 }
 
+ugplot_remote_job_discoveries <- function(server_url, job_id, timeout_seconds = 15) {
+  request <- ugplot_remote_request(server_url, paste0("reports/", job_id, "/data"), token = "")
+  ugplot_remote_parse(httr::GET(request$url, httr::timeout(timeout_seconds)))
+}
+
 ugplot_remote_geo_cpg_summary <- function(server_url, job_id, threshold,
                                           spearman_min_samples_pct = 80,
                                           bin_width = 0.05,

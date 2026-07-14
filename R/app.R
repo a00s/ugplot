@@ -293,6 +293,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_job_status",
     "ugplot_remote_job_log",
     "ugplot_remote_job_resources",
+    "ugplot_remote_job_discoveries",
     "ugplot_remote_geo_cpg_summary",
     "ugplot_remote_geo_cpg_lookup",
     "ugplot_remote_stop_job",
@@ -13266,6 +13267,21 @@ server <- function(input, output, session) {
         job_id <- htmltools::htmlEscape(job_ids[[i]], attribute = TRUE)
         action_key <- htmltools::htmlEscape(remote_job_action_key(server_names[[i]], job_ids[[i]]), attribute = TRUE)
         buttons <- character()
+        if (isTRUE(remote_server_supports("job_discovery_report", server_names[[i]]))) {
+          report_server <- tryCatch(remote_server_by_name(server_names[[i]]), error = function(e) NULL)
+          report_base <- if (is.list(report_server)) as.character(report_server$url %||% "") else ""
+          if (nzchar(report_base)) {
+            report_url <- paste0(
+              sub("/+$", "", report_base), "/reports/",
+              utils::URLencode(job_ids[[i]], reserved = TRUE)
+            )
+            buttons <- c(buttons, paste0(
+              "<a class='btn btn-primary btn-sm' href='",
+              htmltools::htmlEscape(report_url, attribute = TRUE),
+              "' target='_blank' rel='noopener' onclick='event.stopPropagation();'>Live report</a>"
+            ))
+          }
+        }
         if (isTRUE(can_load[[i]])) {
           buttons <- c(buttons, paste0("<button type='button' class='btn btn-default btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_load_result_row', '", action_key, "', {priority: 'event'});\">", load_labels[[i]], "</button>"))
         } else {
