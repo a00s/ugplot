@@ -285,7 +285,9 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
     })
   })
 
-  pr$handle("GET", "/health", function() {
+  pr$handle("GET", "/health", function(req) {
+    query <- req$argsQuery %||% list()
+    include_resources <- !tolower(as.character(query$resources %||% "true")) %in% c("0", "false", "no")
     total_cpus <- tryCatch(parallel::detectCores(logical = TRUE), error = function(e) NA_integer_)
     if (is.na(total_cpus) || total_cpus < 1L) {
       total_cpus <- 1L
@@ -296,7 +298,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
       jobs_dir = jobs_dir,
       cpus = as.integer(total_cpus),
       default_cpu_limit = max(1L, as.integer(total_cpus) - 1L),
-      resources = ugplot_server_resource_snapshot(jobs_dir),
+      resources = ugplot_server_resource_snapshot(jobs_dir, include_jobs = include_resources),
       capabilities = list(
         delete_job = TRUE,
         resume_job = TRUE,
@@ -308,6 +310,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         job_resource_monitor = !is.null(auto_resume_process),
         job_group_activity = TRUE,
         server_resources = TRUE,
+        lightweight_health = TRUE,
         geo_pipeline = TRUE,
         geo_cpg_summary = TRUE,
         geo_cpg_lookup = TRUE,
@@ -318,7 +321,6 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
   })
 
   pr$handle("GET", "/jobs", function() {
-    ugplot_auto_resume_crashed_jobs(jobs_dir)
     ugplot_list_jobs(jobs_dir)
   })
 
@@ -329,7 +331,6 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
   pr$handle("GET", "/jobs/<job_id>", function(job_id, res) {
     tryCatch(
       {
-        ugplot_auto_resume_crashed_jobs(jobs_dir)
         ugplot_read_job_status(job_id, jobs_dir)
       },
       error = function(e) {

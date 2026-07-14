@@ -11883,7 +11883,11 @@ server <- function(input, output, session) {
       server <- servers[i, , drop = FALSE]
       server_name <- server$name[[1]]
       server_jobs <- tryCatch({
-        health <- ugplot_remote_health(server_url = server$url, token = server$token %||% "")
+        health <- ugplot_remote_health(
+          server_url = server$url,
+          token = server$token %||% "",
+          include_resources = FALSE
+        )
         capabilities_by_server[[server_name]] <- health$capabilities %||% list()
         remote_version <- as.character(health$ugplot_build_version %||% "")
         local_version <- ugplot_build_version()

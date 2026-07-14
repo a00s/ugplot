@@ -49,8 +49,10 @@ ugplot_remote_create_job <- function(server_url, dataset, config, token = "", ti
   ugplot_remote_parse(response)
 }
 
-ugplot_remote_health <- function(server_url, token = "", timeout_seconds = 15) {
-  request <- ugplot_remote_request(server_url, "health", token)
+ugplot_remote_health <- function(server_url, token = "", timeout_seconds = 15,
+                                 include_resources = TRUE) {
+  health_path <- if (isTRUE(include_resources)) "health" else "health?resources=false"
+  request <- ugplot_remote_request(server_url, health_path, token)
   response <- httr::GET(request$url, request$headers, httr::timeout(timeout_seconds))
   ugplot_remote_parse(response)
 }

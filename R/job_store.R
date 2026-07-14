@@ -384,14 +384,22 @@ ugplot_read_job_resources <- function(job_id, jobs_dir = ugplot_default_jobs_dir
   utils::read.delim(text = selected, stringsAsFactors = FALSE, check.names = FALSE)
 }
 
-ugplot_server_resource_snapshot <- function(jobs_dir = ugplot_default_jobs_dir()) {
+ugplot_server_resource_snapshot <- function(jobs_dir = ugplot_default_jobs_dir(), include_jobs = TRUE) {
   system <- ugplot_linux_system_resources()
   disk <- ugplot_disk_resources(jobs_dir)
-  job_ids <- if (dir.exists(jobs_dir)) basename(list.dirs(jobs_dir, full.names = TRUE, recursive = FALSE)) else character(0)
-  statuses <- Filter(Negate(is.null), lapply(job_ids, function(job_id) {
-    status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
-    if (is.list(status) && (status$state %||% "") %in% c("running", "draining")) status else NULL
-  }))
+  job_ids <- if (isTRUE(include_jobs) && dir.exists(jobs_dir)) {
+    basename(list.dirs(jobs_dir, full.names = TRUE, recursive = FALSE))
+  } else {
+    character(0)
+  }
+  statuses <- if (length(job_ids) > 0L) {
+    Filter(Negate(is.null), lapply(job_ids, function(job_id) {
+      status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+      if (is.list(status) && (status$state %||% "") %in% c("running", "draining")) status else NULL
+    }))
+  } else {
+    list()
+  }
   samples <- Filter(function(value) is.data.frame(value) && nrow(value) > 0L, lapply(statuses, function(status) {
     ugplot_read_job_resources(status$id, jobs_dir, max_lines = 1L)
   }))
@@ -859,12 +867,16 @@ ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir(), include_inter
   }
   job_ids <- basename(list.dirs(jobs_dir, full.names = TRUE, recursive = FALSE))
   statuses <- lapply(job_ids, function(job_id) {
-    tryCatch(ugplot_read_job_status(job_id, jobs_dir), error = function(e) NULL)
+    status <- tryCatch(
+      ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir)),
+      error = function(e) NULL
+    )
+    if (!is.list(status) || (!isTRUE(include_internal) && isTRUE(status$internal_worker_task))) {
+      return(NULL)
+    }
+    tryCatch(ugplot_refresh_job_status(status, jobs_dir), error = function(e) NULL)
   })
   statuses <- Filter(Negate(is.null), statuses)
-  if (!isTRUE(include_internal)) {
-    statuses <- Filter(function(status) !isTRUE(status$internal_worker_task), statuses)
-  }
   if (length(statuses) == 0) {
     return(data.frame())
   }

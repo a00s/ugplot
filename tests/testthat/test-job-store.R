@@ -55,6 +55,43 @@ test_that("internal worker jobs are hidden and request ids are idempotent", {
   expect_equal(find_request("parent:screen:TG1", jobs_dir)$id, internal$id)
 })
 
+test_that("public job listing does not refresh internal worker jobs", {
+  jobs_dir <- tempfile("ugplot-fast-public-jobs-")
+  dir.create(jobs_dir)
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  list_jobs <- ugplot_test_internal("ugplot_list_jobs")
+  refresh_status <- ugplot_test_internal("ugplot_refresh_job_status")
+
+  public <- create_job(
+    data.frame(x = 1),
+    config = list(runner = "ugplot_run_placeholder_job"),
+    jobs_dir = jobs_dir
+  )
+  for (index in seq_len(4L)) {
+    create_job(
+      data.frame(x = index),
+      config = list(
+        runner = "ugplot_run_geo_screen_group_job",
+        internal_worker_task = TRUE,
+        parent_job_id = public$id,
+        request_id = paste0(public$id, ":screen:TG", index)
+      ),
+      jobs_dir = jobs_dir,
+      type = "geo_worker"
+    )
+  }
+
+  refreshed_ids <- character(0)
+  ugplot_test_local_namespace_binding("ugplot_refresh_job_status", function(status, jobs_dir) {
+    refreshed_ids <<- c(refreshed_ids, as.character(status$id))
+    refresh_status(status, jobs_dir)
+  })
+
+  listed <- list_jobs(jobs_dir)
+  expect_equal(listed$id, public$id)
+  expect_equal(refreshed_ids, public$id)
+})
+
 test_that("job bundles redact distributed worker tokens", {
   redact <- ugplot_test_internal("ugplot_redact_job_config")
   config <- list(
