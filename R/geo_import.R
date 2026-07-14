@@ -23,6 +23,10 @@ ugplot_geo_annotation_cache_dir <- function() {
   ugplot_geo_cache_root("annotation")
 }
 
+ugplot_geo_annotation_cache_version <- function() {
+  "ensembl_grch37_v75_v1"
+}
+
 ugplot_geo_cache_root <- function(type = c("downloads", "annotation")) {
   type <- match.arg(type)
   env_var <- if (identical(type, "downloads")) "UGPLOT_GEO_DOWNLOAD_DIR" else "UGPLOT_GEO_ANNOTATION_DIR"
@@ -39,7 +43,9 @@ ugplot_geo_cache_root <- function(type = c("downloads", "annotation")) {
 
 ugplot_geo_annotation_cache_path <- function(platform_id, extension = "rds") {
   safe_platform <- gsub("[^A-Za-z0-9_.-]", "_", platform_id %||% "unknown_platform")
-  file.path(ugplot_geo_annotation_cache_dir(), paste0(safe_platform, "_cpg_gene_transcript_map.", extension))
+  file.path(ugplot_geo_annotation_cache_dir(), paste0(
+    safe_platform, "_cpg_gene_transcript_map_", ugplot_geo_annotation_cache_version(), ".", extension
+  ))
 }
 
 ugplot_geo_append_log <- function(current_log, message) {
@@ -517,14 +523,20 @@ ugplot_geo_platform_annotation_package <- function(platform_id) {
       array = "Illumina HumanMethylation450",
       package = "IlluminaHumanMethylation450kanno.ilmn12.hg19",
       object = "IlluminaHumanMethylation450kanno.ilmn12.hg19",
-      genome = "hg19"
+      genome = "hg19",
+      transcript_package = "EnsDb.Hsapiens.v75",
+      transcript_object = "EnsDb.Hsapiens.v75",
+      transcript_source = "Ensembl GRCh37 release 75"
     ),
     "GPL21145" = list(
       platform = "GPL21145",
       array = "Illumina HumanMethylationEPIC",
       package = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
       object = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
-      genome = "hg19"
+      genome = "hg19",
+      transcript_package = "EnsDb.Hsapiens.v75",
+      transcript_object = "EnsDb.Hsapiens.v75",
+      transcript_source = "Ensembl GRCh37 release 75"
     ),
     NULL
   )
@@ -541,6 +553,14 @@ ugplot_geo_missing_annotation_packages <- function(platform_info) {
   if (!requireNamespace(platform_info$package, quietly = TRUE)) {
     missing <- c(missing, platform_info$package)
   }
+  transcript_packages <- c(
+    "ensembldb", "GenomicRanges", "IRanges", "S4Vectors",
+    as.character(platform_info$transcript_package %||% "")
+  )
+  transcript_packages <- transcript_packages[nzchar(transcript_packages)]
+  missing <- c(missing, transcript_packages[
+    !vapply(transcript_packages, requireNamespace, logical(1), quietly = TRUE)
+  ])
   unique(missing)
 }
 
@@ -559,7 +579,7 @@ ugplot_first_existing_col <- function(data, candidates) {
 }
 
 ugplot_geo_expand_probe_annotation <- function(annotation, platform_id, source_package, genome) {
-  annotation <- as.data.frame(annotation, stringsAsFactors = FALSE, check.names = FALSE)
+  annotation <- as.data.frame(annotation, check.names = FALSE)
   cpg_ids <- rownames(annotation)
   if ("Name" %in% names(annotation)) {
     cpg_ids <- as.character(annotation$Name)
@@ -629,6 +649,95 @@ ugplot_geo_expand_probe_annotation <- function(annotation, platform_id, source_p
   annotation_map
 }
 
+ugplot_geo_expand_ensembl_transcripts <- function(annotation_map, transcript_ranges,
+                                                  transcript_source,
+                                                  promoter_upstream = 1500L,
+                                                  promoter_downstream = 200L) {
+  required <- c("CpG", "Chr", "Position")
+  if (!is.data.frame(annotation_map) || nrow(annotation_map) == 0L ||
+      !all(required %in% names(annotation_map)) || length(transcript_ranges) == 0L) {
+    return(annotation_map)
+  }
+  if (!all(vapply(c("GenomicRanges", "IRanges", "S4Vectors"), requireNamespace, logical(1), quietly = TRUE))) {
+    stop("GenomicRanges, IRanges and S4Vectors are required for transcript-level annotation.", call. = FALSE)
+  }
+  tx_meta <- as.data.frame(S4Vectors::mcols(transcript_ranges), stringsAsFactors = FALSE)
+  tx_col <- intersect(c("tx_id", "tx_name", "transcript_id"), names(tx_meta))
+  gene_col <- intersect(c("gene_name", "gene_id", "symbol"), names(tx_meta))
+  if (length(tx_col) == 0L) {
+    stop("The Ensembl transcript database does not expose transcript identifiers.", call. = FALSE)
+  }
+  tx_ids <- trimws(as.character(tx_meta[[tx_col[[1]]]]))
+  gene_names <- if (length(gene_col) > 0L) trimws(as.character(tx_meta[[gene_col[[1]]]])) else rep("", length(tx_ids))
+  valid_tx <- !is.na(tx_ids) & nzchar(tx_ids)
+  transcript_ranges <- transcript_ranges[valid_tx]
+  tx_ids <- tx_ids[valid_tx]
+  gene_names <- gene_names[valid_tx]
+  if (length(transcript_ranges) == 0L) return(annotation_map)
+
+  probe_base <- annotation_map[!duplicated(as.character(annotation_map$CpG)), , drop = FALSE]
+  probe_pos <- suppressWarnings(as.numeric(probe_base$Position))
+  probe_chr <- sub("^chr", "", as.character(probe_base$Chr), ignore.case = TRUE)
+  valid_probe <- is.finite(probe_pos) & !is.na(probe_chr) & nzchar(probe_chr)
+  probe_base <- probe_base[valid_probe, , drop = FALSE]
+  probe_pos <- probe_pos[valid_probe]
+  probe_chr <- probe_chr[valid_probe]
+  if (nrow(probe_base) == 0L) return(annotation_map)
+
+  probe_gr <- GenomicRanges::GRanges(
+    seqnames = probe_chr,
+    ranges = IRanges::IRanges(start = probe_pos, width = 1L)
+  )
+  tx_chr <- sub("^chr", "", as.character(GenomicRanges::seqnames(transcript_ranges)), ignore.case = TRUE)
+  normalized_transcript_ranges <- GenomicRanges::GRanges(
+    seqnames = tx_chr,
+    ranges = GenomicRanges::ranges(transcript_ranges),
+    strand = GenomicRanges::strand(transcript_ranges)
+  )
+  S4Vectors::mcols(normalized_transcript_ranges) <- S4Vectors::mcols(transcript_ranges)
+  transcript_ranges <- normalized_transcript_ranges
+  promoter_ranges <- GenomicRanges::promoters(
+    transcript_ranges,
+    upstream = as.integer(promoter_upstream),
+    downstream = as.integer(promoter_downstream)
+  )
+  body_hits <- GenomicRanges::findOverlaps(probe_gr, transcript_ranges, ignore.strand = TRUE)
+  promoter_hits <- GenomicRanges::findOverlaps(probe_gr, promoter_ranges, ignore.strand = TRUE)
+  pairs <- unique(rbind(
+    data.frame(
+      probe = S4Vectors::queryHits(body_hits), tx = S4Vectors::subjectHits(body_hits),
+      region = rep("Body", length(body_hits))
+    ),
+    data.frame(
+      probe = S4Vectors::queryHits(promoter_hits), tx = S4Vectors::subjectHits(promoter_hits),
+      region = rep("TSS1500", length(promoter_hits))
+    )
+  ))
+  if (nrow(pairs) == 0L) return(annotation_map)
+  pairs <- pairs[order(pairs$probe, pairs$tx, pairs$region != "TSS1500"), , drop = FALSE]
+  pairs <- pairs[!duplicated(pairs[, c("probe", "tx")]), , drop = FALSE]
+
+  expanded <- probe_base[pairs$probe, , drop = FALSE]
+  expanded$Gene <- gene_names[pairs$tx]
+  missing_gene <- is.na(expanded$Gene) | !nzchar(expanded$Gene)
+  expanded$Gene[missing_gene] <- probe_base$Gene[pairs$probe][missing_gene]
+  expanded$Transcript <- tx_ids[pairs$tx]
+  expanded$EnsemblTranscript <- tx_ids[pairs$tx]
+  expanded$GeneRegion <- pairs$region
+  expanded$AnnotationSource <- as.character(transcript_source)
+  expanded$TranscriptSource <- as.character(transcript_source)
+  expanded <- unique(expanded)
+  rownames(expanded) <- NULL
+
+  fallback <- annotation_map[!as.character(annotation_map$CpG) %in% as.character(expanded$CpG), , drop = FALSE]
+  if (nrow(fallback) > 0L) {
+    fallback$TranscriptSource <- as.character(fallback$AnnotationSource %||% "platform annotation")
+  }
+  result <- rbind(expanded, fallback[, names(expanded), drop = FALSE])
+  rownames(result) <- NULL
+  result
+}
+
 ugplot_geo_build_annotation_cache <- function(platform_id, force = FALSE) {
   platform_info <- ugplot_geo_platform_annotation_package(platform_id)
   if (is.null(platform_info)) {
@@ -655,9 +764,40 @@ ugplot_geo_build_annotation_cache <- function(platform_id, force = FALSE) {
     source_package = platform_info$package,
     genome = platform_info$genome
   )
+  transcript_package <- as.character(platform_info$transcript_package %||% "")
+  if (!nzchar(transcript_package) || !requireNamespace(transcript_package, quietly = TRUE) ||
+      !requireNamespace("ensembldb", quietly = TRUE)) {
+    stop(
+      paste0(
+        "Complete transcript annotation requires Bioconductor packages 'ensembldb' and '",
+        transcript_package, "'. Run ugPlotInstallServerDeps() and retry."
+      ),
+      call. = FALSE
+    )
+  }
+  transcript_db <- get(
+    as.character(platform_info$transcript_object),
+    envir = asNamespace(transcript_package)
+  )
+  transcript_ranges <- ensembldb::transcripts(
+    transcript_db,
+    columns = c("tx_id", "gene_id", "gene_name", "tx_biotype"),
+    return.type = "GRanges"
+  )
+  annotation_map <- ugplot_geo_expand_ensembl_transcripts(
+    annotation_map,
+    transcript_ranges,
+    transcript_source = platform_info$transcript_source
+  )
   base::dir.create(dirname(cache_path), recursive = TRUE, showWarnings = FALSE)
   base::saveRDS(annotation_map, cache_path)
-  utils::write.csv(annotation_map, ugplot_geo_annotation_cache_path(platform_info$platform, "csv"), row.names = FALSE)
+  if (tolower(Sys.getenv("UGPLOT_GEO_WRITE_ANNOTATION_CSV", unset = "false")) %in% c("1", "true", "yes")) {
+    utils::write.csv(
+      annotation_map,
+      ugplot_geo_annotation_cache_path(platform_info$platform, "csv"),
+      row.names = FALSE
+    )
+  }
   annotation_map
 }
 

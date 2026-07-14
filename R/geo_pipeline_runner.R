@@ -23,14 +23,14 @@ ugplot_geo_spearman_paths <- function(cache_dir, target_column, source = "proces
   safe_target <- ugplot_geo_safe_token(target_column)
   list(
     raw = file.path(analysis_dir, paste0("ugplot_geo_spearman_", safe_target, ".csv")),
-    annotated = file.path(analysis_dir, paste0("ugplot_geo_spearman_", safe_target, "_annotated.csv")),
-    by_transcript = file.path(analysis_dir, paste0("ugplot_geo_spearman_", safe_target, "_by_transcript.csv")),
-    by_gene = file.path(analysis_dir, paste0("ugplot_geo_spearman_", safe_target, "_by_gene.csv"))
+    annotated = file.path(analysis_dir, paste0("ugplot_geo_spearman_", safe_target, "_annotated_", ugplot_geo_annotation_cache_version(), ".csv")),
+    by_transcript = file.path(analysis_dir, paste0("ugplot_geo_spearman_", safe_target, "_by_transcript_", ugplot_geo_annotation_cache_version(), ".csv")),
+    by_gene = file.path(analysis_dir, paste0("ugplot_geo_spearman_", safe_target, "_by_gene_", ugplot_geo_annotation_cache_version(), ".csv"))
   )
 }
 
 ugplot_geo_transcript_cache_version <- function() {
-  "reader_v4"
+  "reader_v5_members"
 }
 
 ugplot_geo_transcript_missing_definition <- function() {
@@ -46,6 +46,7 @@ ugplot_geo_transcript_dataset_path <- function(cache_dir, transcript, target_col
     ugplot_geo_analysis_dir(cache_dir, source),
     "transcript_datasets",
     ugplot_geo_safe_token(target_column),
+    ugplot_geo_transcript_cache_version(),
     if (isTRUE(raw)) "_raw" else ""
   )
   dir.create(transcript_dir, recursive = TRUE, showWarnings = FALSE)
@@ -487,14 +488,24 @@ ugplot_geo_build_group_tables_remote <- function(progress_rows, candidates = NUL
     group_df <- compatible[compatible$GroupKey == group_keys[[group_index]], , drop = FALSE]
     group_df <- group_df[order(-group_df$TriggerMaxAbsRho, -group_df$Columns, -group_df$Samples, group_df$Transcript), , drop = FALSE]
     principal <- group_df[1, , drop = FALSE]
+    transcript_members <- sort(unique(as.character(stats::na.omit(group_df$Transcript))))
+    transcript_members <- transcript_members[nzchar(transcript_members)]
+    gene_members <- sort(unique(unlist(strsplit(
+      paste(as.character(stats::na.omit(group_df$Gene)), collapse = ";"),
+      ";", fixed = TRUE
+    ), use.names = FALSE)))
+    gene_members <- trimws(gene_members)
+    gene_members <- gene_members[nzchar(gene_members)]
     data.frame(
       GroupID = paste0("TG", group_index),
       PrincipalTranscript = principal$Transcript[[1]],
       Gene = principal$Gene[[1]],
       Columns = principal$Columns[[1]],
       Samples = principal$Samples[[1]],
-      TranscriptCount = nrow(group_df),
-      ExtraTranscripts = paste(setdiff(group_df$Transcript, principal$Transcript[[1]]), collapse = ";"),
+      TranscriptCount = length(transcript_members),
+      TranscriptMembers = paste(transcript_members, collapse = ";"),
+      GeneMembers = paste(gene_members, collapse = ";"),
+      ExtraTranscripts = paste(setdiff(transcript_members, principal$Transcript[[1]]), collapse = ";"),
       CpGs = principal$KeptCpGs[[1]],
       TriggerMaxAbsRho = principal$TriggerMaxAbsRho[[1]],
       TriggerBestCpG = principal$TriggerBestCpG[[1]] %||% "",
@@ -1263,6 +1274,8 @@ ugplot_geo_screen_group <- function(dataset, group, source, config, screen_path,
     Columns = group$Columns[[1]],
     Samples = group$Samples[[1]],
     TranscriptCount = group$TranscriptCount[[1]],
+    TranscriptMembers = as.character(group$TranscriptMembers[[1]] %||% group$PrincipalTranscript[[1]]),
+    GeneMembers = as.character(group$GeneMembers[[1]] %||% group$Gene[[1]]),
     ExtraTranscripts = group$ExtraTranscripts[[1]] %||% "",
     CpGs = group$CpGs[[1]] %||% "",
     TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
@@ -2414,7 +2427,8 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
     }
     result$settings <- c(result$settings %||% list(), list(
       transcript_absrho_threshold = threshold,
-      transcript_min_samples = min_transcript_samples
+      transcript_min_samples = min_transcript_samples,
+      transcript_annotation = ugplot_geo_annotation_cache_version()
     ))
     transcript_ml_run_key <- ugplot_geo_transcript_ml_run_key(target_column, threshold, min_transcript_samples)
     config$geo_transcript_ml_run_key <- transcript_ml_run_key
@@ -2427,7 +2441,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
     publish(0.86, paste0("Building transcript ML datasets for |rho| >= ", threshold), force = TRUE)
     candidates_path <- file.path(
       ugplot_geo_analysis_dir(cache_dir, source),
-      paste0("ugplot_geo_transcript_candidates_", ugplot_geo_safe_token(target_column), "_absrho_", ugplot_geo_safe_token(threshold), ".csv")
+      paste0("ugplot_geo_transcript_candidates_", ugplot_geo_safe_token(target_column), "_", ugplot_geo_annotation_cache_version(), "_absrho_", ugplot_geo_safe_token(threshold), ".csv")
     )
     candidates <- if (isTRUE(resume_mode) && file.exists(candidates_path)) {
       read_cached_csv(candidates_path)

@@ -29,6 +29,8 @@ test_that("incremental discovery report upgrades screened groups with stability"
   screening <- data.frame(
     Source = "processed", Phase = "screening", GroupID = c("TG1", "TG2"),
     PrincipalTranscript = c("ENST1", "ENST2"), Gene = c("GENE1", "GENE2"),
+    TranscriptMembers = c("ENST1;ENST1_ALT", "ENST2"),
+    GeneMembers = c("GENE1", "GENE2"), TranscriptCount = c(2L, 1L),
     Columns = c(12, 9), Samples = c(714, 700), TriggerBestCpG = c("cg1", "cg2"),
     TriggerBestRho = c(0.71, 0.82), BestModel = c("glmnet", "ranger"),
     MedianMetric = c(0.84, 0.77), BestMetric = c(0.86, 0.79), SeedsRun = c(3, 3),
@@ -66,6 +68,8 @@ test_that("incremental discovery report upgrades screened groups with stability"
   expect_length(report$discoveries, 3L)
   expect_equal(report$discoveries[[1]]$status, "stabilized")
   expect_equal(report$discoveries[[1]]$gene, "GENE1")
+  expect_equal(report$discoveries[[1]]$transcript, "ENST1;ENST1_ALT")
+  expect_equal(report$discoveries[[1]]$transcript_count, 2)
   expect_equal(report$discoveries[[1]]$median_r2, 0.82)
   expect_equal(report$discoveries[[2]]$status, "preliminary")
   expect_equal(report$discoveries[[3]]$status, "awaiting analysis")
@@ -85,6 +89,7 @@ test_that("discovery report HTML accepts a direct job link", {
   expect_match(report_html, "/reports/assets/ugplot.png", fixed = TRUE)
   expect_match(report_html, "Best CpG correlation", fixed = TRUE)
   expect_match(report_html, "Best overall performance", fixed = TRUE)
+  expect_match(report_html, "computational group may contain multiple biological transcripts", fixed = TRUE)
   expect_match(report_html, "(ml+cpg)/2", fixed = TRUE)
   expect_match(report_html, 'class="controls"', fixed = TRUE)
 })

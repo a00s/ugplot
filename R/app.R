@@ -4189,11 +4189,12 @@ server <- function(input, output, session) {
     analysis_dir <- geo_analysis_cache_dir(cache_dir, source, create = create)
     safe_target <- geo_safe_cache_token(target_column)
     prefix <- file.path(analysis_dir, paste0("ugplot_geo_spearman_", safe_target))
+    annotation_version <- ugplot_geo_annotation_cache_version()
     list(
       raw = paste0(prefix, ".csv"),
-      annotated = paste0(prefix, "_annotated.csv"),
-      by_transcript = paste0(prefix, "_by_transcript.csv"),
-      by_gene = paste0(prefix, "_by_gene.csv")
+      annotated = paste0(prefix, "_annotated_", annotation_version, ".csv"),
+      by_transcript = paste0(prefix, "_by_transcript_", annotation_version, ".csv"),
+      by_gene = paste0(prefix, "_by_gene_", annotation_version, ".csv")
     )
   }
 
@@ -4227,7 +4228,7 @@ server <- function(input, output, session) {
   }
 
   geo_transcript_cache_version <- function() {
-    "reader_v4"
+    "reader_v5_members"
   }
 
   geo_transcript_group_cache_paths <- function(cache_dir, target_column, threshold, min_samples_pct, source = NULL, create = TRUE) {
@@ -4334,14 +4335,24 @@ server <- function(input, output, session) {
       group_df <- compatible[compatible$GroupKey == group_keys[[group_index]], , drop = FALSE]
       group_df <- group_df[order(-group_df$TriggerMaxAbsRho, -group_df$Columns, -group_df$Samples, group_df$Transcript), , drop = FALSE]
       principal <- group_df[1, , drop = FALSE]
+      transcript_members <- sort(unique(as.character(stats::na.omit(group_df$Transcript))))
+      transcript_members <- transcript_members[nzchar(transcript_members)]
+      gene_members <- sort(unique(unlist(strsplit(
+        paste(as.character(stats::na.omit(group_df$Gene)), collapse = ";"),
+        ";", fixed = TRUE
+      ), use.names = FALSE)))
+      gene_members <- trimws(gene_members)
+      gene_members <- gene_members[nzchar(gene_members)]
       data.frame(
         GroupID = paste0("TG", group_index),
         PrincipalTranscript = principal$Transcript[[1]],
         Gene = principal$Gene[[1]],
         Columns = principal$Columns[[1]],
         Samples = principal$Samples[[1]],
-        TranscriptCount = nrow(group_df),
-        ExtraTranscripts = paste(setdiff(group_df$Transcript, principal$Transcript[[1]]), collapse = ";"),
+        TranscriptCount = length(transcript_members),
+        TranscriptMembers = paste(transcript_members, collapse = ";"),
+        GeneMembers = paste(gene_members, collapse = ";"),
+        ExtraTranscripts = paste(setdiff(transcript_members, principal$Transcript[[1]]), collapse = ";"),
         CpGs = principal$KeptCpGs[[1]],
         TriggerMaxAbsRho = principal$TriggerMaxAbsRho[[1]],
         TriggerBestCpG = if ("TriggerBestCpG" %in% names(principal)) principal$TriggerBestCpG[[1]] else "",
@@ -4719,6 +4730,8 @@ server <- function(input, output, session) {
       Columns = group$Columns[[1]],
       Samples = group$Samples[[1]],
       TranscriptCount = group$TranscriptCount[[1]],
+      TranscriptMembers = as.character(group$TranscriptMembers[[1]] %||% group$PrincipalTranscript[[1]]),
+      GeneMembers = as.character(group$GeneMembers[[1]] %||% group$Gene[[1]]),
       ExtraTranscripts = group$ExtraTranscripts[[1]] %||% "",
       CpGs = group$CpGs[[1]] %||% "",
       TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
@@ -4856,6 +4869,8 @@ server <- function(input, output, session) {
       Columns = group$Columns[[1]],
       Samples = group$Samples[[1]],
       TranscriptCount = group$TranscriptCount[[1]],
+      TranscriptMembers = as.character(group$TranscriptMembers[[1]] %||% group$PrincipalTranscript[[1]]),
+      GeneMembers = as.character(group$GeneMembers[[1]] %||% group$Gene[[1]]),
       ExtraTranscripts = group$ExtraTranscripts[[1]] %||% "",
       CpGs = group$CpGs[[1]] %||% "",
       TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
@@ -7042,7 +7057,10 @@ server <- function(input, output, session) {
   })
 
   geo_transcript_dataset_cache_path <- function(cache_dir, transcript, target_column, source = NULL) {
-    transcript_dir <- file.path(geo_analysis_cache_dir(cache_dir, source), "transcript_datasets", geo_safe_cache_token(target_column))
+    transcript_dir <- file.path(
+      geo_analysis_cache_dir(cache_dir, source), "transcript_datasets",
+      geo_safe_cache_token(target_column), geo_transcript_cache_version()
+    )
     if (!dir.exists(transcript_dir)) {
       dir.create(transcript_dir, recursive = TRUE, showWarnings = FALSE)
     }
@@ -7050,7 +7068,10 @@ server <- function(input, output, session) {
   }
 
   geo_transcript_raw_dataset_cache_path <- function(cache_dir, transcript, target_column, source = NULL) {
-    transcript_dir <- file.path(geo_analysis_cache_dir(cache_dir, source), "transcript_datasets", geo_safe_cache_token(target_column), "_raw")
+    transcript_dir <- file.path(
+      geo_analysis_cache_dir(cache_dir, source), "transcript_datasets",
+      geo_safe_cache_token(target_column), geo_transcript_cache_version(), "_raw"
+    )
     if (!dir.exists(transcript_dir)) {
       dir.create(transcript_dir, recursive = TRUE, showWarnings = FALSE)
     }
@@ -7541,7 +7562,9 @@ server <- function(input, output, session) {
   output$geo_transcript_groups_table <- DT::renderDT({
     groups <- geo_transcript_groups()
     req(is.data.frame(groups), nrow(groups) > 0)
-    display_cols <- intersect(c("PrincipalTranscript", "Gene", "Columns", "Samples", "TranscriptCount", "TriggerMaxAbsRho"), names(groups))
+    if (!"TranscriptMembers" %in% names(groups)) groups$TranscriptMembers <- groups$PrincipalTranscript
+    if (!"GeneMembers" %in% names(groups)) groups$GeneMembers <- groups$Gene
+    display_cols <- intersect(c("TranscriptMembers", "GeneMembers", "Columns", "Samples", "TranscriptCount", "TriggerMaxAbsRho"), names(groups))
     display <- groups[, display_cols, drop = FALSE]
     if ("TriggerMaxAbsRho" %in% names(display)) {
       display$TriggerMaxAbsRho <- round(display$TriggerMaxAbsRho, 5)
@@ -7591,11 +7614,21 @@ server <- function(input, output, session) {
       return(tags$p(class = "geo-step-note", "Select a transcript group row to inspect its CpGs and compatible transcripts."))
     }
     group <- groups[selected[[1]], , drop = FALSE]
-    extras <- group$ExtraTranscripts[[1]]
+    transcript_members <- if ("TranscriptMembers" %in% names(group)) {
+      as.character(group$TranscriptMembers[[1]])
+    } else {
+      as.character(group$PrincipalTranscript[[1]])
+    }
+    gene_members <- if ("GeneMembers" %in% names(group)) {
+      as.character(group$GeneMembers[[1]])
+    } else {
+      as.character(group$Gene[[1]])
+    }
     tags$div(
-      tags$h4(paste0("Details: ", group$PrincipalTranscript[[1]])),
-      tags$p(paste0("Gene: ", group$Gene[[1]], " | CpGs: ", group$Columns[[1]], " | Samples: ", group$Samples[[1]])),
-      tags$p(paste0("Extra compatible transcripts: ", if (nzchar(extras)) extras else "None")),
+      tags$h4(paste0("Computational group ", group$GroupID[[1]])),
+      tags$p(paste0("Transcripts: ", transcript_members)),
+      tags$p(paste0("Genes: ", gene_members, " | CpGs: ", group$Columns[[1]], " | Samples: ", group$Samples[[1]])),
+      tags$p(class = "geo-step-note", "Transcripts share this group only when their effective CpG and sample matrices are identical."),
       tags$p(class = "geo-step-note", "Detail rows are capped for inspection; downstream steps use the saved transcript datasets and group summary.")
     )
   })
@@ -8868,7 +8901,7 @@ server <- function(input, output, session) {
     }
     geo_transcript_candidates(candidates)
     safe_threshold <- gsub("[^0-9]+", "_", format(threshold, trim = TRUE, scientific = FALSE))
-    candidates_path <- file.path(geo_analysis_cache_dir(cache_dir, source), paste0("ugplot_geo_transcript_candidates_", geo_safe_cache_token(target_column), "_absrho_", safe_threshold, ".csv"))
+    candidates_path <- file.path(geo_analysis_cache_dir(cache_dir, source), paste0("ugplot_geo_transcript_candidates_", geo_safe_cache_token(target_column), "_", ugplot_geo_annotation_cache_version(), "_absrho_", safe_threshold, ".csv"))
     if (is.data.frame(candidates) && nrow(candidates) > 0) {
       if (!isTRUE(use_streaming_candidates)) {
         utils::write.csv(candidates, candidates_path, row.names = FALSE)

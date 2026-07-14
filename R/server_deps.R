@@ -8,6 +8,11 @@ ugplot_server_geo_r_packages <- function() {
     "minfi",
     "IlluminaHumanMethylation450kanno.ilmn12.hg19",
     "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+    "ensembldb",
+    "EnsDb.Hsapiens.v75",
+    "GenomicRanges",
+    "IRanges",
+    "S4Vectors",
     "sesame",
     "sesameData"
   )
@@ -259,7 +264,12 @@ ugPlotInstallServerDeps <- function(install = TRUE, dependencies = TRUE,
       if (!requireNamespace("BiocManager", quietly = TRUE)) {
         utils::install.packages("BiocManager", dependencies = dependencies)
       }
-      BiocManager::install(r_missing, ask = FALSE, update = FALSE, dependencies = dependencies)
+      bioc_dependencies <- if (isTRUE(dependencies)) {
+        c("Depends", "Imports", "LinkingTo")
+      } else {
+        dependencies
+      }
+      BiocManager::install(r_missing, ask = FALSE, update = FALSE, dependencies = bioc_dependencies)
     } else {
       utils::install.packages(r_missing, dependencies = dependencies)
     }
