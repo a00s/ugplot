@@ -80,5 +80,34 @@ test_that("discovery report HTML accepts a direct job link", {
   expect_match(report_html, "Preliminary evidence", fixed = TRUE)
   expect_match(report_html, "raw.map(normalize)", fixed = TRUE)
   expect_false(grepl('id="server"', report_html, fixed = TRUE))
-  expect_match(report_html, 'location.href="/reports/"', fixed = TRUE)
+  expect_false(grepl('id="job"', report_html, fixed = TRUE))
+  expect_false(grepl("Open report", report_html, fixed = TRUE))
+  expect_match(report_html, "/reports/assets/ugplot.png", fixed = TRUE)
+  expect_match(report_html, "Best CpG correlation", fixed = TRUE)
+})
+
+test_that("discovery report snapshot is a reusable static JSON artifact", {
+  jobs_dir <- tempfile("ugplot-report-snapshot-")
+  cache_dir <- tempfile("ugplot-report-cache-")
+  dir.create(jobs_dir, recursive = TRUE)
+  dir.create(cache_dir, recursive = TRUE)
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  refresh <- ugplot_test_internal("ugplot_refresh_job_discovery_snapshot")
+  snapshot_path <- ugplot_test_internal("ugplot_job_discovery_snapshot_path")
+  ugplot_test_local_namespace_binding("ugplot_geo_cache_dir", function(accession) cache_dir)
+  status <- create_job(
+    data.frame(x = 1),
+    config = list(
+      runner = "ugplot_run_geo_pipeline_job", accession = "GSE87571",
+      matrix_source = "processed", target_column = "age",
+      transcript_absrho_threshold = 0.8, transcript_min_samples = 80
+    ),
+    jobs_dir = jobs_dir, type = "geo"
+  )
+  expect_true(refresh(status$id, jobs_dir))
+  path <- snapshot_path(status$id, jobs_dir)
+  expect_true(file.exists(path))
+  snapshot <- jsonlite::read_json(path, simplifyVector = FALSE)
+  expect_equal(snapshot$job$id, status$id)
+  expect_identical(snapshot$discoveries, list())
 })

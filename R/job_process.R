@@ -76,6 +76,10 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
       updates$distributed_state <- distributed_state
     }
     do.call(ugplot_update_job_status, c(list(job_id = job_id, jobs_dir = jobs_dir), updates))
+    if (identical(runner, "ugplot_run_geo_pipeline_job") &&
+        exists("ugplot_refresh_job_discovery_snapshot", mode = "function", inherits = TRUE)) {
+      try(ugplot_refresh_job_discovery_snapshot(job_id, jobs_dir), silent = TRUE)
+    }
     safe_boundary <- identical(runner, "ugplot_run_placeholder_job") ||
       isTRUE(current_run$clear %||% FALSE) ||
       grepl("^(Finished|Not enough data)", as.character(message %||% ""))
@@ -105,6 +109,10 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
       message = "Finished",
       result_path = result_path
     )
+    if (identical(runner, "ugplot_run_geo_pipeline_job") &&
+        exists("ugplot_refresh_job_discovery_snapshot", mode = "function", inherits = TRUE)) {
+      try(ugplot_refresh_job_discovery_snapshot(job_id, jobs_dir), silent = TRUE)
+    }
     invisible(result)
   }, ugplot_job_drained = function(e) {
     partial_path <- ugplot_result_path(job_id, jobs_dir, partial = TRUE)
@@ -169,6 +177,7 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
           source(file.path(source_dir, "R", "job_store.R"), local = .GlobalEnv)
           source(file.path(source_dir, "R", "ml_runner.R"), local = .GlobalEnv)
           source(file.path(source_dir, "R", "geo_pipeline_runner.R"), local = .GlobalEnv)
+          source(file.path(source_dir, "R", "server_api.R"), local = .GlobalEnv)
           source(file.path(source_dir, "R", "job_process.R"), local = .GlobalEnv)
           ugplot_run_job_from_dir(job_id, jobs_dir)
         } else {
