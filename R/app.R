@@ -12801,17 +12801,25 @@ server <- function(input, output, session) {
       active_geo <- remote_status_scalar(status$state, "unknown") %in% c("queued", "running", "draining")
       if (isTRUE(active_geo) && remote_status_has_result(status)) {
         result <- tryCatch(
-          ugplot_remote_get_result(
-            server_url = server$url,
-            job_id = job_id,
-            token = server$token %||% ""
-          ),
+          if (remote_server_supports("job_preview", server$name[[1]])) {
+            ugplot_remote_get_job_preview(
+              server_url = server$url,
+              job_id = job_id,
+              token = server$token %||% ""
+            )
+          } else {
+            ugplot_job_result_preview(ugplot_remote_get_result(
+              server_url = server$url,
+              job_id = job_id,
+              token = server$token %||% ""
+            ))
+          },
           error = function(e) NULL
         )
         if (remote_result_is_geo(result)) {
           remote_job_preview_result(result)
           remote_remember_progress_estimate(job_id, status, result)
-          status_text <- paste(status_text, "| partial GEO metadata loaded for progress estimate")
+          status_text <- paste(status_text, "| compact GEO progress preview loaded")
         } else {
           status_text <- paste(status_text, "| status only; use Load to open the saved GEO result")
         }
@@ -13329,6 +13337,7 @@ server <- function(input, output, session) {
         refresh_remote_server_inputs(selected = as.character(server$name[[1]]))
         updateSelectInput(session, "remote_server_name", selected = as.character(server$name[[1]]))
       }
+      freezeReactiveValue(input, "remote_job_id")
       updateTextInput(session, "remote_job_id", value = job_id)
       tryCatch({
         refresh_remote_job_preview(job_id, switch_to_ml = FALSE, server_name = server_name)
@@ -13637,13 +13646,13 @@ server <- function(input, output, session) {
       tags$div(
         class = "remote-group-activity-header",
         tags$div(
-          tags$div(class = "remote-group-activity-title", "Distributed group activity"),
+          tags$div(class = "remote-group-activity-title", "Transcript model screening"),
           tags$div(
             class = "remote-group-activity-subtitle",
             paste0(
               sum(states == "completed"), " completed · ",
               sum(states == "processing"), " processing · ",
-              sum(states == "pending"), " waiting"
+              sum(states == "pending"), " waiting · work shared across servers and Science Collab clients"
             )
           )
         ),
@@ -13674,6 +13683,19 @@ server <- function(input, output, session) {
     }
 
     tables <- if (is.list(result) && is.list(result$tables)) result$tables else list()
+    group_activity <- remote_job_groups_data()
+    activity_groups <- group_activity$groups %||% data.frame()
+    if (is.list(activity_groups) && !is.data.frame(activity_groups) && length(activity_groups) > 0L) {
+      activity_groups <- tryCatch(as.data.frame(activity_groups, stringsAsFactors = FALSE), error = function(e) data.frame())
+    }
+    activity_states <- if (is.data.frame(activity_groups) && "state" %in% names(activity_groups)) {
+      tolower(as.character(activity_groups$state))
+    } else {
+      character(0)
+    }
+    activity_completed <- sum(activity_states == "completed", na.rm = TRUE)
+    activity_processing <- sum(activity_states == "processing", na.rm = TRUE)
+    activity_total <- length(activity_states)
     n_table <- function(name) {
       table <- tables[[name]]
       if (is.data.frame(table)) nrow(table) else 0L
@@ -13695,7 +13717,8 @@ server <- function(input, output, session) {
     } else {
       0L
     }
-    total_groups <- max(groups_n, screening_n, stability$task_total %||% NA_integer_, na.rm = TRUE)
+    screening_completed <- max(screening_n, activity_completed)
+    total_groups <- max(groups_n, screening_n, activity_total, stability$task_total %||% NA_integer_, na.rm = TRUE)
     if (!is.finite(total_groups) || total_groups < 1L) {
       total_groups <- max(groups_n, screening_n, 0L)
     }
@@ -13742,7 +13765,7 @@ server <- function(input, output, session) {
     idat_done <- idat_n > 0
     spearman_done <- spearman_n > 0 || candidates_n > 0
     groups_done <- groups_n > 0
-    screening_done <- screening_n > 0 && (groups_n == 0 || screening_n >= groups_n)
+    screening_done <- screening_completed > 0 && total_groups > 0 && screening_completed >= total_groups
     stability_done <- total_groups > 0 && stability_saved >= total_groups
     final_done <- identical(status_state, "finished")
     stability_running <- isTRUE(stability$is_stability) && status_state %in% c("queued", "running", "draining")
@@ -13771,8 +13794,11 @@ server <- function(input, output, session) {
     } else {
       "not started"
     }
+    screening_running <- !isTRUE(stability$is_stability) && activity_processing > 0L && status_state %in% c("queued", "running", "draining")
     active_status <- if (isTRUE(stability_running)) {
       "Running now"
+    } else if (isTRUE(screening_running)) {
+      "Model screening"
     } else if (isTRUE(stability_done || final_done)) {
       "Completed"
     } else if (isTRUE(stability$is_stability)) {
@@ -13786,8 +13812,59 @@ server <- function(input, output, session) {
         " / model ", stability$model,
         if (is.finite(stability$training_seed)) paste0(" / training seed ", stability$training_seed) else ""
       )
+    } else if (isTRUE(screening_running)) {
+      active_executors <- if (is.data.frame(activity_groups) && all(c("state", "executor", "group_id") %in% names(activity_groups))) {
+        rows <- activity_groups[tolower(as.character(activity_groups$state)) == "processing", , drop = FALSE]
+        paste(paste0(as.character(rows$executor), ":", as.character(rows$group_id)), collapse = ", ")
+      } else {
+        ""
+      }
+      paste0(
+        screening_completed, " of ", total_groups, " transcript groups completed",
+        if (nzchar(active_executors)) paste0("; active: ", active_executors) else ""
+      )
     } else {
       "Stability has not started yet."
+    }
+    screening_pct <- if (total_groups > 0L) 100 * screening_completed / total_groups else NA_real_
+    active_task_label <- if (isTRUE(screening_running)) "Transcript groups" else "Task"
+    active_task_value <- if (isTRUE(screening_running)) {
+      paste0(screening_completed, "/", total_groups)
+    } else if (isTRUE(stability$is_stability) && is.finite(stability$task_index)) {
+      paste0(stability$task_index, "/", stability$task_total)
+    } else {
+      "-"
+    }
+    active_task_width <- if (isTRUE(screening_running) && is.finite(screening_pct)) screening_pct else task_width
+    active_second_label <- if (isTRUE(screening_running)) "Active executors" else "Minimum seed pass"
+    active_second_value <- if (isTRUE(screening_running)) {
+      as.character(activity_processing)
+    } else if (isTRUE(stability$is_stability) && is.finite(stability$training_seed)) {
+      paste0(stability$training_seed, "/", if (is.finite(stability$min_seeds)) stability$min_seeds else "?")
+    } else {
+      "-"
+    }
+    active_second_width <- if (isTRUE(screening_running)) {
+      if (activity_processing > 0L) 100 else 0
+    } else {
+      seed_width
+    }
+    active_number <- if (isTRUE(screening_running)) screening_pct else estimate_pct
+    active_number_label <- if (isTRUE(screening_running)) "model screening" else "lower-bound stability"
+    active_done <- if (isTRUE(screening_running)) screening_completed else stability_done_lower
+    active_current <- if (isTRUE(screening_running)) {
+      activity_processing
+    } else if (isTRUE(stability_running) && is.finite(stability$task_index)) {
+      stability$task_index
+    } else {
+      "-"
+    }
+    active_left <- if (isTRUE(screening_running)) {
+      max(0L, total_groups - screening_completed - activity_processing)
+    } else if (is.finite(stability_remaining)) {
+      stability_remaining
+    } else {
+      "-"
     }
 
     tags$div(
@@ -13813,39 +13890,31 @@ server <- function(input, output, session) {
           tags$div(class = "remote-geo-active-bars",
             tags$div(class = "remote-geo-active-row",
               tags$div(class = "remote-geo-active-row-label",
-                tags$span("Task"),
-                tags$strong(if (isTRUE(stability$is_stability) && is.finite(stability$task_index)) {
-                  paste0(stability$task_index, "/", stability$task_total)
-                } else {
-                  "-"
-                })
+                tags$span(active_task_label),
+                tags$strong(active_task_value)
               ),
               tags$div(class = "remote-geo-bar-shell remote-geo-bar-shell-small",
-                tags$div(class = "remote-geo-bar remote-geo-bar-task", style = paste0("width: ", round(task_width), "%;"))
+                tags$div(class = "remote-geo-bar remote-geo-bar-task", style = paste0("width: ", round(active_task_width), "%;"))
               )
             ),
             tags$div(class = "remote-geo-active-row",
               tags$div(class = "remote-geo-active-row-label",
-                tags$span("Minimum seed pass"),
-                tags$strong(if (isTRUE(stability$is_stability) && is.finite(stability$training_seed)) {
-                  paste0(stability$training_seed, "/", if (is.finite(stability$min_seeds)) stability$min_seeds else "?")
-                } else {
-                  "-"
-                })
+                tags$span(active_second_label),
+                tags$strong(active_second_value)
               ),
               tags$div(class = "remote-geo-bar-shell remote-geo-bar-shell-small",
-                tags$div(class = "remote-geo-bar remote-geo-bar-seed", style = paste0("width: ", round(seed_width), "%;"))
+                tags$div(class = "remote-geo-bar remote-geo-bar-seed", style = paste0("width: ", round(active_second_width), "%;"))
               )
             )
           )
         ),
         tags$div(class = "remote-geo-active-side",
-          tags$div(class = "remote-geo-active-number", if (is.finite(estimate_pct)) paste0(round(estimate_pct), "%") else "-"),
-          tags$div(class = "remote-geo-active-number-label", "lower-bound stability"),
+          tags$div(class = "remote-geo-active-number", if (is.finite(active_number)) paste0(round(active_number), "%") else "-"),
+          tags$div(class = "remote-geo-active-number-label", active_number_label),
           tags$div(class = "remote-geo-active-mini",
-            tags$span(paste0("Done ", stability_done_lower)),
-            tags$span(if (isTRUE(stability_running) && is.finite(stability$task_index)) paste0("Current ", stability$task_index) else "Current -"),
-            tags$span(if (is.finite(stability_remaining)) paste0("Left ", stability_remaining) else "Left -")
+            tags$span(paste0("Done ", active_done)),
+            tags$span(paste0("Current ", active_current)),
+            tags$span(paste0("Left ", active_left))
           )
         )
       ),
@@ -13854,7 +13923,7 @@ server <- function(input, output, session) {
         step_card(2, "Sesame QC", stage_state(idat_done, files_done && !idat_done), paste0(idat_n, " samples processed")),
         step_card(3, "CpG and transcript scan", stage_state(spearman_done, idat_done && !spearman_done), paste0(spearman_n, " preview CpGs / ", candidates_n, " candidate transcripts")),
         step_card(4, "Transcript groups", stage_state(groups_done, spearman_done && !groups_done), paste0(groups_n, " groups")),
-        step_card(5, "Model screening", stage_state(screening_done, groups_done && !screening_done), paste0(screening_n, "/", max(groups_n, screening_n), " groups screened")),
+        step_card(5, "Model screening", stage_state(screening_done, groups_done && !screening_done), paste0(screening_completed, "/", total_groups, " groups screened")),
         step_card(
           6,
           "Stability seeds",

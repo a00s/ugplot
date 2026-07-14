@@ -280,9 +280,9 @@ ugplot_remote_get_result <- function(server_url, job_id, token = "", timeout_sec
   readRDS(result_file)
 }
 
-ugplot_remote_get_job_preview <- function(server_url, job_id, token = "") {
+ugplot_remote_get_job_preview <- function(server_url, job_id, token = "", timeout_seconds = 60) {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/preview-rds"), token)
-  response <- httr::GET(request$url, request$headers)
+  response <- httr::GET(request$url, request$headers, httr::timeout(timeout_seconds))
   parsed <- ugplot_remote_parse(response)
   content_base64 <- parsed$content_base64
   content_base64 <- as.character(unlist(content_base64, use.names = FALSE))
