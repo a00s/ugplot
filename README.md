@@ -303,7 +303,7 @@ Interpret heatmaps qualitatively. They are not proof of prediction performance, 
 
 ### 4.1 Correlation filtering
 
-![doc6 - 2d correlations](man/img/doc6.png)
+![ugPlot 2D PLOT correlation filtering](man/img/doc6.png)
 
 Use 2D plots when you want to understand pairwise relationships rather than global structure. They are especially useful for spotting a small number of strong feature-target relationships, checking whether correlations are linear, and finding outliers that drive an apparent association.
 
@@ -326,7 +326,7 @@ If a strong correlation appears only because of one or two extreme samples, do n
 
 ### 4.2 Distribution mode example
 
-![doc7 - 2d distribution mode](man/img/doc7.png)
+![ugPlot 2D PLOT distribution mode](man/img/doc7.png)
 
 Use distribution mode to check whether correlations may be driven by skewed ranges/outliers.
 
@@ -338,7 +338,7 @@ Distribution mode is also useful before ML because a target with extreme imbalan
 
 ### 5.1 Core setup
 
-![doc8 - machine learning seeds](man/img/doc8.png)
+![ugPlot MACHINE LEARNING core setup](man/img/doc8.png)
 
 Use MACHINE LEARNING only after the dataset shape is settled. The main question here is not "which model wins once?", but "does any model perform consistently enough to justify further investigation?"
 
@@ -348,6 +348,9 @@ Use MACHINE LEARNING only after the dataset shape is settled. The main question 
   - initial/final training seed,
   - supports repeatability and robustness checks.
 - **Timeout (s)** controls maximum training time.
+- **Auto-skip models in next rounds** avoids repeating models that time out or remain below the selected quality threshold.
+- **Min R2 (0-1)** defines the minimum R² used by auto-skip for regression runs.
+- **Training effort profile** lets you choose between the faster system default and more intensive training profiles when available.
 
 For small exploratory runs, use fewer models or shorter timeouts to check that the setup works. For a result you plan to report, run multiple seeds and prefer models whose performance remains stable. A single high score from one split can be luck, leakage, or class imbalance.
 

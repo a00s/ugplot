@@ -2078,8 +2078,8 @@ server <- function(input, output, session) {
     refresh_geo_remote_server_inputs()
   })
 
-  load_selected_ml_list <- function() {
-    if (identical(input$ml_run_target %||% "local", "remote")) {
+  load_selected_ml_list <- function(run_target = "local") {
+    if (identical(run_target %||% "local", "remote")) {
       server <- selected_remote_server()
       model_deps <- ugplot_remote_model_deps(
         server_url = server$url,
@@ -2122,7 +2122,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$ml_run_target, {
     tryCatch({
-      load_selected_ml_list()
+      load_selected_ml_list(input$ml_run_target %||% "local")
     }, error = function(e) {
       ml_model_source_status_text(paste("Could not load model list:", conditionMessage(e)))
     })
@@ -2133,7 +2133,7 @@ server <- function(input, output, session) {
       return()
     }
     tryCatch({
-      load_selected_ml_list()
+      load_selected_ml_list(input$ml_run_target %||% "local")
     }, error = function(e) {
       ml_model_source_status_text(paste("Could not load remote model list:", conditionMessage(e)))
     })
@@ -16978,7 +16978,7 @@ observeEvent(input$model_file, {
   load_dataset_into_table(session)
   update_scramble_selector()
   tryCatch({
-    load_selected_ml_list()
+    load_selected_ml_list("local")
   }, error = function(e) {
     ml_model_source_status_text(paste("Could not load model list:", conditionMessage(e)))
     load_ml_list()
