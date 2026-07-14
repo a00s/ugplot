@@ -485,3 +485,15 @@ test_that("smooth drain stops a job at a cooperative boundary", {
   expect_equal(drained$state, "stopped")
   expect_match(drained$message, "Drained safely")
 })
+test_that("job ids cannot traverse outside the jobs directory", {
+  validate_job_id <- ugplot_test_internal("ugplot_validate_job_id")
+  job_dir <- ugplot_test_internal("ugplot_job_dir")
+  jobs_dir <- tempfile("ugplot-safe-jobs-")
+
+  expect_error(validate_job_id(".."), "Invalid job id", fixed = TRUE)
+  expect_error(validate_job_id("."), "Invalid job id", fixed = TRUE)
+  expect_error(validate_job_id("../private"), "Invalid job id", fixed = TRUE)
+  expect_error(validate_job_id("folder/private"), "Invalid job id", fixed = TRUE)
+  expect_equal(job_dir("20260714-safe_job.1", jobs_dir),
+               file.path(jobs_dir, "20260714-safe_job.1"))
+})

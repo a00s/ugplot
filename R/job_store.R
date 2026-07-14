@@ -22,7 +22,9 @@ ugplot_ensure_dir <- function(path) {
 }
 
 ugplot_validate_job_id <- function(job_id) {
-  if (!is.character(job_id) || length(job_id) != 1 || !grepl("^[A-Za-z0-9._-]+$", job_id)) {
+  if (!is.character(job_id) || length(job_id) != 1 ||
+      job_id %in% c(".", "..") ||
+      !grepl("^[A-Za-z0-9._-]+$", job_id)) {
     stop("Invalid job id.", call. = FALSE)
   }
   job_id
