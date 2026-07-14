@@ -165,11 +165,16 @@ ugplot_job_discovery_report_paths <- function(job_id,
   } else {
     file.path(pipeline_dir, "summary.csv")
   }
+  group_paths <- ugplot_geo_transcript_group_paths(
+    ugplot_geo_cache_dir(toupper(accession)), target, threshold, min_samples,
+    source = source
+  )
   list(
     config = config,
     pipeline_dir = pipeline_dir,
     screening = file.path(pipeline_dir, "screening_summary.csv"),
     stability = stability_path,
+    groups = group_paths$summary,
     manifest = ugplot_geo_distributed_manifest_path(pipeline_dir)
   )
 }
@@ -188,6 +193,7 @@ ugplot_job_discovery_report <- function(job_id,
                                         jobs_dir = ugplot_default_jobs_dir()) {
   paths <- ugplot_job_discovery_report_paths(job_id, jobs_dir)
   status <- ugplot_read_job_status(job_id, jobs_dir)
+  groups <- ugplot_read_discovery_csv(paths$groups)
   screening <- ugplot_read_discovery_csv(paths$screening)
   stability <- ugplot_read_discovery_csv(paths$stability)
 
@@ -228,7 +234,21 @@ ugplot_job_discovery_report <- function(job_id,
   } else {
     character(0)
   }
+  screened_keys <- if (is.data.frame(screening) && nrow(screening) > 0L) {
+    vapply(seq_len(nrow(screening)), function(i) row_key(screening[i, , drop = FALSE]), character(1))
+  } else {
+    character(0)
+  }
   report_rows <- list()
+  if (is.data.frame(groups) && nrow(groups) > 0L) {
+    for (i in seq_len(nrow(groups))) {
+      row <- groups[i, , drop = FALSE]
+      if (!(row_key(row) %in% c(screened_keys, stable_keys))) {
+        row$Phase <- "awaiting_analysis"
+        report_rows[[length(report_rows) + 1L]] <- row
+      }
+    }
+  }
   if (is.data.frame(screening) && nrow(screening) > 0L) {
     for (i in seq_len(nrow(screening))) {
       row <- screening[i, , drop = FALSE]
@@ -252,7 +272,9 @@ ugplot_job_discovery_report <- function(job_id,
       "CpG centered"
     }
     data.frame(
-      status = if (identical(phase, "stability")) {
+      status = if (identical(phase, "awaiting_analysis")) {
+        "awaiting analysis"
+      } else if (identical(phase, "stability")) {
         if (stable) "stabilized" else "stability complete"
       } else {
         "preliminary"
@@ -278,7 +300,7 @@ ugplot_job_discovery_report <- function(job_id,
   discoveries <- if (length(rows) > 0L) do.call(rbind, rows) else data.frame()
   if (is.data.frame(discoveries) && nrow(discoveries) > 0L) {
     discoveries <- discoveries[order(
-      ifelse(discoveries$status == "stabilized", 0L, 1L),
+      match(discoveries$status, c("stabilized", "stability complete", "preliminary", "awaiting analysis")),
       -suppressWarnings(as.numeric(discoveries$median_r2)),
       discoveries$gene,
       na.last = TRUE
@@ -327,16 +349,16 @@ ugplot_discovery_report_html <- function(job_id = "") {
     '<title>ugPlot live discoveries</title><style>',
     ':root{--ink:#101a3a;--muted:#6f7b9d;--violet:#6d55ff;--cyan:#1dc7d5;--green:#22b982;--orange:#f59b32;--line:#e4e8f5}',
     '*{box-sizing:border-box}body{margin:0;font:15px/1.45 Inter,system-ui,sans-serif;color:var(--ink);background:radial-gradient(circle at 8% 12%,#e9e2ff 0,transparent 27%),radial-gradient(circle at 92% 15%,#d9fbff 0,transparent 28%),#f6f9ff}',
-    '.shell{max-width:1500px;margin:auto;padding:28px}.hero,.panel{background:#fffdfdcc;border:1px solid #fff;border-radius:26px;box-shadow:0 18px 50px #28366d12}.hero{padding:28px 32px;margin-bottom:20px}.eyebrow{color:var(--violet);font-weight:800;letter-spacing:.13em;font-size:12px}.hero h1{font-size:clamp(28px,4vw,48px);margin:6px 0}.hero p{color:var(--muted);margin:0}.connect{display:grid;grid-template-columns:1.4fr 1fr auto;gap:12px;margin-top:22px}label{font-size:12px;font-weight:800;color:#56617f}input,button{width:100%;padding:13px 15px;border-radius:13px;border:1px solid var(--line);font:inherit}button{width:auto;background:linear-gradient(135deg,var(--violet),#3f8dff,var(--cyan));color:white;font-weight:800;border:0;cursor:pointer}',
-    '.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:20px 0}.stat{padding:18px 20px;background:#ffffffd9;border:1px solid #fff;border-radius:18px}.stat b{display:block;font-size:28px}.stat span{color:var(--muted);font-size:12px;text-transform:uppercase;font-weight:800}.panel{padding:20px}.toolbar{display:flex;align-items:center;gap:12px;justify-content:space-between;margin-bottom:14px}.toolbar input{max-width:420px}.live{color:var(--green);font-weight:800}.table-wrap{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:16px}table{border-collapse:separate;border-spacing:0;width:100%;min-width:1200px}th{position:sticky;top:0;background:#f7f8fe;text-align:left;padding:12px;color:#687392;font-size:11px;letter-spacing:.08em;text-transform:uppercase;z-index:1}td{padding:11px 12px;border-top:1px solid #edf0f8;white-space:nowrap}tr:hover td{background:#f7fbff}.badge{padding:5px 9px;border-radius:999px;font-size:11px;font-weight:800}.preliminary{background:#fff0dc;color:#a96000}.stabilized{background:#dcfaef;color:#087958}.stability-complete{background:#e8efff;color:#3159a5}.type-ml{background:#fff0e7;color:#d65b18}.type-cpg{background:#dff6ff;color:#0878a7}.type-both{background:#f5ddff;color:#8c189a}.empty{text-align:center;padding:60px;color:var(--muted)}.note{font-size:12px;color:var(--muted);margin-top:10px}',
+    '.shell{max-width:1500px;margin:auto;padding:28px}.hero,.panel{background:#fffdfdcc;border:1px solid #fff;border-radius:26px;box-shadow:0 18px 50px #28366d12}.hero{padding:28px 32px;margin-bottom:20px}.eyebrow{color:var(--violet);font-weight:800;letter-spacing:.13em;font-size:12px}.hero h1{font-size:clamp(28px,4vw,48px);margin:6px 0}.hero p{color:var(--muted);margin:0}.connect{display:grid;grid-template-columns:1fr auto;gap:12px;margin-top:22px}label{font-size:12px;font-weight:800;color:#56617f}input,button{width:100%;padding:13px 15px;border-radius:13px;border:1px solid var(--line);font:inherit}button{width:auto;background:linear-gradient(135deg,var(--violet),#3f8dff,var(--cyan));color:white;font-weight:800;border:0;cursor:pointer}',
+    '.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:20px 0}.stat{padding:18px 20px;background:#ffffffd9;border:1px solid #fff;border-radius:18px}.stat b{display:block;font-size:28px}.stat span{color:var(--muted);font-size:12px;text-transform:uppercase;font-weight:800}.panel{padding:20px}.toolbar{display:flex;align-items:center;gap:12px;justify-content:space-between;margin-bottom:14px}.toolbar input{max-width:420px}.live{color:var(--green);font-weight:800}.table-wrap{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:16px}table{border-collapse:separate;border-spacing:0;width:100%;min-width:1200px}th{position:sticky;top:0;background:#f7f8fe;text-align:left;padding:12px;color:#687392;font-size:11px;letter-spacing:.08em;text-transform:uppercase;z-index:1}td{padding:11px 12px;border-top:1px solid #edf0f8;white-space:nowrap}tr:hover td{background:#f7fbff}.badge{padding:5px 9px;border-radius:999px;font-size:11px;font-weight:800}.awaiting-analysis{background:#eef1f8;color:#69738d}.preliminary{background:#fff0dc;color:#a96000}.stabilized{background:#dcfaef;color:#087958}.stability-complete{background:#e8efff;color:#3159a5}.type-ml{background:#fff0e7;color:#d65b18}.type-cpg{background:#dff6ff;color:#0878a7}.type-both{background:#f5ddff;color:#8c189a}.empty{text-align:center;padding:60px;color:var(--muted)}.note{font-size:12px;color:var(--muted);margin-top:10px}',
     '@media(max-width:800px){.shell{padding:12px}.connect{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr}.toolbar{align-items:stretch;flex-direction:column}.toolbar input{max-width:none}}</style></head><body>',
     '<main class="shell"><section class="hero"><div class="eyebrow">UGPLOT LIVE DISCOVERY REPORT</div><h1 id="title">Scientific discoveries as they emerge</h1><p id="subtitle">Connect to a running GEO job. Preliminary rows become stabilized evidence automatically.</p>',
-    '<div class="connect"><div><label>UGPLOT SERVER</label><input id="server" placeholder="http://fy2.example.com:8080"></div><div><label>JOB ID</label><input id="job" placeholder="Paste the job ID"></div><div style="align-self:end"><button id="connect">Open report</button></div></div></section>',
+    '<div class="connect"><div><label>JOB ID ON THIS SERVER</label><input id="job" placeholder="Paste the job ID"></div><div style="align-self:end"><button id="connect">Open report</button></div></div></section>',
     '<section class="stats"><div class="stat"><b id="total">&mdash;</b><span>Total groups</span></div><div class="stat"><b id="screened">&mdash;</b><span>Screened</span></div><div class="stat"><b id="stabilized">&mdash;</b><span>Stabilized</span></div><div class="stat"><b id="best">&mdash;</b><span>Best median R&sup2;</span></div></section>',
     '<section class="panel"><div class="toolbar"><div><strong>Discovery table</strong> <span class="live" id="live">&#9679; waiting</span></div><input id="search" placeholder="Search gene, transcript, CpG or model"></div><div class="table-wrap"><table><thead><tr>',
-    '<th>Status</th><th>Type</th><th>Gene</th><th>Transcript</th><th>Best CpG</th><th>CpG &rho;</th><th>Model</th><th>Median R&sup2;</th><th>Min R&sup2;</th><th>Max R&sup2;</th><th>Seeds</th><th>Samples</th><th>Group</th></tr></thead><tbody id="rows"></tbody></table><div class="empty" id="empty">Connect to a job to see its discoveries.</div></div><div class="note">Preliminary evidence comes from model screening. Stabilized evidence has completed the configured seed stability analysis.</div></section></main>',
+    '<th>Status</th><th>Type</th><th>Gene</th><th>Transcript</th><th>Best CpG</th><th>CpG &rho;</th><th>Model</th><th>Median R&sup2;</th><th>Min R&sup2;</th><th>Max R&sup2;</th><th>Seeds</th><th>Samples</th><th>Group</th></tr></thead><tbody id="rows"></tbody></table><div class="empty" id="empty">Connect to a job to see its discoveries.</div></div><div class="note">Awaiting analysis means the transcript and CpG are known but model screening is not complete. Preliminary evidence comes from model screening. Stabilized evidence has completed the configured seed stability analysis.</div></section></main>',
     '<script>const initialJob=', encoded_job, ';const $=id=>document.getElementById(id);let all=[];const scalar=v=>Array.isArray(v)?v[0]:v;const normalize=o=>Object.fromEntries(Object.entries(o||{}).map(([k,v])=>[k,scalar(v)]));const fmt=v=>v===null||v===undefined||v===""||!Number.isFinite(Number(v))?"\\u2014":Number(v).toFixed(3);',
-    '$("server").value=location.origin;$("job").value=initialJob;function openReport(){const s=$("server").value.replace(/\\/+$/,"");const j=$("job").value.trim();if(j)location.href=s+"/reports/"+encodeURIComponent(j)}$("connect").onclick=openReport;$("job").addEventListener("keydown",e=>{if(e.key==="Enter")openReport()});',
+    '$("job").value=initialJob;function openReport(){const j=$("job").value.trim();if(j)location.href="/reports/"+encodeURIComponent(j)}$("connect").onclick=openReport;$("job").addEventListener("keydown",e=>{if(e.key==="Enter")openReport()});',
     'function badge(v){const c=v.replace(/ /g,"-");return `<span class="badge ${c}">${v}</span>`}function typeBadge(v){let c=v.startsWith("ML")?"type-ml":v.includes("&")?"type-both":"type-cpg";return `<span class="badge ${c}">${v}</span>`}',
     'function esc(v){const d=document.createElement("div");d.textContent=v??"";return d.innerHTML}function render(){const q=$("search").value.toLowerCase();const data=all.filter(r=>Object.values(r).join(" ").toLowerCase().includes(q));$("rows").innerHTML=data.map(r=>`<tr><td>${badge(esc(r.status))}</td><td>${typeBadge(esc(r.type))}</td><td><b>${esc(r.gene)}</b></td><td>${esc(r.transcript)}</td><td>${esc(r.best_cpg)}</td><td>${fmt(r.cpg_rho)}</td><td>${esc(r.model)}</td><td><b>${fmt(r.median_r2)}</b></td><td>${fmt(r.min_r2)}</td><td>${fmt(r.max_r2)}</td><td>${fmt(r.seeds).replace(".000","")}</td><td>${fmt(r.samples).replace(".000","")}</td><td>${esc(r.group)}</td></tr>`).join("");$("empty").style.display=data.length?"none":"block"}$("search").oninput=render;',
     'async function load(){if(!initialJob)return;try{const r=await fetch(`/reports/${encodeURIComponent(initialJob)}/data`,{cache:"no-store"});if(!r.ok)throw Error(await r.text());const d=await r.json();const job=normalize(d.job);const progress=normalize(d.progress);const raw=Array.isArray(d.discoveries)?d.discoveries:Object.values(d.discoveries||{});all=raw.map(normalize);$("total").textContent=progress.total||"\\u2014";$("screened").textContent=progress.screened||0;$("stabilized").textContent=progress.stabilized||0;const vals=all.map(x=>Number(x.median_r2)).filter(Number.isFinite);$("best").textContent=vals.length?Math.max(...vals).toFixed(3):"\\u2014";$("title").textContent=(job.accession||"ugPlot")+" live discoveries";$("subtitle").textContent=(job.target?"Target: "+job.target+" \\u00b7 ":"")+(job.message||job.state);$("live").textContent="\\u25cf updated "+new Date().toLocaleTimeString();render()}catch(e){$("live").textContent="\\u25cf "+e.message;$("live").style.color="#d44"}}load();setInterval(load,10000);</script></body></html>')

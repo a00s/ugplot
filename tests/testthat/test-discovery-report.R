@@ -42,17 +42,34 @@ test_that("incremental discovery report upgrades screened groups with stability"
   stability$Stable <- TRUE
   utils::write.csv(screening, paths$screening, row.names = FALSE)
   utils::write.csv(stability, paths$stability, row.names = FALSE)
+  group_candidates <- screening
+  group_candidates$Phase <- NULL
+  group_candidates$BestModel <- NULL
+  group_candidates$MedianMetric <- NULL
+  group_candidates$BestMetric <- NULL
+  group_candidates$SeedsRun <- NULL
+  group_candidates <- rbind(
+    group_candidates,
+    transform(group_candidates[1, , drop = FALSE],
+      GroupID = "TG3", PrincipalTranscript = "ENST3", Gene = "GENE3",
+      TriggerBestCpG = "cg3", TriggerBestRho = 0.74
+    )
+  )
+  dir.create(dirname(paths$groups), recursive = TRUE, showWarnings = FALSE)
+  utils::write.csv(group_candidates, paths$groups, row.names = FALSE)
   write_atomic(data.frame(GroupID = c("TG1", "TG2", "TG3")), paths$manifest)
 
   report <- report_job(status$id, jobs_dir)
   expect_equal(report$progress$total, 3L)
   expect_equal(report$progress$screened, 2L)
   expect_equal(report$progress$stabilized, 1L)
-  expect_length(report$discoveries, 2L)
+  expect_length(report$discoveries, 3L)
   expect_equal(report$discoveries[[1]]$status, "stabilized")
   expect_equal(report$discoveries[[1]]$gene, "GENE1")
   expect_equal(report$discoveries[[1]]$median_r2, 0.82)
   expect_equal(report$discoveries[[2]]$status, "preliminary")
+  expect_equal(report$discoveries[[3]]$status, "awaiting analysis")
+  expect_equal(report$discoveries[[3]]$best_cpg, "cg3")
   expect_false(any(grepl("Path$", names(report$discoveries[[1]]))))
 })
 
@@ -62,4 +79,6 @@ test_that("discovery report HTML accepts a direct job link", {
   expect_match(report_html, "job-123", fixed = TRUE)
   expect_match(report_html, "Preliminary evidence", fixed = TRUE)
   expect_match(report_html, "raw.map(normalize)", fixed = TRUE)
+  expect_false(grepl('id="server"', report_html, fixed = TRUE))
+  expect_match(report_html, 'location.href="/reports/"', fixed = TRUE)
 })

@@ -446,9 +446,9 @@ While a GEO job is running, click **Live report** in its **JOBS** row. You can a
 http://YOUR-SERVER:8080/reports/JOB-ID
 ```
 
-The page is public and refreshes automatically. It shows each gene/transcript as soon as its screening finishes, without waiting for every group in the job. Orange **preliminary** rows are early screening evidence; green **stabilized** rows have completed the configured seed stability analysis. Use the search field to find a gene, transcript, CpG, model, or transcript group.
+The page is public and refreshes automatically. As soon as a transcript group and CpG are known, a gray **awaiting analysis** row appears. Orange **preliminary** rows have completed model screening, and green **stabilized** rows have completed the configured seed stability analysis. Use the search field to find a gene, transcript, CpG, model, or transcript group.
 
-Opening `http://YOUR-SERVER:8080/reports` displays a connection form where a user can paste the server address and job ID. The report transfers only a small summary table, not the full dataset or model files.
+Opening `http://YOUR-SERVER:8080/reports` displays a field for a job ID hosted by that same server. A report opened on Fy2 therefore accepts only an Fy2 job; it cannot redirect to another ugPlot server. The report transfers only a small summary table, not the full dataset or model files.
 
 ### 5.5 Interpreting output
 
