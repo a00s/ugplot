@@ -12815,6 +12815,32 @@ server <- function(input, output, session) {
     invisible(result)
   }
 
+  update_cached_remote_job_status <- function(job_id, server_name, status) {
+    job_id <- as.character(job_id %||% "")
+    server_name <- as.character(server_name %||% "")
+    if (!nzchar(job_id) || !is.list(status)) return(invisible(FALSE))
+    jobs <- isolate(remote_jobs())
+    if (!is.data.frame(jobs) || nrow(jobs) == 0L || !"id" %in% names(jobs)) {
+      return(invisible(FALSE))
+    }
+    row_index <- which(as.character(jobs$id) == job_id)
+    if (nzchar(server_name) && "server" %in% names(jobs)) {
+      row_index <- row_index[as.character(jobs$server[row_index]) == server_name]
+    }
+    if (length(row_index) == 0L) return(invisible(FALSE))
+    row_index <- row_index[[1]]
+    fields <- intersect(
+      c("name", "type", "state", "progress", "message", "pid", "resumable", "updated_at"),
+      intersect(names(jobs), names(status))
+    )
+    for (field in fields) {
+      value <- status[[field]]
+      if (length(value) > 0L) jobs[[field]][[row_index]] <- value[[1]]
+    }
+    remote_jobs(jobs)
+    invisible(TRUE)
+  }
+
   refresh_remote_job_monitor <- function(job_id, server_name = NULL, quiet = FALSE) {
     if (!nzchar(job_id %||% "") || isTRUE(remote_job_monitor_inflight())) return(invisible(NULL))
     remote_job_monitor_inflight(TRUE)
@@ -12868,6 +12894,7 @@ server <- function(input, output, session) {
       remote_job_log_text("")
     }
     remote_job_preview_status(status)
+    update_cached_remote_job_status(job_id, server_name, status)
     remote_job_resources_data(resources)
     remote_job_groups_data(groups)
     status_text <- remote_status_summary_text(remote_status_with_live_message(status, resources))
@@ -13552,24 +13579,7 @@ server <- function(input, output, session) {
     }
     remote_job_preview_status(status)
 
-    jobs <- isolate(remote_jobs())
-    if (is.data.frame(jobs) && nrow(jobs) > 0L && "id" %in% names(jobs)) {
-      row_index <- which(as.character(jobs$id) == job_id)
-      if (nzchar(server_name) && "server" %in% names(jobs)) {
-        row_index <- row_index[as.character(jobs$server[row_index]) == server_name]
-      }
-      if (length(row_index) > 0L) {
-        row_index <- row_index[[1]]
-        for (field in intersect(
-          c("name", "type", "state", "progress", "message", "pid", "resumable", "updated_at"),
-          intersect(names(jobs), names(status))
-        )) {
-          value <- status[[field]]
-          if (length(value) > 0L) jobs[[field]][[row_index]] <- value[[1]]
-        }
-        remote_jobs(jobs)
-      }
-    }
+    update_cached_remote_job_status(job_id, server_name, status)
 
     checked_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
     remote_job_monitor_state(list(
