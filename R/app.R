@@ -13362,11 +13362,23 @@ server <- function(input, output, session) {
       actions <- vapply(seq_along(job_ids), function(i) {
         job_id <- htmltools::htmlEscape(job_ids[[i]], attribute = TRUE)
         action_key <- htmltools::htmlEscape(remote_job_action_key(server_names[[i]], job_ids[[i]]), attribute = TRUE)
-        buttons <- paste0(
-          "<button type='button' class='btn btn-default btn-sm remote-job-refresh-icon' ",
-          "title='Refresh only this job (lightweight status)' aria-label='Refresh only this job' ",
-          "onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_refresh_job_row', '", action_key,
-          "', {priority: 'event'});\"><span class='glyphicon glyphicon-refresh' aria-hidden='true'></span></button>"
+        icon_button <- function(class_name, icon_name, title, input_name = "", disabled = FALSE) {
+          escaped_title <- htmltools::htmlEscape(title, attribute = TRUE)
+          action_attribute <- if (isTRUE(disabled) || !nzchar(input_name)) "" else paste0(
+            " onclick=\"event.stopPropagation(); Shiny.setInputValue('", input_name, "', '",
+            action_key, "', {priority: 'event'});\""
+          )
+          paste0(
+            "<button type='button' class='btn btn-sm remote-job-action-icon ", class_name, "'",
+            " title='", escaped_title, "' aria-label='", escaped_title, "'",
+            if (isTRUE(disabled)) " disabled" else "", action_attribute, ">",
+            "<span class='glyphicon glyphicon-", icon_name, "' aria-hidden='true'></span>",
+            "</button>"
+          )
+        }
+        buttons <- icon_button(
+          "remote-job-action-refresh", "refresh",
+          "Refresh this job's lightweight status", "remote_refresh_job_row"
         )
         if (isTRUE(remote_server_supports("job_discovery_report", server_names[[i]]))) {
           report_server <- tryCatch(remote_server_by_name(server_names[[i]]), error = function(e) NULL)
@@ -13377,30 +13389,57 @@ server <- function(input, output, session) {
               utils::URLencode(job_ids[[i]], reserved = TRUE)
             )
             buttons <- c(buttons, paste0(
-              "<a class='btn btn-primary btn-sm' href='",
+              "<a class='btn btn-sm remote-job-action-icon remote-job-action-live' href='",
               htmltools::htmlEscape(report_url, attribute = TRUE),
-              "' target='_blank' rel='noopener' onclick='event.stopPropagation();'>Live report</a>"
+              "' target='_blank' rel='noopener' title='Open the live discovery report in a new tab' ",
+              "aria-label='Open the live discovery report in a new tab' onclick='event.stopPropagation();'>",
+              "<span class='glyphicon glyphicon-eye-open' aria-hidden='true'></span></a>"
             ))
           }
         }
         if (isTRUE(can_load[[i]])) {
-          buttons <- c(buttons, paste0("<button type='button' class='btn btn-default btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_load_result_row', '", action_key, "', {priority: 'event'});\">", load_labels[[i]], "</button>"))
+          load_title <- if (identical(load_labels[[i]], "Load")) {
+            "Download and load this job's completed results"
+          } else {
+            "Download and load the partial results available for this job"
+          }
+          buttons <- c(buttons, icon_button(
+            "remote-job-action-load", "download-alt", load_title, "remote_load_result_row"
+          ))
         } else {
-          buttons <- c(buttons, "<button type='button' class='btn btn-default btn-sm' disabled title='Stop or wait for the job before loading the full dataset/results.'>Load</button>")
+          buttons <- c(buttons, icon_button(
+            "remote-job-action-load", "download-alt",
+            "Results can be downloaded after the job is paused or completed", disabled = TRUE
+          ))
         }
         if (isTRUE(can_stop[[i]])) {
-          buttons <- c(buttons, paste0("<button type='button' class='btn btn-danger btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_stop_job_row', '", action_key, "', {priority: 'event'});\">Stop</button>"))
+          buttons <- c(buttons, icon_button(
+            "remote-job-action-stop", "stop",
+            "Stop immediately; the current unfinished task may be discarded", "remote_stop_job_row"
+          ))
         }
         if (isTRUE(can_drain[[i]])) {
-          buttons <- c(buttons, paste0("<button type='button' class='btn btn-warning btn-sm' title='Finish active tasks, checkpoint, then stop safely' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_drain_job_row', '", action_key, "', {priority: 'event'});\">Stop smoothly</button>"))
+          buttons <- c(buttons, icon_button(
+            "remote-job-action-pause", "pause",
+            "Pause safely after active tasks finish and save the checkpoint", "remote_drain_job_row"
+          ))
         } else if (identical(states[[i]], "draining")) {
-          buttons <- c(buttons, "<button type='button' class='btn btn-warning btn-sm' disabled>Draining…</button>")
+          buttons <- c(buttons, icon_button(
+            "remote-job-action-pause", "time",
+            "Safe pause requested; waiting for active tasks to finish", disabled = TRUE
+          ))
         }
         if (isTRUE(can_resume[[i]])) {
-          buttons <- c(buttons, paste0("<button type='button' class='btn btn-success btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_resume_job_row', '", action_key, "', {priority: 'event'});\">Resume</button>"))
+          buttons <- c(buttons, icon_button(
+            "remote-job-action-resume", "play",
+            "Resume this job from its saved checkpoint", "remote_resume_job_row"
+          ))
         }
         if (isTRUE(can_delete[[i]])) {
-          buttons <- c(buttons, paste0("<button type='button' class='btn btn-danger btn-sm' onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_delete_job_request', '", action_key, "', {priority: 'event'});\">Delete</button>"))
+          buttons <- c(buttons, icon_button(
+            "remote-job-action-delete", "trash",
+            "Permanently delete this job and its stored results", "remote_delete_job_request"
+          ))
         }
         paste0("<div class='remote-job-actions'>", paste(buttons, collapse = ""), "</div>")
       }, character(1))

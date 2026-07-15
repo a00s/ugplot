@@ -523,20 +523,43 @@ table.dataTable th.dt-error-column {
   border-color: #dce2ef;
   background: rgba(255,255,255,.86);
 }
-.remote-job-actions .remote-job-refresh-icon {
-  width: 28px;
-  min-width: 28px;
-  padding: 5px 6px;
-  color: #6351e8;
-  border-color: rgba(99,81,232,.28);
-  background: #fff;
+.remote-job-actions .remote-job-action-icon {
+  display: inline-flex;
+  width: 31px;
+  min-width: 31px;
+  height: 31px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  border: 0 !important;
+  border-radius: 10px !important;
+  color: #fff !important;
+  box-shadow: 0 5px 12px rgba(50, 62, 105, .15);
+  line-height: 1;
 }
-.remote-job-actions .remote-job-refresh-icon:hover,
-.remote-job-actions .remote-job-refresh-icon:focus {
-  color: #fff;
-  border-color: transparent;
-  background: linear-gradient(135deg, #6f52ff, #1fbfd0);
+.remote-job-actions .remote-job-action-icon .glyphicon { top: 0; }
+.remote-job-actions .remote-job-action-icon:hover,
+.remote-job-actions .remote-job-action-icon:focus {
+  color: #fff !important;
+  box-shadow: 0 8px 17px rgba(50, 62, 105, .24);
+  transform: translateY(-2px);
 }
+.remote-job-actions .remote-job-action-icon[disabled] {
+  color: #929bb0 !important;
+  background: #e9edf5 !important;
+  box-shadow: none;
+  opacity: .72;
+  transform: none;
+}
+.remote-job-action-refresh { background: linear-gradient(135deg, #7657ff, #596dff) !important; }
+.remote-job-action-live { background: linear-gradient(135deg, #6554ff, #258cf5) !important; }
+.remote-job-action-load { background: linear-gradient(135deg, #258cf5, #20bfd0) !important; }
+.remote-job-action-stop,
+.remote-job-action-delete { background: linear-gradient(135deg, #ff6476, #ff7659) !important; }
+.remote-job-action-pause { color: #4f3500 !important; background: linear-gradient(135deg, #ffd15a, #ff9e49) !important; }
+.remote-job-actions .remote-job-action-pause:hover,
+.remote-job-actions .remote-job-action-pause:focus { color: #4f3500 !important; }
+.remote-job-action-resume { background: linear-gradient(135deg, #22b77a, #18bea5) !important; }
 
 .remote-selected-monitor {
   margin: 8px 0 14px;
@@ -681,7 +704,6 @@ table.dataTable th.dt-error-column {
 }
 
 .remote-job-actions .btn {
-  padding: 4px 8px;
   line-height: 1.2;
 }
 
