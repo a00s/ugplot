@@ -93,6 +93,40 @@ test_that("transcript progress rows reuse a preloaded candidate matrix", {
   expect_true(file.exists(row$DatasetPath))
 })
 
+test_that("shared transcript matrix is read in blocks and reports scan progress", {
+  build_dataset <- ugplot_test_internal("ugplot_geo_transcript_dataset")
+  matrix_path <- tempfile("ugplot-matrix-", fileext = ".tsv")
+  on.exit(unlink(matrix_path, force = TRUE), add = TRUE)
+  old_option <- options(ugplot.geo.matrix.chunk_lines = 100L)
+  on.exit(options(old_option), add = TRUE)
+
+  probe_ids <- paste0("cg", seq_len(205L))
+  matrix_lines <- c(
+    "ID_REF\tS1\tS2",
+    paste(probe_ids, seq_len(205L) / 1000, seq_len(205L) / 500, sep = "\t")
+  )
+  writeLines(matrix_lines, matrix_path)
+  metadata <- data.frame(
+    sample_id = c("S1", "S2"), age = c(31, 42),
+    stringsAsFactors = FALSE
+  )
+  updates <- list()
+
+  dataset <- build_dataset(
+    matrix_files = matrix_path, metadata = metadata,
+    target_column = "age", cpgs = c("cg1", "cg205"),
+    progress_callback = function(scanned, found, total) {
+      updates[[length(updates) + 1L]] <<- c(scanned = scanned, found = found, total = total)
+    }
+  )
+
+  expect_equal(names(dataset), c("sample_id", "age", "cg1", "cg205"))
+  expect_equal(dataset$cg1, c(0.001, 0.002))
+  expect_equal(dataset$cg205, c(0.205, 0.41))
+  expect_gte(length(updates), 3L)
+  expect_equal(unname(utils::tail(updates, 1L)[[1L]]), c(205, 2, 2))
+})
+
 test_that("transcript dataset progress reports concrete counts and ETA fields", {
   build_groups <- ugplot_test_internal("ugplot_geo_build_transcript_groups_remote")
   dataset_path <- ugplot_test_internal("ugplot_geo_transcript_dataset_path")

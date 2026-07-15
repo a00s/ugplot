@@ -723,11 +723,37 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
         )
       )
     }
+    matrix_started_at <- Sys.time()
     ugplot_geo_transcript_dataset(
       matrix_files = matrix_files,
       metadata = metadata,
       target_column = target_column,
-      cpgs = needed_cpgs
+      cpgs = needed_cpgs,
+      progress_callback = function(scanned, found, total) {
+        if (is.null(progress_callback)) return(invisible(NULL))
+        elapsed <- max(0.001, as.numeric(difftime(Sys.time(), matrix_started_at, units = "secs")))
+        rows_per_sec <- scanned / elapsed
+        progress_callback(
+          min(1, initial_completed / max(1, total_transcripts)),
+          paste0(
+            "Preparing shared transcript matrix: scanned ",
+            format(scanned, big.mark = ",", scientific = FALSE),
+            " matrix rows at ", format(round(rows_per_sec), big.mark = ",", scientific = FALSE),
+            "/s; found ", found, "/", total, " required CpGs; ",
+            initial_completed, "/", total_transcripts, " transcript datasets cached"
+          ),
+          list(
+            name = "transcript_datasets", phase = "preparing_matrix",
+            completed = initial_completed, total = total_transcripts,
+            remaining = max(0L, total_transcripts - initial_completed),
+            groups = initial_groups, candidate_cpgs = length(needed_cpgs),
+            matrix_rows_scanned = scanned, matrix_cpgs_found = found,
+            matrix_cpgs_total = total, matrix_rows_per_sec = rows_per_sec,
+            rate_per_min = NA_real_, eta_seconds = NA_real_
+          )
+        )
+        invisible(NULL)
+      }
     )
   } else {
     NULL

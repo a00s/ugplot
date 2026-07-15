@@ -13833,6 +13833,10 @@ server <- function(input, output, session) {
       transcript_groups <- stage_number("groups", 0)
       transcript_rate <- stage_number("rate_per_min", NA_real_)
       transcript_eta <- stage_number("eta_seconds", NA_real_)
+      matrix_rows <- stage_number("matrix_rows_scanned", NA_real_)
+      matrix_found <- stage_number("matrix_cpgs_found", NA_real_)
+      matrix_total <- stage_number("matrix_cpgs_total", NA_real_)
+      matrix_rate <- stage_number("matrix_rows_per_sec", NA_real_)
       eta_display <- if (!is.finite(transcript_eta)) "Calculating" else if (transcript_eta < 120) {
         paste0(round(transcript_eta), " sec")
       } else if (transcript_eta < 7200) {
@@ -13840,14 +13844,25 @@ server <- function(input, output, session) {
       } else {
         paste0(round(transcript_eta / 3600, 1), " h")
       }
-      list(
-        metric("Overall progress", if (is.na(progress_pct)) "—" else paste0(progress_pct, "%"), tools::toTitleCase(state)),
-        metric("Transcripts", if (is.finite(transcript_total)) paste0(transcript_completed, " / ", transcript_total) else "—", "datasets completed"),
-        metric("Remaining", if (is.finite(transcript_remaining)) as.character(transcript_remaining) else "—", if (is.finite(transcript_rate)) paste0(round(transcript_rate, 1), " transcripts/min") else "preparing shared matrix"),
-        metric("Groups found", as.character(transcript_groups), "equivalent transcript datasets"),
-        metric("Estimated time", eta_display, "based on the current run"),
-        metric("Job memory", if (is.finite(memory)) paste0(round(memory), " MB") else "—", paste("CPU", if (is.finite(cpu)) paste0(round(cpu, 1), "%") else "—", "· signal", signal_label))
-      )
+      if (identical(remote_status_scalar(stage_progress$phase), "preparing_matrix") && is.finite(matrix_rows)) {
+        list(
+          metric("Matrix rows", format(matrix_rows, big.mark = ",", scientific = FALSE), if (is.finite(matrix_rate)) paste0(format(round(matrix_rate), big.mark = ",", scientific = FALSE), " rows/sec") else "shared GEO scan"),
+          metric("Required CpGs", if (is.finite(matrix_total)) paste0(matrix_found, " / ", matrix_total) else "—", "found in the source matrix"),
+          metric("Cached transcripts", if (is.finite(transcript_total)) paste0(transcript_completed, " / ", transcript_total) else "—", "dataset building starts after this scan"),
+          metric("Remaining", if (is.finite(transcript_remaining)) as.character(transcript_remaining) else "—", "transcript datasets to build"),
+          metric("Groups found", as.character(transcript_groups), "from cached datasets"),
+          metric("Job memory", if (is.finite(memory)) paste0(round(memory), " MB") else "—", paste("CPU", if (is.finite(cpu)) paste0(round(cpu, 1), "%") else "—", "· signal", signal_label))
+        )
+      } else {
+        list(
+          metric("Overall progress", if (is.na(progress_pct)) "—" else paste0(progress_pct, "%"), tools::toTitleCase(state)),
+          metric("Transcripts", if (is.finite(transcript_total)) paste0(transcript_completed, " / ", transcript_total) else "—", "datasets completed"),
+          metric("Remaining", if (is.finite(transcript_remaining)) as.character(transcript_remaining) else "—", if (is.finite(transcript_rate)) paste0(round(transcript_rate, 1), " transcripts/min") else "preparing shared matrix"),
+          metric("Groups found", as.character(transcript_groups), "equivalent transcript datasets"),
+          metric("Estimated time", eta_display, "based on the current run"),
+          metric("Job memory", if (is.finite(memory)) paste0(round(memory), " MB") else "—", paste("CPU", if (is.finite(cpu)) paste0(round(cpu, 1), "%") else "—", "· signal", signal_label))
+        )
+      }
     } else {
       list(
         metric("Overall progress", if (is.na(progress_pct)) "—" else paste0(progress_pct, "%"), tools::toTitleCase(state)),

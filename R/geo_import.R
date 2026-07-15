@@ -1451,6 +1451,10 @@ ugplot_geo_transcript_dataset <- function(matrix_files, metadata, target_column,
 
   file_maps <- split(sample_map, sample_map$Path)
   scanned <- 0L
+  chunk_lines <- suppressWarnings(as.integer(getOption("ugplot.geo.matrix.chunk_lines", 10000L)))
+  if (!is.finite(chunk_lines) || chunk_lines < 100L) {
+    chunk_lines <- 10000L
+  }
   for (path in names(file_maps)) {
     map <- file_maps[[path]]
     file_found <- rep(FALSE, length(cpgs))
@@ -1458,20 +1462,29 @@ ugplot_geo_transcript_dataset <- function(matrix_files, metadata, target_column,
     on.exit(try(close(con), silent = TRUE), add = TRUE)
     readLines(con, n = 1, warn = FALSE)
     repeat {
-      line <- readLines(con, n = 1, warn = FALSE)
-      if (length(line) == 0) {
+      lines <- readLines(con, n = chunk_lines, warn = FALSE)
+      if (length(lines) == 0L) {
         break
       }
-      parts <- strsplit(line, "\t", fixed = TRUE)[[1]]
-      cpg <- parts[[1]]
-      if (cpg %in% names(cpg_index)) {
-        numeric_values <- suppressWarnings(as.numeric(parts[map$ColumnIndex]))
-        values[map$MetadataRow, cpg_index[[cpg]]] <- numeric_values
-        found[[cpg_index[[cpg]]]] <- TRUE
-        file_found[[cpg_index[[cpg]]]] <- TRUE
+      # GEO matrices can contain hundreds of thousands of probe rows. Reading
+      # one row per readLines() call makes the interpreter and connection
+      # overhead dominate the actual parsing. Extract row IDs for a whole
+      # block, then split only the rows requested by the caller.
+      row_ids <- sub("\t.*$", "", lines)
+      wanted_rows <- which(row_ids %in% names(cpg_index))
+      if (length(wanted_rows) > 0L) {
+        wanted_parts <- strsplit(lines[wanted_rows], "\t", fixed = TRUE)
+        for (i in seq_along(wanted_rows)) {
+          cpg <- row_ids[[wanted_rows[[i]]]]
+          parts <- wanted_parts[[i]]
+          numeric_values <- suppressWarnings(as.numeric(parts[map$ColumnIndex]))
+          values[map$MetadataRow, cpg_index[[cpg]]] <- numeric_values
+          found[[cpg_index[[cpg]]]] <- TRUE
+          file_found[[cpg_index[[cpg]]]] <- TRUE
+        }
       }
-      scanned <- scanned + 1L
-      if (!is.null(progress_callback) && scanned %% 10000L == 0L) {
+      scanned <- scanned + length(lines)
+      if (!is.null(progress_callback)) {
         progress_callback(scanned, sum(found), length(cpgs))
       }
       if (all(file_found)) {
