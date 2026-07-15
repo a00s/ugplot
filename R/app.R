@@ -1047,8 +1047,6 @@ ui <- fluidPage(
         tags$div(
           class = "remote-selected-monitor-controls",
           uiOutput("remote_selected_job_identity"),
-          actionButton("remote_refresh_selected_job", "Refresh selected job", icon = icon("heartbeat")),
-          checkboxInput("remote_auto_monitor_job", "Auto-monitor every 8 seconds", value = TRUE),
           actionButton("remote_refresh_selected_details", "Load selected job details (slower)", icon = icon("microscope"))
         ),
         uiOutput("remote_selected_job_monitor"),
@@ -13010,18 +13008,6 @@ server <- function(input, output, session) {
     invisible(status)
   }
 
-  remote_resource_refresh_timer <- reactiveTimer(8000, session = session)
-  observe({
-    remote_resource_refresh_timer()
-    if (!isTRUE(input$remote_auto_monitor_job) || !identical(input$tabs %||% "", "JOBS")) return()
-    job_id <- input$remote_job_id %||% ""
-    if (!nzchar(job_id)) {
-      remote_job_groups_data(list(groups = data.frame()))
-      return()
-    }
-    try(refresh_remote_job_monitor(job_id, quiet = TRUE), silent = TRUE)
-  })
-
   load_remote_job_bundle_locally <- function(job_id, server_name = NULL) {
     req(nzchar(job_id %||% ""))
     server <- remote_server_by_name(server_name %||% remote_server_name_for_job(job_id))
@@ -13349,7 +13335,12 @@ server <- function(input, output, session) {
       actions <- vapply(seq_along(job_ids), function(i) {
         job_id <- htmltools::htmlEscape(job_ids[[i]], attribute = TRUE)
         action_key <- htmltools::htmlEscape(remote_job_action_key(server_names[[i]], job_ids[[i]]), attribute = TRUE)
-        buttons <- character()
+        buttons <- paste0(
+          "<button type='button' class='btn btn-default btn-sm remote-job-refresh-icon' ",
+          "title='Refresh only this job (lightweight status)' aria-label='Refresh only this job' ",
+          "onclick=\"event.stopPropagation(); Shiny.setInputValue('remote_refresh_job_row', '", action_key,
+          "', {priority: 'event'});\"><span class='glyphicon glyphicon-refresh' aria-hidden='true'></span></button>"
+        )
         if (isTRUE(remote_server_supports("job_discovery_report", server_names[[i]]))) {
           report_server <- tryCatch(remote_server_by_name(server_names[[i]]), error = function(e) NULL)
           report_base <- if (is.list(report_server)) as.character(report_server$url %||% "") else ""
@@ -13438,11 +13429,21 @@ server <- function(input, output, session) {
       }
       freezeReactiveValue(input, "remote_job_id")
       updateTextInput(session, "remote_job_id", value = job_id)
-      tryCatch({
-        refresh_remote_job_monitor(job_id, server_name = server_name)
-      }, error = function(e) {
-        remote_job_status_text(paste("Remote status failed:", conditionMessage(e)))
-      })
+      row <- jobs[selected, , drop = FALSE]
+      cached_status <- as.list(row)
+      cached_status$id <- as.character(job_id)
+      remote_job_preview_status(cached_status)
+      remote_job_preview_result(NULL)
+      remote_job_resources_data(data.frame())
+      remote_job_groups_data(list(job_id = as.character(job_id), groups = data.frame()))
+      remote_job_monitor_state(list(
+        checked_at = "", server = as.character(server_name %||% ""),
+        job_id = as.character(job_id), error = ""
+      ))
+      remote_job_status_text(paste(
+        "Selected", job_id,
+        "— no remote data was downloaded. Use the refresh icon in this row for lightweight status."
+      ))
     }
   })
 
@@ -13483,43 +13484,31 @@ server <- function(input, output, session) {
   observe({
     has_selected_job <- nzchar(input$remote_job_id %||% "")
     if (isTRUE(has_selected_job)) {
-      shinyjs::enable("remote_refresh_selected_job")
       shinyjs::enable("remote_refresh_selected_details")
     } else {
-      shinyjs::disable("remote_refresh_selected_job")
       shinyjs::disable("remote_refresh_selected_details")
     }
   })
 
-  observeEvent(input$remote_job_id, {
-    if (isTRUE(remote_job_loading())) {
-      return()
-    }
-    if (!nzchar(input$remote_job_id %||% "")) {
-      return()
-    }
-    selected_job <- remote_selected_job()
-    server_name <- if (is.list(selected_job) && identical(as.character(selected_job$id %||% ""), as.character(input$remote_job_id %||% ""))) {
-      selected_job$server %||% NULL
-    } else {
-      NULL
-    }
-    tryCatch({
-      refresh_remote_job_monitor(input$remote_job_id, server_name = server_name)
-    }, error = function(e) {
-      remote_job_status_text(paste("Remote status failed:", conditionMessage(e)))
-    })
-  }, ignoreInit = TRUE)
-
-  observeEvent(input$remote_refresh_selected_job, {
-    job_id <- input$remote_job_id %||% ""
-    if (!nzchar(job_id)) {
-      showNotification("Select a job first.", type = "message", duration = 3)
-      return()
-    }
-    tryCatch(
-      refresh_remote_job_monitor(job_id),
-      error = function(e) showNotification(paste("Job monitor failed:", conditionMessage(e)), type = "warning", duration = 5)
+  observeEvent(input$remote_refresh_job_row, {
+    action <- parse_remote_job_action_key(input$remote_refresh_job_row)
+    job_id <- action$job_id
+    if (!nzchar(job_id)) return()
+    remember_remote_job_server(job_id, action$server)
+    freezeReactiveValue(input, "remote_job_id")
+    updateTextInput(session, "remote_job_id", value = job_id)
+    withProgress(
+      message = paste("Refreshing", action$server, job_id),
+      detail = "Reading lightweight status and recent process telemetry only.",
+      value = 0.25,
+      {
+        tryCatch({
+          refresh_remote_job_monitor(job_id, server_name = action$server)
+          incProgress(0.75, detail = "Status updated.")
+        }, error = function(e) {
+          showNotification(paste("Job monitor failed:", conditionMessage(e)), type = "warning", duration = 5)
+        })
+      }
     )
   })
 
@@ -13529,9 +13518,18 @@ server <- function(input, output, session) {
       showNotification("Select a job first.", type = "message", duration = 3)
       return()
     }
-    tryCatch(
-      refresh_remote_job_preview(job_id, switch_to_ml = FALSE),
-      error = function(e) showNotification(paste("Detailed checkpoint failed:", conditionMessage(e)), type = "warning", duration = 6)
+    withProgress(
+      message = paste("Loading full details for", job_id),
+      detail = "Reading checkpoint preview, group activity, recent log and telemetry. This can take longer.",
+      value = 0.15,
+      {
+        tryCatch({
+          refresh_remote_job_preview(job_id, switch_to_ml = FALSE)
+          incProgress(0.85, detail = "Detailed view updated.")
+        }, error = function(e) {
+          showNotification(paste("Detailed checkpoint failed:", conditionMessage(e)), type = "warning", duration = 6)
+        })
+      }
     )
   })
 
@@ -13835,7 +13833,7 @@ server <- function(input, output, session) {
         metric("Active group", if (nzchar(active_groups)) active_groups else "—", if (processing > 3L) paste0("and ", processing - 3L, " more") else ""),
         metric("Job CPU", if (is.finite(cpu)) paste0(round(cpu, 1), "%") else "—", if (isTRUE(alive)) "process alive" else "awaiting telemetry"),
         metric("Job memory", if (is.finite(memory)) paste0(round(memory), " MB") else "—", paste("signal", signal_label)),
-        metric("Monitor checked", checked_display, if (isTRUE(input$remote_auto_monitor_job)) "auto-refresh on" else "manual refresh")
+        metric("Monitor checked", checked_display, "manual refresh")
       )
     )
   })

@@ -518,26 +518,24 @@ table.dataTable th.dt-error-column {
   background: rgba(111,82,255,.15) !important;
   box-shadow: inset 0 1px rgba(111,82,255,.28), inset 0 -1px rgba(111,82,255,.28);
 }
-.remote-selected-monitor-controls .form-group { margin: 0; }
-.remote-selected-monitor-controls .checkbox label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-  color: #59657f;
-  font-size: 12px;
-  font-weight: 700;
-}
-.remote-selected-monitor-controls #remote_refresh_selected_job {
-  color: #fff;
-  border: 0;
-  background: linear-gradient(135deg, #6f52ff, #1fbfd0);
-  box-shadow: 0 8px 20px rgba(87, 83, 229, .2);
-}
 .remote-selected-monitor-controls #remote_refresh_selected_details {
   color: #5b6580;
   border-color: #dce2ef;
   background: rgba(255,255,255,.86);
+}
+.remote-job-actions .remote-job-refresh-icon {
+  width: 28px;
+  min-width: 28px;
+  padding: 5px 6px;
+  color: #6351e8;
+  border-color: rgba(99,81,232,.28);
+  background: #fff;
+}
+.remote-job-actions .remote-job-refresh-icon:hover,
+.remote-job-actions .remote-job-refresh-icon:focus {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #6f52ff, #1fbfd0);
 }
 
 .remote-selected-monitor {
