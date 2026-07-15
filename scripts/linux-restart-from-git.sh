@@ -33,6 +33,24 @@ git pull --ff-only origin "${BRANCH}"
 echo "Installing local package..."
 R CMD INSTALL .
 
+echo "Checking and installing ugPlot server dependencies..."
+Rscript -e '
+  status <- ugplot::ugPlotInstallServerDeps(
+    install = TRUE,
+    dependencies = TRUE,
+    install_model_deps = FALSE,
+    install_geo_deps = TRUE
+  )
+  missing <- unique(c(status$system_missing, status$r_missing))
+  if (length(missing) > 0L) {
+    stop(
+      "Server dependencies are still missing: ",
+      paste(missing, collapse = ", "),
+      call. = FALSE
+    )
+  }
+'
+
 echo "Starting ugPlot server on ${HOST}:${PORT}..."
 Rscript -e 'library(ugplot); ugPlotServerStart(host = Sys.getenv("UGPLOT_HOST", "0.0.0.0"), port = as.integer(Sys.getenv("UGPLOT_PORT", "8080")), token = Sys.getenv("UGPLOT_SERVER_TOKEN"))'
 
