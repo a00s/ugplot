@@ -560,6 +560,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         job_preview = TRUE,
         job_config_summary = TRUE,
         job_resource_monitor = !is.null(auto_resume_process),
+        job_monitor_snapshot = TRUE,
         job_group_activity = TRUE,
         job_discovery_report = TRUE,
         server_resources = TRUE,
@@ -641,6 +642,26 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         list(error = conditionMessage(e))
       }
     )
+  })
+
+  pr$handle("GET", "/jobs/<job_id>/monitor", function(job_id, req, res) {
+    tryCatch({
+      query <- req$argsQuery %||% list()
+      include_groups <- !tolower(as.character(query$groups %||% "true")) %in% c("0", "false", "no")
+      resource_lines <- suppressWarnings(as.integer(query$resource_lines %||% 60L))
+      if (is.na(resource_lines) || resource_lines < 1L) resource_lines <- 60L
+      resource_lines <- min(resource_lines, 120L)
+      res$setHeader("Cache-Control", "no-store")
+      ugplot_job_monitor_snapshot(
+        job_id = job_id,
+        jobs_dir = jobs_dir,
+        include_groups = include_groups,
+        resource_lines = resource_lines
+      )
+    }, error = function(e) {
+      res$status <- 404
+      list(error = conditionMessage(e))
+    })
   })
 
   pr$handle("GET", "/jobs/<job_id>/log", function(job_id, req, res) {

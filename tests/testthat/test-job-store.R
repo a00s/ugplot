@@ -16,6 +16,39 @@ test_that("job store creates and lists jobs", {
   expect_equal(listed$id, status$id)
 })
 
+test_that("focused job monitor returns a compact single-job snapshot", {
+  jobs_dir <- tempfile("ugplot-monitor-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  append_resources <- ugplot_test_internal("ugplot_append_job_resources")
+  monitor_snapshot <- ugplot_test_internal("ugplot_job_monitor_snapshot")
+
+  status <- create_job(
+    data.frame(x = 1:3),
+    config = list(runner = "ugplot_run_placeholder_job"),
+    jobs_dir = jobs_dir
+  )
+  append_resources(
+    status$id,
+    data.frame(
+      timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
+      alive = TRUE,
+      process_cpu_pct = 42,
+      process_rss_mb = 128,
+      current_message = "Working on selected job",
+      stringsAsFactors = FALSE
+    ),
+    jobs_dir = jobs_dir
+  )
+
+  snapshot <- monitor_snapshot(status$id, jobs_dir, include_groups = FALSE, resource_lines = 1L)
+
+  expect_equal(snapshot$protocol_version, 1L)
+  expect_equal(snapshot$status$id, status$id)
+  expect_equal(nrow(snapshot$resources), 1L)
+  expect_equal(snapshot$resources$current_message, "Working on selected job")
+  expect_equal(nrow(snapshot$group_activity$groups), 0L)
+})
+
 test_that("Windows tasklist receives its PID filter as one quoted argument", {
   tasklist_args <- ugplot_test_internal("ugplot_windows_tasklist_args")(12345)
 

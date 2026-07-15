@@ -386,6 +386,27 @@ ugplot_read_job_resources <- function(job_id, jobs_dir = ugplot_default_jobs_dir
   utils::read.delim(text = selected, stringsAsFactors = FALSE, check.names = FALSE)
 }
 
+ugplot_job_monitor_snapshot <- function(job_id, jobs_dir = ugplot_default_jobs_dir(),
+                                        include_groups = TRUE, resource_lines = 60L) {
+  ugplot_validate_job_id(job_id)
+  status <- ugplot_read_job_status(job_id, jobs_dir)
+  resources <- ugplot_read_job_resources(job_id, jobs_dir, max_lines = resource_lines)
+  group_activity <- list(groups = data.frame())
+  if (isTRUE(include_groups) && identical(as.character(status$type %||% ""), "geo")) {
+    group_activity <- tryCatch(
+      ugplot_collaboration_job_group_activity(job_id, jobs_dir, inspect_collaboration = FALSE),
+      error = function(e) list(groups = data.frame(), error = conditionMessage(e))
+    )
+  }
+  list(
+    protocol_version = 1L,
+    checked_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
+    status = status,
+    resources = resources,
+    group_activity = group_activity
+  )
+}
+
 ugplot_server_resource_snapshot <- function(jobs_dir = ugplot_default_jobs_dir(), include_jobs = TRUE) {
   system <- ugplot_linux_system_resources()
   disk <- ugplot_disk_resources(jobs_dir)

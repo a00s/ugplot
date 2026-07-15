@@ -465,6 +465,137 @@ table.dataTable th.dt-error-column {
   margin-bottom: 0;
 }
 
+.remote-selected-monitor-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 12px 0 8px;
+}
+.remote-selected-monitor-controls .form-group { margin: 0; }
+.remote-selected-monitor-controls .checkbox label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #59657f;
+  font-size: 12px;
+  font-weight: 700;
+}
+.remote-selected-monitor-controls #remote_refresh_selected_job {
+  color: #fff;
+  border: 0;
+  background: linear-gradient(135deg, #6f52ff, #1fbfd0);
+  box-shadow: 0 8px 20px rgba(87, 83, 229, .2);
+}
+.remote-selected-monitor-controls #remote_refresh_selected_details {
+  color: #5b6580;
+  border-color: #dce2ef;
+  background: rgba(255,255,255,.86);
+}
+
+.remote-selected-monitor {
+  margin: 8px 0 14px;
+  padding: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(106, 88, 255, .16);
+  border-radius: 19px;
+  background:
+    radial-gradient(circle at 0 0, rgba(112,82,255,.12), transparent 34%),
+    radial-gradient(circle at 100% 0, rgba(31,191,208,.12), transparent 38%),
+    rgba(255,255,255,.94);
+  box-shadow: 0 15px 38px rgba(35, 48, 88, .09);
+}
+.remote-selected-monitor-empty {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #6f7890;
+  font-weight: 650;
+}
+.remote-monitor-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.remote-monitor-eyebrow {
+  color: #735cff;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.remote-monitor-heading h3 {
+  margin: 4px 0 3px;
+  color: #15213d;
+  font-size: 20px;
+  font-weight: 850;
+}
+.remote-monitor-action {
+  max-width: 940px;
+  margin: 0;
+  color: #58657f;
+  font-size: 13px;
+}
+.remote-monitor-health {
+  display: grid;
+  grid-template-columns: 9px auto;
+  column-gap: 8px;
+  align-items: center;
+  min-width: 210px;
+  padding: 10px 13px;
+  border-radius: 13px;
+  background: #f1f4fa;
+  color: #4f5c76;
+}
+.remote-monitor-health-dot {
+  grid-row: 1 / span 2;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #98a2b3;
+}
+.remote-monitor-health strong { font-size: 12px; }
+.remote-monitor-health small { color: inherit; font-size: 10px; opacity: .78; }
+.remote-monitor-health.working { color: #087b57; background: #e7f9f1; }
+.remote-monitor-health.working .remote-monitor-health-dot { background: #20b77a; box-shadow: 0 0 0 5px rgba(32,183,122,.12); animation: remote-monitor-live 1.3s ease-in-out infinite alternate; }
+.remote-monitor-health.finished { color: #216d48; background: #eaf8ef; }
+.remote-monitor-health.finished .remote-monitor-health-dot { background: #2eaa68; }
+.remote-monitor-health.warning { color: #9a5c06; background: #fff4df; }
+.remote-monitor-health.warning .remote-monitor-health-dot { background: #f0a229; }
+.remote-monitor-health.queued { color: #6156a5; background: #f1efff; }
+.remote-monitor-health.queued .remote-monitor-health-dot { background: #7b68ee; }
+.remote-monitor-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(125px, 1fr));
+  gap: 8px;
+  margin-top: 15px;
+}
+.remote-monitor-metric {
+  display: flex;
+  min-height: 80px;
+  padding: 11px 12px;
+  flex-direction: column;
+  justify-content: center;
+  border: 1px solid rgba(112, 123, 158, .13);
+  border-radius: 13px;
+  background: rgba(248,250,255,.82);
+}
+.remote-monitor-metric-label {
+  color: #7b859d;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.remote-monitor-metric strong { margin-top: 2px; color: #172340; font-size: 18px; line-height: 1.15; }
+.remote-monitor-metric small { margin-top: 3px; color: #7a849b; font-size: 10px; }
+@keyframes remote-monitor-live { from { opacity: .58; transform: scale(.9); } to { opacity: 1; transform: scale(1.08); } }
+@media (max-width: 1200px) { .remote-monitor-metrics { grid-template-columns: repeat(3, minmax(130px, 1fr)); } }
+@media (max-width: 700px) { .remote-monitor-metrics { grid-template-columns: repeat(2, minmax(120px, 1fr)); } }
+
 .remote-server-action {
   margin-right: 6px;
 }

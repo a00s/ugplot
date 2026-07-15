@@ -467,7 +467,8 @@ ugplot_collaboration_compatibility <- function(capabilities = list(),
 }
 
 ugplot_collaboration_job_group_activity <- function(job_id,
-                                                    jobs_dir = ugplot_default_jobs_dir()) {
+                                                    jobs_dir = ugplot_default_jobs_dir(),
+                                                    inspect_collaboration = TRUE) {
   job_id <- ugplot_validate_job_id(job_id)
   config_path <- file.path(ugplot_job_dir(job_id, jobs_dir), "config.rds")
   if (!file.exists(config_path)) stop("Job config is not available: ", job_id, call. = FALSE)
@@ -510,8 +511,12 @@ ugplot_collaboration_job_group_activity <- function(job_id,
     progress <- suppressWarnings(as.numeric(value_at("Progress", index, 0)))
     if (!is.finite(progress)) progress <- 0
     message <- as.character(value_at("Message", index, value_at("Error", index, "")))
-    task <- ugplot_collaboration_read_task(paste(job_id, "screen", group_id, sep = ":"), jobs_dir)
-    task <- ugplot_collaboration_reap_task(task)
+    task <- if (isTRUE(inspect_collaboration)) {
+      ugplot_collaboration_read_task(paste(job_id, "screen", group_id, sep = ":"), jobs_dir)
+    } else {
+      NULL
+    }
+    task <- if (is.list(task)) ugplot_collaboration_reap_task(task) else NULL
     task_state <- if (is.list(task)) as.character(task$state %||% "") else ""
     state <- "pending"
     executor <- ""

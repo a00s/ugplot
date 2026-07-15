@@ -161,6 +161,33 @@ ugplot_remote_job_status <- function(server_url, job_id, token = "", timeout_sec
   ugplot_remote_parse(response)
 }
 
+ugplot_remote_job_monitor <- function(server_url, job_id, token = "", include_groups = TRUE,
+                                      resource_lines = 60L, timeout_seconds = 6) {
+  request <- ugplot_remote_request(
+    server_url,
+    paste0(
+      "jobs/", job_id, "/monitor?groups=", if (isTRUE(include_groups)) "true" else "false",
+      "&resource_lines=", as.integer(resource_lines)
+    ),
+    token
+  )
+  parsed <- ugplot_remote_parse(
+    httr::GET(request$url, request$headers, httr::timeout(timeout_seconds))
+  )
+  resources <- parsed$resources %||% data.frame()
+  if (is.list(resources) && !is.data.frame(resources) && length(resources) > 0L) {
+    resources <- as.data.frame(resources, stringsAsFactors = FALSE)
+  }
+  parsed$resources <- resources
+  groups <- parsed$group_activity$groups %||% data.frame()
+  if (is.list(groups) && !is.data.frame(groups) && length(groups) > 0L) {
+    groups <- as.data.frame(groups, stringsAsFactors = FALSE)
+  }
+  parsed$group_activity <- parsed$group_activity %||% list()
+  parsed$group_activity$groups <- groups
+  parsed
+}
+
 ugplot_remote_job_log <- function(server_url, job_id, token = "", max_lines = 200L) {
   request <- ugplot_remote_request(
     server_url,

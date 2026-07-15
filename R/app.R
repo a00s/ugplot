@@ -267,6 +267,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_read_job_result",
     "ugplot_read_job_preview_result",
     "ugplot_read_job_bundle",
+    "ugplot_job_monitor_snapshot",
     "ugplot_launch_background_job",
     "ugplot_resume_background_job",
     "ugplot_server_r_packages",
@@ -291,6 +292,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_list_jobs",
     "ugplot_remote_model_deps",
     "ugplot_remote_job_status",
+    "ugplot_remote_job_monitor",
     "ugplot_remote_job_log",
     "ugplot_remote_job_resources",
     "ugplot_remote_job_discoveries",
@@ -1035,13 +1037,20 @@ ui <- fluidPage(
         tags$div(
           class = "jobs-toolbar",
           style = "display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;",
-          actionButton("remote_refresh_jobs", "Refresh jobs", icon = icon("refresh")),
+          actionButton("remote_refresh_jobs", "Refresh all servers", icon = icon("refresh")),
           uiOutput("remote_server_connection_status"),
           tags$div(style = "display: none;",
             textInput("remote_job_id", "Job ID", value = "", width = "360px"),
             downloadButton("downloadRemoteJobResult", "Download result (RDS)")
           )
         ),
+        tags$div(
+          class = "remote-selected-monitor-controls",
+          actionButton("remote_refresh_selected_job", "Refresh this job", icon = icon("heartbeat")),
+          checkboxInput("remote_auto_monitor_job", "Auto-monitor every 8 seconds", value = TRUE),
+          actionButton("remote_refresh_selected_details", "Refresh full details (slower)", icon = icon("microscope"))
+        ),
+        uiOutput("remote_selected_job_monitor"),
         DT::DTOutput("remote_jobs_table"),
         uiOutput("remote_job_status_panel"),
         uiOutput("remote_job_group_activity"),
@@ -2575,6 +2584,8 @@ server <- function(input, output, session) {
   remote_job_preview_result <- reactiveVal(NULL)
   remote_job_progress_estimates <- reactiveVal(list())
   remote_job_loading <- reactiveVal(FALSE)
+  remote_job_monitor_state <- reactiveVal(list(checked_at = "", error = ""))
+  remote_job_monitor_inflight <- reactiveVal(FALSE)
   remote_geo_result_applying <- reactiveVal(FALSE)
   remote_selected_job <- reactiveVal(list(id = "", server = ""))
   remote_server_capabilities <- reactiveVal(list())
@@ -12805,6 +12816,75 @@ server <- function(input, output, session) {
     invisible(result)
   }
 
+  refresh_remote_job_monitor <- function(job_id, server_name = NULL, quiet = FALSE) {
+    if (!nzchar(job_id %||% "") || isTRUE(remote_job_monitor_inflight())) return(invisible(NULL))
+    remote_job_monitor_inflight(TRUE)
+    on.exit(remote_job_monitor_inflight(FALSE), add = TRUE)
+    server <- remote_server_by_name(server_name %||% remote_server_name_for_job(job_id))
+    server_name <- as.character(server$name[[1]])
+    remember_remote_job_server(job_id, server_name)
+
+    snapshot <- tryCatch({
+      if (remote_server_supports("job_monitor_snapshot", server_name)) {
+        ugplot_remote_job_monitor(
+          server_url = server$url,
+          job_id = job_id,
+          token = server$token %||% "",
+          include_groups = TRUE,
+          resource_lines = 60L,
+          timeout_seconds = 6
+        )
+      } else {
+        status <- ugplot_remote_job_status(
+          server_url = server$url, job_id = job_id,
+          token = server$token %||% "", timeout_seconds = 6
+        )
+        list(
+          checked_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
+          status = status, resources = data.frame(),
+          group_activity = list(groups = data.frame())
+        )
+      }
+    }, error = function(e) {
+      remote_job_monitor_state(list(
+        checked_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
+        server = server_name, job_id = job_id, error = conditionMessage(e)
+      ))
+      if (!isTRUE(quiet)) showNotification(paste("Job monitor failed:", conditionMessage(e)), type = "warning", duration = 5)
+      NULL
+    })
+    if (is.null(snapshot)) return(invisible(NULL))
+
+    status <- snapshot$status %||% list()
+    resources <- snapshot$resources %||% data.frame()
+    if (is.list(resources) && !is.data.frame(resources) && length(resources) > 0L) {
+      resources <- tryCatch(as.data.frame(resources, stringsAsFactors = FALSE), error = function(e) data.frame())
+    }
+    groups <- snapshot$group_activity %||% list(groups = data.frame())
+    if (!is.list(groups)) groups <- list(groups = data.frame())
+
+    previous_status <- remote_job_preview_status()
+    if (!identical(remote_status_scalar(previous_status$id), as.character(job_id))) {
+      remote_job_preview_result(NULL)
+      remote_job_log_text("")
+    }
+    remote_job_preview_status(status)
+    remote_job_resources_data(resources)
+    remote_job_groups_data(groups)
+    status_text <- remote_status_summary_text(remote_status_with_live_message(status, resources))
+    remote_job_status_text(status_text)
+    if (remote_status_is_geo(status)) {
+      activate_geo_remote_server_for_job(server)
+      geo_remote_pipeline_job_id(job_id)
+      geo_remote_pipeline_status(status_text)
+    }
+    remote_job_monitor_state(list(
+      checked_at = remote_status_scalar(snapshot$checked_at, format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")),
+      server = server_name, job_id = job_id, error = ""
+    ))
+    invisible(status)
+  }
+
   refresh_remote_job_preview <- function(job_id, switch_to_ml = FALSE, server_name = NULL) {
     req(nzchar(job_id %||% ""))
     server <- remote_server_by_name(server_name %||% remote_server_name_for_job(job_id))
@@ -12930,46 +13010,16 @@ server <- function(input, output, session) {
     invisible(status)
   }
 
-  remote_resource_refresh_timer <- reactiveTimer(30000, session = session)
+  remote_resource_refresh_timer <- reactiveTimer(8000, session = session)
   observe({
     remote_resource_refresh_timer()
+    if (!isTRUE(input$remote_auto_monitor_job) || !identical(input$tabs %||% "", "JOBS")) return()
     job_id <- input$remote_job_id %||% ""
     if (!nzchar(job_id)) {
       remote_job_groups_data(list(groups = data.frame()))
       return()
     }
-    server <- tryCatch(remote_server_by_name(remote_server_name_for_job(job_id)), error = function(e) NULL)
-    if (is.null(server)) {
-      remote_job_resources_data(data.frame())
-      return()
-    }
-    resources <- if (remote_server_supports("job_resource_monitor", server$name[[1]])) {
-      tryCatch(
-        ugplot_remote_job_resources(
-          server_url = server$url,
-          job_id = job_id,
-          token = server$token %||% "",
-          max_lines = 60L
-        ),
-        error = function(e) NULL
-      )
-    } else {
-      data.frame()
-    }
-    if (is.data.frame(resources)) {
-      remote_job_resources_data(resources)
-    }
-    if (remote_server_supports("job_group_activity", server$name[[1]])) {
-      groups <- tryCatch(
-        ugplot_remote_job_groups(
-          server_url = server$url,
-          job_id = job_id,
-          token = server$token %||% ""
-        ),
-        error = function(e) NULL
-      )
-      if (is.list(groups)) remote_job_groups_data(groups)
-    }
+    try(refresh_remote_job_monitor(job_id, quiet = TRUE), silent = TRUE)
   })
 
   load_remote_job_bundle_locally <- function(job_id, server_name = NULL) {
@@ -13393,7 +13443,7 @@ server <- function(input, output, session) {
       freezeReactiveValue(input, "remote_job_id")
       updateTextInput(session, "remote_job_id", value = job_id)
       tryCatch({
-        refresh_remote_job_preview(job_id, switch_to_ml = FALSE, server_name = server_name)
+        refresh_remote_job_monitor(job_id, server_name = server_name)
       }, error = function(e) {
         remote_job_status_text(paste("Remote status failed:", conditionMessage(e)))
       })
@@ -13414,11 +13464,35 @@ server <- function(input, output, session) {
       NULL
     }
     tryCatch({
-      refresh_remote_job_preview(input$remote_job_id, switch_to_ml = FALSE, server_name = server_name)
+      refresh_remote_job_monitor(input$remote_job_id, server_name = server_name)
     }, error = function(e) {
       remote_job_status_text(paste("Remote status failed:", conditionMessage(e)))
     })
   }, ignoreInit = TRUE)
+
+  observeEvent(input$remote_refresh_selected_job, {
+    job_id <- input$remote_job_id %||% ""
+    if (!nzchar(job_id)) {
+      showNotification("Select a job first.", type = "message", duration = 3)
+      return()
+    }
+    tryCatch(
+      refresh_remote_job_monitor(job_id),
+      error = function(e) showNotification(paste("Job monitor failed:", conditionMessage(e)), type = "warning", duration = 5)
+    )
+  })
+
+  observeEvent(input$remote_refresh_selected_details, {
+    job_id <- input$remote_job_id %||% ""
+    if (!nzchar(job_id)) {
+      showNotification("Select a job first.", type = "message", duration = 3)
+      return()
+    }
+    tryCatch(
+      refresh_remote_job_preview(job_id, switch_to_ml = FALSE),
+      error = function(e) showNotification(paste("Detailed checkpoint failed:", conditionMessage(e)), type = "warning", duration = 6)
+    )
+  })
 
   load_remote_result_locally <- function(job_id, switch_to_ml = TRUE, server_name = NULL) {
     req(nzchar(job_id %||% ""))
@@ -13560,6 +13634,110 @@ server <- function(input, output, session) {
 
   output$remote_job_status <- renderText({
     remote_job_status_text()
+  })
+
+  output$remote_selected_job_monitor <- renderUI({
+    job_id <- input$remote_job_id %||% ""
+    if (!nzchar(job_id)) {
+      return(tags$div(
+        class = "remote-selected-monitor remote-selected-monitor-empty",
+        icon("mouse-pointer"),
+        tags$span("Select a job in the table to monitor only that job.")
+      ))
+    }
+    status <- remote_job_preview_status() %||% list()
+    resources <- remote_job_resources_data()
+    activity <- remote_job_groups_data()
+    monitor <- remote_job_monitor_state()
+    row_value <- function(row, name, default = NA) {
+      if (!is.data.frame(row) || nrow(row) == 0L || !name %in% names(row)) return(default)
+      value <- row[[name]][[nrow(row)]]
+      if (length(value) == 0L || is.na(value)) default else value
+    }
+    latest_message <- remote_latest_resource_message(resources)
+    current_action <- if (nzchar(latest_message)) latest_message else remote_status_scalar(status$message, "Waiting for an activity update")
+    state <- tolower(remote_status_scalar(status$state, "unknown"))
+    progress <- suppressWarnings(as.numeric(status$progress %||% NA_real_))
+    progress_pct <- if (length(progress) > 0L && is.finite(progress[[1]])) round(100 * max(0, min(1, progress[[1]]))) else NA_integer_
+    cpu <- suppressWarnings(as.numeric(row_value(resources, "process_cpu_pct")))
+    memory <- suppressWarnings(as.numeric(row_value(resources, "process_rss_mb")))
+    alive <- isTRUE(as.logical(row_value(resources, "alive", FALSE)))
+
+    groups <- activity$groups %||% data.frame()
+    if (is.list(groups) && !is.data.frame(groups) && length(groups) > 0L) {
+      groups <- tryCatch(as.data.frame(groups, stringsAsFactors = FALSE), error = function(e) data.frame())
+    }
+    group_states <- if (is.data.frame(groups) && "state" %in% names(groups)) tolower(as.character(groups$state)) else character(0)
+    completed <- sum(group_states == "completed", na.rm = TRUE)
+    processing <- sum(group_states == "processing", na.rm = TRUE)
+    waiting <- sum(group_states %in% c("pending", "waiting", "queued"), na.rm = TRUE)
+    total <- length(group_states)
+    active_groups <- if (is.data.frame(groups) && processing > 0L && "group_id" %in% names(groups)) {
+      paste(utils::head(as.character(groups$group_id[group_states == "processing"]), 3L), collapse = ", ")
+    } else ""
+
+    parse_time <- function(value) {
+      value <- as.character(value %||% "")
+      if (!nzchar(value)) return(as.POSIXct(NA))
+      suppressWarnings(as.POSIXct(value, format = "%Y-%m-%d %H:%M:%S %z"))
+    }
+    signal_time <- parse_time(row_value(resources, "timestamp", ""))
+    if (is.na(signal_time)) signal_time <- parse_time(status$updated_at %||% "")
+    signal_age <- if (!is.na(signal_time)) as.numeric(difftime(Sys.time(), signal_time, units = "secs")) else NA_real_
+    signal_label <- if (!is.finite(signal_age)) "No heartbeat yet" else if (signal_age < 2) "just now" else if (signal_age < 60) paste0(round(signal_age), "s ago") else paste0(round(signal_age / 60), "m ago")
+
+    monitor_error <- remote_status_scalar(monitor$error)
+    active_state <- state %in% c("queued", "running", "draining")
+    health <- if (nzchar(monitor_error)) {
+      list(label = "Monitor warning", class = "warning", detail = monitor_error)
+    } else if (state == "finished") {
+      list(label = "Finished", class = "finished", detail = "The job completed successfully.")
+    } else if (state %in% c("failed", "stopped")) {
+      list(label = tools::toTitleCase(state), class = "warning", detail = current_action)
+    } else if (isTRUE(active_state) && (isTRUE(alive) || (is.finite(signal_age) && signal_age <= 45))) {
+      list(label = "Working now", class = "working", detail = paste("Server heartbeat", signal_label))
+    } else if (isTRUE(active_state) && is.finite(signal_age) && signal_age > 120) {
+      list(label = "No recent heartbeat", class = "warning", detail = "The job may be in a long operation; refresh once more before treating it as stalled.")
+    } else if (state == "queued") {
+      list(label = "Queued", class = "queued", detail = "Waiting for execution capacity.")
+    } else {
+      list(label = "Checking activity", class = "queued", detail = paste("Last signal", signal_label))
+    }
+    checked_at <- remote_status_scalar(monitor$checked_at)
+    checked_display <- if (nzchar(checked_at)) format(parse_time(checked_at), "%H:%M:%S") else "—"
+
+    metric <- function(label, value, detail = "") tags$div(
+      class = "remote-monitor-metric",
+      tags$span(class = "remote-monitor-metric-label", label),
+      tags$strong(value),
+      if (nzchar(detail)) tags$small(detail)
+    )
+    tags$section(
+      class = paste("remote-selected-monitor", paste0("remote-selected-monitor-", health$class)),
+      tags$div(
+        class = "remote-monitor-heading",
+        tags$div(
+          tags$span(class = "remote-monitor-eyebrow", paste0("Focused monitor · ", htmltools::htmlEscape(remote_status_scalar(monitor$server, remote_server_name_for_job(job_id))))),
+          tags$h3(htmltools::htmlEscape(job_id)),
+          tags$p(class = "remote-monitor-action", htmltools::htmlEscape(current_action))
+        ),
+        tags$div(
+          class = paste("remote-monitor-health", health$class),
+          tags$span(class = "remote-monitor-health-dot"),
+          tags$strong(health$label),
+          tags$small(health$detail)
+        )
+      ),
+      tags$div(
+        class = "remote-monitor-metrics",
+        metric("Overall progress", if (is.na(progress_pct)) "—" else paste0(progress_pct, "%"), tools::toTitleCase(state)),
+        metric("Groups", if (total > 0L) paste0(completed, " / ", total) else "—", if (total > 0L) paste0(processing, " active · ", waiting, " remaining") else "Not in group screening yet"),
+        metric("Active group", if (nzchar(active_groups)) active_groups else "—", if (processing > 3L) paste0("and ", processing - 3L, " more") else ""),
+        metric("Job CPU", if (is.finite(cpu)) paste0(round(cpu, 1), "%") else "—", if (isTRUE(alive)) "process alive" else "awaiting telemetry"),
+        metric("Job memory", if (is.finite(memory)) paste0(round(memory), " MB") else "—", paste("signal", signal_label)),
+        metric("Monitor checked", checked_display, if (isTRUE(input$remote_auto_monitor_job)) "auto-refresh on" else "manual refresh")
+      )
+    )
   })
 
   output$remote_job_status_panel <- renderUI({
