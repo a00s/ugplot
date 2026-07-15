@@ -1046,9 +1046,10 @@ ui <- fluidPage(
         ),
         tags$div(
           class = "remote-selected-monitor-controls",
-          actionButton("remote_refresh_selected_job", "Refresh this job", icon = icon("heartbeat")),
+          uiOutput("remote_selected_job_identity"),
+          actionButton("remote_refresh_selected_job", "Refresh selected job", icon = icon("heartbeat")),
           checkboxInput("remote_auto_monitor_job", "Auto-monitor every 8 seconds", value = TRUE),
-          actionButton("remote_refresh_selected_details", "Refresh full details (slower)", icon = icon("microscope"))
+          actionButton("remote_refresh_selected_details", "Load selected job details (slower)", icon = icon("microscope"))
         ),
         uiOutput("remote_selected_job_monitor"),
         DT::DTOutput("remote_jobs_table"),
@@ -12830,14 +12831,14 @@ server <- function(input, output, session) {
           server_url = server$url,
           job_id = job_id,
           token = server$token %||% "",
-          include_groups = TRUE,
-          resource_lines = 60L,
-          timeout_seconds = 6
+          include_groups = FALSE,
+          resource_lines = 20L,
+          timeout_seconds = 3
         )
       } else {
         status <- ugplot_remote_job_status(
           server_url = server$url, job_id = job_id,
-          token = server$token %||% "", timeout_seconds = 6
+          token = server$token %||% "", timeout_seconds = 3
         )
         list(
           checked_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
@@ -13447,6 +13448,51 @@ server <- function(input, output, session) {
       }, error = function(e) {
         remote_job_status_text(paste("Remote status failed:", conditionMessage(e)))
       })
+    }
+  })
+
+  output$remote_selected_job_identity <- renderUI({
+    job_id <- input$remote_job_id %||% ""
+    selected <- remote_selected_job()
+    if (!nzchar(job_id)) {
+      return(tags$div(
+        class = "remote-selected-job-identity remote-selected-job-identity-empty",
+        icon("mouse-pointer"),
+        tags$span("Choose a job by clicking its row below")
+      ))
+    }
+    jobs <- remote_jobs()
+    row <- data.frame()
+    if (is.data.frame(jobs) && nrow(jobs) > 0L && "id" %in% names(jobs)) {
+      matches <- which(as.character(jobs$id) == as.character(job_id))
+      server_name <- as.character(selected$server %||% "")
+      if (nzchar(server_name) && "server" %in% names(jobs)) {
+        matches <- matches[as.character(jobs$server[matches]) == server_name]
+      }
+      if (length(matches) > 0L) row <- jobs[matches[[1]], , drop = FALSE]
+    }
+    value <- function(name, fallback = "") {
+      if (!is.data.frame(row) || nrow(row) == 0L || !name %in% names(row)) return(fallback)
+      as.character(row[[name]][[1]] %||% fallback)
+    }
+    server_name <- value("server", as.character(selected$server %||% "server"))
+    job_name <- value("name", "Selected job")
+    tags$div(
+      class = "remote-selected-job-identity",
+      tags$span(class = "remote-selected-job-kicker", "SELECTED JOB"),
+      tags$strong(paste(server_name, job_name, sep = " · ")),
+      tags$code(job_id)
+    )
+  })
+
+  observe({
+    has_selected_job <- nzchar(input$remote_job_id %||% "")
+    if (isTRUE(has_selected_job)) {
+      shinyjs::enable("remote_refresh_selected_job")
+      shinyjs::enable("remote_refresh_selected_details")
+    } else {
+      shinyjs::disable("remote_refresh_selected_job")
+      shinyjs::disable("remote_refresh_selected_details")
     }
   })
 
