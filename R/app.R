@@ -12875,7 +12875,6 @@ server <- function(input, output, session) {
     status_text <- remote_status_summary_text(remote_status_with_live_message(status, resources))
     remote_job_status_text(status_text)
     if (remote_status_is_geo(status)) {
-      activate_geo_remote_server_for_job(server)
       geo_remote_pipeline_job_id(job_id)
       geo_remote_pipeline_status(status_text)
     }
@@ -13436,10 +13435,6 @@ server <- function(input, output, session) {
       server_name <- if ("server" %in% names(jobs)) jobs$server[[selected]] else NULL
       if (!is.null(server_name) && nzchar(server_name %||% "")) {
         remember_remote_job_server(job_id, server_name)
-        server <- remote_server_by_name(server_name)
-        updateRadioButtons(session, "ml_run_target", selected = "remote")
-        refresh_remote_server_inputs(selected = as.character(server$name[[1]]))
-        updateSelectInput(session, "remote_server_name", selected = as.character(server$name[[1]]))
       }
       freezeReactiveValue(input, "remote_job_id")
       updateTextInput(session, "remote_job_id", value = job_id)

@@ -610,7 +610,7 @@ ugplot_geo_filter_transcript_dataset <- function(dataset, target_column, min_sam
 
 ugplot_geo_build_transcript_group_progress_row <- function(transcript_id, candidates, matrix_files, metadata,
                                                            cache_dir, target_column, min_samples_pct,
-                                                           source = "processed") {
+                                                           source = "processed", candidate_dataset = NULL) {
   transcript_rows <- candidates[as.character(candidates$Transcript) == transcript_id, , drop = FALSE]
   transcript_cpgs <- unique(as.character(stats::na.omit(transcript_rows$CpG)))
   transcript_cpgs <- transcript_cpgs[nzchar(transcript_cpgs)]
@@ -618,6 +618,14 @@ ugplot_geo_build_transcript_group_progress_row <- function(transcript_id, candid
   raw_dataset_path <- ugplot_geo_transcript_dataset_path(cache_dir, transcript_id, target_column, source, raw = TRUE)
   transcript_dataset <- if (file.exists(raw_dataset_path)) {
     tryCatch(utils::read.csv(raw_dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
+  } else if (is.data.frame(candidate_dataset) && nrow(candidate_dataset) > 0L) {
+    available_cpgs <- intersect(transcript_cpgs, names(candidate_dataset))
+    required_columns <- intersect(c("sample_id", target_column), names(candidate_dataset))
+    if (length(available_cpgs) > 0L && length(required_columns) == 2L) {
+      candidate_dataset[, c(required_columns, available_cpgs), drop = FALSE]
+    } else {
+      data.frame()
+    }
   } else {
     tryCatch(
       ugplot_geo_transcript_dataset(matrix_files, metadata, target_column, transcript_cpgs),
@@ -676,6 +684,33 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
     cpu_limit <- 1L
   }
   use_parallel <- isTRUE(parallel_enabled) && cpu_limit > 1L && .Platform$OS.type != "windows" && length(remaining) > 1L
+  missing_raw <- remaining[!vapply(remaining, function(transcript_id) {
+    file.exists(ugplot_geo_transcript_dataset_path(cache_dir, transcript_id, target_column, source, raw = TRUE))
+  }, logical(1))]
+  needed_cpgs <- if (length(missing_raw) > 0L) {
+    unique(as.character(stats::na.omit(
+      candidates$CpG[as.character(candidates$Transcript) %in% missing_raw]
+    )))
+  } else {
+    character(0)
+  }
+  needed_cpgs <- needed_cpgs[nzchar(needed_cpgs)]
+  candidate_dataset <- if (length(needed_cpgs) > 0L) {
+    if (!is.null(progress_callback)) {
+      progress_callback(
+        min(1, nrow(progress_rows) / max(1, length(transcripts))),
+        paste0("Reading ", length(needed_cpgs), " candidate CpGs once for ", length(missing_raw), " transcripts")
+      )
+    }
+    ugplot_geo_transcript_dataset(
+      matrix_files = matrix_files,
+      metadata = metadata,
+      target_column = target_column,
+      cpgs = needed_cpgs
+    )
+  } else {
+    NULL
+  }
   batches <- if (use_parallel) {
     split(remaining, ceiling(seq_along(remaining) / cpu_limit))
   } else {
@@ -693,6 +728,7 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
         target_column = target_column,
         min_samples_pct = min_samples_pct,
         source = source,
+        candidate_dataset = candidate_dataset,
         mc.cores = min(cpu_limit, length(batch)),
         mc.preschedule = FALSE
       )
@@ -705,18 +741,33 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
         cache_dir = cache_dir,
         target_column = target_column,
         min_samples_pct = min_samples_pct,
-        source = source
+        source = source,
+        candidate_dataset = candidate_dataset
       ))
     }
     progress_rows <- ugplot_geo_bind_rows(c(list(progress_rows), progress_batch))
-    tables <- ugplot_geo_build_group_tables_remote(progress_rows, candidates = candidates)
-    utils::write.csv(tables$summary, paths$summary, row.names = FALSE)
-    utils::write.csv(tables$details, paths$details, row.names = FALSE)
-    saveRDS(progress_rows, paths$progress)
+    if (exists("ugplot_write_rds_atomic", mode = "function", inherits = TRUE)) {
+      ugplot_write_rds_atomic(progress_rows, paths$progress)
+    } else {
+      saveRDS(progress_rows, paths$progress)
+    }
+    compatible <- progress_rows[as.character(progress_rows$Status) == "compatible", , drop = FALSE]
+    group_count <- if (nrow(compatible) > 0L) {
+      length(unique(paste(compatible$CpGKey, compatible$SampleKey, sep = "\f")))
+    } else {
+      0L
+    }
+    checkpoint_tables <- nrow(progress_rows) == length(transcripts) ||
+      (nrow(progress_rows) %% max(100L, cpu_limit) < length(progress_batch))
+    if (isTRUE(checkpoint_tables)) {
+      tables <- ugplot_geo_build_group_tables_remote(progress_rows, candidates = candidates)
+      utils::write.csv(tables$summary, paths$summary, row.names = FALSE)
+      utils::write.csv(tables$details, paths$details, row.names = FALSE)
+    }
     if (!is.null(progress_callback)) {
       progress_callback(
         min(1, nrow(progress_rows) / max(1, length(transcripts))),
-        paste0("Transcript datasets: ", nrow(progress_rows), "/", length(transcripts), "; groups ", nrow(tables$summary))
+        paste0("Transcript datasets: ", nrow(progress_rows), "/", length(transcripts), "; groups ", group_count)
       )
     }
   }

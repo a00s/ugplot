@@ -57,6 +57,42 @@ test_that("transcripts with different effective CpGs are separate groups", {
   expect_setequal(groups$summary$TranscriptMembers, c("ENST_A", "ENST_B"))
 })
 
+test_that("transcript progress rows reuse a preloaded candidate matrix", {
+  build_row <- ugplot_test_internal("ugplot_geo_build_transcript_group_progress_row")
+  cache_dir <- tempfile("ugplot-transcript-cache-")
+  dir.create(cache_dir, recursive = TRUE)
+  on.exit(unlink(cache_dir, recursive = TRUE, force = TRUE), add = TRUE)
+
+  candidates <- data.frame(
+    Transcript = c("ENST_A", "ENST_A"), Gene = "GENE1",
+    CpG = c("cg1", "cg2"), AbsRho = c(0.9, 0.8),
+    TriggerMaxAbsRho = c(0.9, 0.9), TriggerBestCpG = "cg1",
+    TriggerBestRho = 0.9, stringsAsFactors = FALSE
+  )
+  metadata <- data.frame(
+    sample_id = paste0("S", 1:5), age = 21:25,
+    stringsAsFactors = FALSE
+  )
+  candidate_matrix <- data.frame(
+    sample_id = metadata$sample_id, age = metadata$age,
+    cg1 = seq(0.1, 0.5, by = 0.1), cg2 = seq(0.5, 0.1, by = -0.1),
+    check.names = FALSE, stringsAsFactors = FALSE
+  )
+
+  row <- build_row(
+    transcript_id = "ENST_A", candidates = candidates,
+    matrix_files = "this-file-must-not-be-read.tsv", metadata = metadata,
+    cache_dir = cache_dir, target_column = "age", min_samples_pct = 80,
+    candidate_dataset = candidate_matrix
+  )
+
+  expect_equal(row$Status, "compatible")
+  expect_equal(row$Columns, 2L)
+  expect_equal(row$Samples, 5L)
+  expect_true(file.exists(row$RawDatasetPath))
+  expect_true(file.exists(row$DatasetPath))
+})
+
 test_that("Ensembl annotation preserves every overlapping transcript", {
   skip_if_not_installed("GenomicRanges")
   skip_if_not_installed("IRanges")
