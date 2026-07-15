@@ -13344,6 +13344,7 @@ server <- function(input, output, session) {
       job_ids <- as.character(raw_jobs$id)
       server_names <- if ("server" %in% names(raw_jobs)) as.character(raw_jobs$server) else rep(selected_remote_server()$name[[1]], length(job_ids))
       states <- if ("state" %in% names(jobs)) as.character(jobs$state) else rep("", length(job_ids))
+      can_refresh <- states %in% c("queued", "running", "draining")
       can_stop <- states %in% c("queued", "running", "draining")
       can_drain <- states %in% c("queued", "running") &
         vapply(server_names, function(server_name) remote_server_supports("drain_job", server_name), logical(1))
@@ -13360,26 +13361,28 @@ server <- function(input, output, session) {
         jobs$resumable <- NULL
       }
       actions <- vapply(seq_along(job_ids), function(i) {
-        job_id <- htmltools::htmlEscape(job_ids[[i]], attribute = TRUE)
         action_key <- htmltools::htmlEscape(remote_job_action_key(server_names[[i]], job_ids[[i]]), attribute = TRUE)
-        icon_button <- function(class_name, icon_name, title, input_name = "", disabled = FALSE) {
+        icon_button <- function(class_name, icon_name, title, input_name) {
           escaped_title <- htmltools::htmlEscape(title, attribute = TRUE)
-          action_attribute <- if (isTRUE(disabled) || !nzchar(input_name)) "" else paste0(
+          action_attribute <- paste0(
             " onclick=\"event.stopPropagation(); Shiny.setInputValue('", input_name, "', '",
             action_key, "', {priority: 'event'});\""
           )
           paste0(
             "<button type='button' class='btn btn-sm remote-job-action-icon ", class_name, "'",
             " title='", escaped_title, "' aria-label='", escaped_title, "'",
-            if (isTRUE(disabled)) " disabled" else "", action_attribute, ">",
+            action_attribute, ">",
             "<span class='glyphicon glyphicon-", icon_name, "' aria-hidden='true'></span>",
             "</button>"
           )
         }
-        buttons <- icon_button(
-          "remote-job-action-refresh", "refresh",
-          "Refresh this job's lightweight status", "remote_refresh_job_row"
-        )
+        buttons <- character(0)
+        if (isTRUE(can_refresh[[i]])) {
+          buttons <- c(buttons, icon_button(
+            "remote-job-action-refresh", "refresh",
+            "Refresh this job's lightweight status", "remote_refresh_job_row"
+          ))
+        }
         if (isTRUE(remote_server_supports("job_discovery_report", server_names[[i]]))) {
           report_server <- tryCatch(remote_server_by_name(server_names[[i]]), error = function(e) NULL)
           report_base <- if (is.list(report_server)) as.character(report_server$url %||% "") else ""
@@ -13406,11 +13409,6 @@ server <- function(input, output, session) {
           buttons <- c(buttons, icon_button(
             "remote-job-action-load", "download-alt", load_title, "remote_load_result_row"
           ))
-        } else {
-          buttons <- c(buttons, icon_button(
-            "remote-job-action-load", "download-alt",
-            "Results can be downloaded after the job is paused or completed", disabled = TRUE
-          ))
         }
         if (isTRUE(can_stop[[i]])) {
           buttons <- c(buttons, icon_button(
@@ -13422,11 +13420,6 @@ server <- function(input, output, session) {
           buttons <- c(buttons, icon_button(
             "remote-job-action-pause", "pause",
             "Pause safely after active tasks finish and save the checkpoint", "remote_drain_job_row"
-          ))
-        } else if (identical(states[[i]], "draining")) {
-          buttons <- c(buttons, icon_button(
-            "remote-job-action-pause", "time",
-            "Safe pause requested; waiting for active tasks to finish", disabled = TRUE
           ))
         }
         if (isTRUE(can_resume[[i]])) {
