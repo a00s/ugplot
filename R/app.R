@@ -13494,6 +13494,65 @@ server <- function(input, output, session) {
     )
   })
 
+  apply_remote_job_action_status <- function(job_id, server_name, status, action_label) {
+    job_id <- as.character(job_id %||% "")
+    server_name <- as.character(server_name %||% "")
+    if (!nzchar(job_id)) return(invisible(status))
+
+    remember_remote_job_server(job_id, server_name)
+    freezeReactiveValue(input, "remote_job_id")
+    updateTextInput(session, "remote_job_id", value = job_id)
+
+    previous_status <- remote_job_preview_status()
+    previous_job_id <- remote_status_scalar(previous_status$id)
+    if (!identical(previous_job_id, job_id)) {
+      remote_job_preview_result(NULL)
+      remote_job_log_text("")
+      remote_job_resources_data(data.frame())
+      remote_job_groups_data(list(groups = data.frame()))
+    }
+    remote_job_preview_status(status)
+
+    jobs <- isolate(remote_jobs())
+    if (is.data.frame(jobs) && nrow(jobs) > 0L && "id" %in% names(jobs)) {
+      row_index <- which(as.character(jobs$id) == job_id)
+      if (nzchar(server_name) && "server" %in% names(jobs)) {
+        row_index <- row_index[as.character(jobs$server[row_index]) == server_name]
+      }
+      if (length(row_index) > 0L) {
+        row_index <- row_index[[1]]
+        for (field in intersect(
+          c("name", "type", "state", "progress", "message", "pid", "resumable", "updated_at"),
+          intersect(names(jobs), names(status))
+        )) {
+          value <- status[[field]]
+          if (length(value) > 0L) jobs[[field]][[row_index]] <- value[[1]]
+        }
+        remote_jobs(jobs)
+      }
+    }
+
+    checked_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    remote_job_monitor_state(list(
+      checked_at = checked_at,
+      server = server_name,
+      job_id = job_id,
+      error = ""
+    ))
+    status_text <- paste(
+      action_label,
+      job_id,
+      "-",
+      remote_status_scalar(status$message, remote_status_scalar(status$state, "accepted"))
+    )
+    remote_job_status_text(status_text)
+    if (remote_status_is_geo(status)) {
+      geo_remote_pipeline_job_id(job_id)
+      geo_remote_pipeline_status(remote_status_summary_text(status))
+    }
+    invisible(status)
+  }
+
   load_remote_result_locally <- function(job_id, switch_to_ml = TRUE, server_name = NULL) {
     req(nzchar(job_id %||% ""))
     server <- remote_server_by_name(server_name %||% remote_server_name_for_job(job_id))
@@ -13542,9 +13601,9 @@ server <- function(input, output, session) {
         job_id = job_id,
         token = server$token %||% ""
       )
-      updateTextInput(session, "remote_job_id", value = job_id)
-      refresh_remote_jobs()
-      remote_job_status_text(paste("Remote job stopped:", job_id, "-", status$message %||% ""))
+      apply_remote_job_action_status(
+        job_id, as.character(server$name[[1]]), status, "Remote job stopped:"
+      )
     }, error = function(e) {
       remote_job_status_text(paste("Remote stop failed:", conditionMessage(e)))
     })
@@ -13560,9 +13619,9 @@ server <- function(input, output, session) {
         job_id = job_id,
         token = server$token %||% ""
       )
-      updateTextInput(session, "remote_job_id", value = job_id)
-      refresh_remote_jobs()
-      remote_job_status_text(paste("Remote job is draining:", job_id, "-", status$message %||% ""))
+      apply_remote_job_action_status(
+        job_id, as.character(server$name[[1]]), status, "Remote job is draining:"
+      )
     }, error = function(e) {
       remote_job_status_text(paste("Remote smooth stop failed:", conditionMessage(e)))
     })
@@ -13578,9 +13637,9 @@ server <- function(input, output, session) {
         job_id = job_id,
         token = server$token %||% ""
       )
-      updateTextInput(session, "remote_job_id", value = job_id)
-      refresh_remote_jobs()
-      remote_job_status_text(paste("Remote job resumed:", job_id, "-", status$message %||% ""))
+      apply_remote_job_action_status(
+        job_id, as.character(server$name[[1]]), status, "Remote job resumed:"
+      )
     }, error = function(e) {
       remote_job_status_text(paste("Remote resume failed:", conditionMessage(e)))
     })
