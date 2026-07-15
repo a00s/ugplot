@@ -678,6 +678,16 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
   } else {
     character(0)
   }
+  total_transcripts <- length(transcripts)
+  initial_completed <- nrow(progress_rows)
+  group_count_from_progress <- function(rows) {
+    if (!is.data.frame(rows) || nrow(rows) == 0L ||
+        !all(c("Status", "CpGKey", "SampleKey") %in% names(rows))) return(0L)
+    compatible <- rows[as.character(rows$Status) == "compatible", , drop = FALSE]
+    if (nrow(compatible) == 0L) return(0L)
+    length(unique(paste(compatible$CpGKey, compatible$SampleKey, sep = "\f")))
+  }
+  initial_groups <- group_count_from_progress(progress_rows)
   remaining <- setdiff(transcripts, processed)
   cpu_limit <- suppressWarnings(as.integer(cpu_limit %||% 1L))
   if (is.na(cpu_limit) || cpu_limit < 1L) {
@@ -698,8 +708,19 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
   candidate_dataset <- if (length(needed_cpgs) > 0L) {
     if (!is.null(progress_callback)) {
       progress_callback(
-        min(1, nrow(progress_rows) / max(1, length(transcripts))),
-        paste0("Reading ", length(needed_cpgs), " candidate CpGs once for ", length(missing_raw), " transcripts")
+        min(1, initial_completed / max(1, total_transcripts)),
+        paste0(
+          "Preparing shared transcript matrix: reading ", length(needed_cpgs),
+          " CpGs once for ", length(missing_raw), " remaining transcripts; ",
+          initial_completed, "/", total_transcripts, " completed; ", initial_groups, " groups found"
+        ),
+        list(
+          name = "transcript_datasets", phase = "preparing_matrix",
+          completed = initial_completed, total = total_transcripts,
+          remaining = max(0L, total_transcripts - initial_completed),
+          groups = initial_groups, candidate_cpgs = length(needed_cpgs),
+          rate_per_min = NA_real_, eta_seconds = NA_real_
+        )
       )
     }
     ugplot_geo_transcript_dataset(
@@ -711,6 +732,7 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
   } else {
     NULL
   }
+  processing_started_at <- Sys.time()
   batches <- if (use_parallel) {
     split(remaining, ceiling(seq_along(remaining) / cpu_limit))
   } else {
@@ -751,12 +773,7 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
     } else {
       saveRDS(progress_rows, paths$progress)
     }
-    compatible <- progress_rows[as.character(progress_rows$Status) == "compatible", , drop = FALSE]
-    group_count <- if (nrow(compatible) > 0L) {
-      length(unique(paste(compatible$CpGKey, compatible$SampleKey, sep = "\f")))
-    } else {
-      0L
-    }
+    group_count <- group_count_from_progress(progress_rows)
     checkpoint_tables <- nrow(progress_rows) == length(transcripts) ||
       (nrow(progress_rows) %% max(100L, cpu_limit) < length(progress_batch))
     if (isTRUE(checkpoint_tables)) {
@@ -765,9 +782,32 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
       utils::write.csv(tables$details, paths$details, row.names = FALSE)
     }
     if (!is.null(progress_callback)) {
+      completed <- nrow(progress_rows)
+      remaining_count <- max(0L, total_transcripts - completed)
+      elapsed_seconds <- max(0.001, as.numeric(difftime(Sys.time(), processing_started_at, units = "secs")))
+      completed_this_run <- max(0L, completed - initial_completed)
+      rate_per_min <- if (completed_this_run > 0L) 60 * completed_this_run / elapsed_seconds else NA_real_
+      eta_seconds <- if (is.finite(rate_per_min) && rate_per_min > 0) 60 * remaining_count / rate_per_min else NA_real_
+      eta_label <- if (is.finite(eta_seconds)) {
+        if (eta_seconds < 120) paste0(round(eta_seconds), "s") else if (eta_seconds < 7200) paste0(round(eta_seconds / 60), "m") else paste0(round(eta_seconds / 3600, 1), "h")
+      } else {
+        "calculating"
+      }
       progress_callback(
-        min(1, nrow(progress_rows) / max(1, length(transcripts))),
-        paste0("Transcript datasets: ", nrow(progress_rows), "/", length(transcripts), "; groups ", group_count)
+        min(1, completed / max(1, total_transcripts)),
+        paste0(
+          "Building transcript datasets: ", completed, "/", total_transcripts,
+          " (", remaining_count, " remaining); ", group_count, " groups; ",
+          if (is.finite(rate_per_min)) paste0(round(rate_per_min, 1), "/min") else "measuring rate",
+          "; ETA ", eta_label
+        ),
+        list(
+          name = "transcript_datasets", phase = "building_datasets",
+          completed = completed, total = total_transcripts,
+          remaining = remaining_count, groups = group_count,
+          candidate_cpgs = length(needed_cpgs),
+          rate_per_min = rate_per_min, eta_seconds = eta_seconds
+        )
       )
     }
   }
@@ -2325,11 +2365,17 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
   last_publish_progress <- -Inf
   last_publish_time <- Sys.time() - 60
   last_partial_time <- Sys.time() - 60
-  publish <- function(progress, message, force = FALSE, distributed_state = NULL) {
+  publish <- function(progress, message, force = FALSE, distributed_state = NULL,
+                      stage_progress = NULL) {
     result$stage <<- message
     result$updated_at <<- as.character(Sys.time())
-    now <- Sys.time()
     progress_value <- suppressWarnings(as.numeric(progress))
+    if (is.list(stage_progress)) {
+      result$stage_progress <<- stage_progress
+    } else if (is.finite(progress_value) && progress_value > 0.92) {
+      result$stage_progress <<- list()
+    }
+    now <- Sys.time()
     progress_delta <- progress_value - last_publish_progress
     publish_elapsed <- as.numeric(difftime(now, last_publish_time, units = "secs"))
     should_publish <- isTRUE(force) ||
@@ -2341,6 +2387,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
       if (is.list(distributed_state)) {
         callback_args$distributed_state <- distributed_state
       }
+      callback_args$stage_progress <- result$stage_progress %||% list()
       do.call(progress_callback, callback_args)
       last_publish_progress <<- progress_value
       last_publish_time <<- now
@@ -2528,7 +2575,14 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
           source = source,
           cpu_limit = config$cpu_limit %||% 1L,
           parallel_enabled = isTRUE(config$parallel_enabled),
-          progress_callback = function(value, message) publish(0.86 + 0.06 * value, message)
+          progress_callback = function(value, message, stage_progress = NULL) {
+            publish(
+              0.86 + 0.06 * value,
+              message,
+              force = identical(as.character(stage_progress$phase %||% ""), "preparing_matrix"),
+              stage_progress = stage_progress
+            )
+          }
         )
       }
       result$paths$transcript_group_summary <- group_result$paths$summary

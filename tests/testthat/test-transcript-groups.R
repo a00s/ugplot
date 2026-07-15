@@ -93,6 +93,57 @@ test_that("transcript progress rows reuse a preloaded candidate matrix", {
   expect_true(file.exists(row$DatasetPath))
 })
 
+test_that("transcript dataset progress reports concrete counts and ETA fields", {
+  build_groups <- ugplot_test_internal("ugplot_geo_build_transcript_groups_remote")
+  dataset_path <- ugplot_test_internal("ugplot_geo_transcript_dataset_path")
+  cache_dir <- tempfile("ugplot-transcript-progress-")
+  dir.create(cache_dir, recursive = TRUE)
+  on.exit(unlink(cache_dir, recursive = TRUE, force = TRUE), add = TRUE)
+
+  candidates <- data.frame(
+    Transcript = c("ENST_A", "ENST_B"), Gene = c("GENE1", "GENE2"),
+    CpG = c("cg1", "cg2"), AbsRho = c(0.9, 0.8),
+    TriggerMaxAbsRho = c(0.9, 0.8), TriggerBestCpG = c("cg1", "cg2"),
+    TriggerBestRho = c(0.9, 0.8), stringsAsFactors = FALSE
+  )
+  metadata <- data.frame(sample_id = paste0("S", 1:5), age = 21:25)
+  for (transcript_id in candidates$Transcript) {
+    cpg <- candidates$CpG[candidates$Transcript == transcript_id]
+    raw <- data.frame(
+      sample_id = metadata$sample_id, age = metadata$age,
+      value = seq(0.1, 0.5, by = 0.1), stringsAsFactors = FALSE
+    )
+    names(raw)[[3]] <- cpg
+    path <- dataset_path(cache_dir, transcript_id, "age", "processed", raw = TRUE)
+    dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+    utils::write.csv(raw, path, row.names = FALSE)
+  }
+  updates <- list()
+
+  result <- build_groups(
+    candidates = candidates, matrix_files = "must-not-be-read.tsv",
+    metadata = metadata, cache_dir = cache_dir, target_column = "age",
+    threshold = 0.8, min_samples_pct = 80,
+    progress_callback = function(value, message, stage_progress) {
+      updates[[length(updates) + 1L]] <<- list(
+        value = value, message = message, stage = stage_progress
+      )
+    }
+  )
+
+  expect_equal(nrow(result$progress), 2L)
+  expect_true(length(updates) >= 2L)
+  final <- updates[[length(updates)]]
+  expect_match(final$message, "2/2")
+  expect_match(final$message, "0 remaining")
+  expect_equal(final$stage$name, "transcript_datasets")
+  expect_equal(final$stage$completed, 2L)
+  expect_equal(final$stage$total, 2L)
+  expect_equal(final$stage$remaining, 0L)
+  expect_true(is.finite(final$stage$rate_per_min))
+  expect_true(is.finite(final$stage$eta_seconds))
+})
+
 test_that("Ensembl annotation preserves every overlapping transcript", {
   skip_if_not_installed("GenomicRanges")
   skip_if_not_installed("IRanges")

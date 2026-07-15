@@ -48,7 +48,7 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
   ugplot_append_job_log(job_id, paste0("Runner pid: ", Sys.getpid()), jobs_dir)
 
   progress_callback <- function(progress = NULL, message = NULL, current_run = NULL,
-                                distributed_state = NULL) {
+                                distributed_state = NULL, stage_progress = NULL) {
     updates <- list()
     if (!is.null(progress)) {
       updates$progress <- max(0, min(1, as.numeric(progress)))
@@ -74,6 +74,9 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
     }
     if (is.list(distributed_state)) {
       updates$distributed_state <- distributed_state
+    }
+    if (is.list(stage_progress)) {
+      updates$stage_progress <- stage_progress
     }
     do.call(ugplot_update_job_status, c(list(job_id = job_id, jobs_dir = jobs_dir), updates))
     if (identical(runner, "ugplot_run_geo_pipeline_job") &&

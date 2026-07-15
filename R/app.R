@@ -13803,6 +13803,12 @@ server <- function(input, output, session) {
     }
     checked_at <- remote_status_scalar(monitor$checked_at)
     checked_display <- if (nzchar(checked_at)) format(parse_time(checked_at), "%H:%M:%S") else "—"
+    stage_progress <- status$stage_progress %||% list()
+    stage_name <- remote_status_scalar(stage_progress$name)
+    stage_number <- function(name, default = NA_real_) {
+      value <- suppressWarnings(as.numeric(stage_progress[[name]] %||% default))
+      if (length(value) == 0L || !is.finite(value[[1]])) default else value[[1]]
+    }
 
     metric <- function(label, value, detail = "") tags$div(
       class = "remote-monitor-metric",
@@ -13810,6 +13816,38 @@ server <- function(input, output, session) {
       tags$strong(value),
       if (nzchar(detail)) tags$small(detail)
     )
+    monitor_metrics <- if (identical(stage_name, "transcript_datasets")) {
+      transcript_completed <- stage_number("completed", 0)
+      transcript_total <- stage_number("total", NA_real_)
+      transcript_remaining <- stage_number("remaining", NA_real_)
+      transcript_groups <- stage_number("groups", 0)
+      transcript_rate <- stage_number("rate_per_min", NA_real_)
+      transcript_eta <- stage_number("eta_seconds", NA_real_)
+      eta_display <- if (!is.finite(transcript_eta)) "Calculating" else if (transcript_eta < 120) {
+        paste0(round(transcript_eta), " sec")
+      } else if (transcript_eta < 7200) {
+        paste0(round(transcript_eta / 60), " min")
+      } else {
+        paste0(round(transcript_eta / 3600, 1), " h")
+      }
+      list(
+        metric("Overall progress", if (is.na(progress_pct)) "—" else paste0(progress_pct, "%"), tools::toTitleCase(state)),
+        metric("Transcripts", if (is.finite(transcript_total)) paste0(transcript_completed, " / ", transcript_total) else "—", "datasets completed"),
+        metric("Remaining", if (is.finite(transcript_remaining)) as.character(transcript_remaining) else "—", if (is.finite(transcript_rate)) paste0(round(transcript_rate, 1), " transcripts/min") else "preparing shared matrix"),
+        metric("Groups found", as.character(transcript_groups), "equivalent transcript datasets"),
+        metric("Estimated time", eta_display, "based on the current run"),
+        metric("Job memory", if (is.finite(memory)) paste0(round(memory), " MB") else "—", paste("CPU", if (is.finite(cpu)) paste0(round(cpu, 1), "%") else "—", "· signal", signal_label))
+      )
+    } else {
+      list(
+        metric("Overall progress", if (is.na(progress_pct)) "—" else paste0(progress_pct, "%"), tools::toTitleCase(state)),
+        metric("Groups", if (total > 0L) paste0(completed, " / ", total) else "—", if (total > 0L) paste0(processing, " active · ", waiting, " remaining") else "Not in group screening yet"),
+        metric("Active group", if (nzchar(active_groups)) active_groups else "—", if (processing > 3L) paste0("and ", processing - 3L, " more") else ""),
+        metric("Job CPU", if (is.finite(cpu)) paste0(round(cpu, 1), "%") else "—", if (isTRUE(alive)) "process alive" else "awaiting telemetry"),
+        metric("Job memory", if (is.finite(memory)) paste0(round(memory), " MB") else "—", paste("signal", signal_label)),
+        metric("Monitor checked", checked_display, "manual refresh")
+      )
+    }
     tags$section(
       class = paste("remote-selected-monitor", paste0("remote-selected-monitor-", health$class)),
       tags$div(
@@ -13828,12 +13866,7 @@ server <- function(input, output, session) {
       ),
       tags$div(
         class = "remote-monitor-metrics",
-        metric("Overall progress", if (is.na(progress_pct)) "—" else paste0(progress_pct, "%"), tools::toTitleCase(state)),
-        metric("Groups", if (total > 0L) paste0(completed, " / ", total) else "—", if (total > 0L) paste0(processing, " active · ", waiting, " remaining") else "Not in group screening yet"),
-        metric("Active group", if (nzchar(active_groups)) active_groups else "—", if (processing > 3L) paste0("and ", processing - 3L, " more") else ""),
-        metric("Job CPU", if (is.finite(cpu)) paste0(round(cpu, 1), "%") else "—", if (isTRUE(alive)) "process alive" else "awaiting telemetry"),
-        metric("Job memory", if (is.finite(memory)) paste0(round(memory), " MB") else "—", paste("signal", signal_label)),
-        metric("Monitor checked", checked_display, "manual refresh")
+        monitor_metrics
       )
     )
   })
