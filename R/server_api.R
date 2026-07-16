@@ -476,6 +476,9 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
   }
 
   ugplot_ensure_dir(jobs_dir)
+  if (exists("ugplot_collaboration_read_index", mode = "function", inherits = TRUE)) {
+    try(ugplot_collaboration_read_index(jobs_dir), silent = TRUE)
+  }
   source_dir <- if (file.exists(file.path(getwd(), "R", "app.R"))) normalizePath(getwd(), mustWork = FALSE) else NULL
   auto_resume_process <- ugplot_start_auto_resume_monitor(
     jobs_dir = jobs_dir,

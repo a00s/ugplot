@@ -8,6 +8,83 @@ ugplot_collaboration_task_dir <- function(task_id, jobs_dir = ugplot_default_job
   file.path(ugplot_collaboration_dir(jobs_dir), task_id)
 }
 
+ugplot_collaboration_index_path <- function(jobs_dir = ugplot_default_jobs_dir()) {
+  file.path(ugplot_collaboration_dir(jobs_dir), "task-index.rds")
+}
+
+ugplot_collaboration_index_columns <- function() {
+  c("task_id", "parent_job_id", "state", "updated_at")
+}
+
+ugplot_collaboration_index_row <- function(task) {
+  data.frame(
+    task_id = as.character(task$task_id %||% ""),
+    parent_job_id = as.character(task$parent_job_id %||% ""),
+    state = as.character(task$state %||% "unknown"),
+    updated_at = as.character(task$updated_at %||% ""),
+    stringsAsFactors = FALSE
+  )
+}
+
+ugplot_collaboration_build_index <- function(jobs_dir = ugplot_default_jobs_dir()) {
+  root <- ugplot_collaboration_dir(jobs_dir)
+  ugplot_ensure_dir(root)
+  task_dirs <- list.dirs(root, full.names = TRUE, recursive = FALSE)
+  task_dirs <- task_dirs[file.exists(file.path(task_dirs, "task.rds"))]
+  rows <- Filter(Negate(is.null), lapply(file.path(task_dirs, "task.rds"), function(path) {
+    task <- tryCatch(readRDS(path), error = function(e) NULL)
+    if (!is.list(task) || !nzchar(as.character(task$task_id %||% ""))) return(NULL)
+    ugplot_collaboration_index_row(task)
+  }))
+  index <- if (length(rows) == 0L) {
+    data.frame(task_id = character(), parent_job_id = character(), state = character(),
+               updated_at = character(), stringsAsFactors = FALSE)
+  } else {
+    do.call(rbind, rows)
+  }
+  ugplot_write_rds_atomic(index, ugplot_collaboration_index_path(jobs_dir))
+  index
+}
+
+ugplot_collaboration_read_index <- function(jobs_dir = ugplot_default_jobs_dir()) {
+  path <- ugplot_collaboration_index_path(jobs_dir)
+  index <- if (file.exists(path)) tryCatch(readRDS(path), error = function(e) NULL) else NULL
+  required <- ugplot_collaboration_index_columns()
+  if (!is.data.frame(index) || !all(required %in% names(index))) {
+    index <- ugplot_collaboration_build_index(jobs_dir)
+  }
+  index[, required, drop = FALSE]
+}
+
+ugplot_collaboration_update_index <- function(task, jobs_dir = ugplot_default_jobs_dir()) {
+  root <- ugplot_collaboration_dir(jobs_dir)
+  ugplot_ensure_dir(root)
+  lock_root <- file.path(root, ".task-index")
+  ugplot_collaboration_with_lock(lock_root, {
+    index <- ugplot_collaboration_read_index(jobs_dir)
+    row <- ugplot_collaboration_index_row(task)
+    match_index <- match(row$task_id[[1]], index$task_id)
+    unchanged <- !is.na(match_index) &&
+      identical(as.character(index$parent_job_id[[match_index]]), row$parent_job_id[[1]]) &&
+      identical(as.character(index$state[[match_index]]), row$state[[1]])
+    if (!unchanged) {
+      if (is.na(match_index)) index <- rbind(index, row) else index[match_index, ] <- row
+      ugplot_write_rds_atomic(index, ugplot_collaboration_index_path(jobs_dir))
+    }
+    invisible(index)
+  })
+}
+
+ugplot_collaboration_task_ids <- function(jobs_dir = ugplot_default_jobs_dir(), states = NULL,
+                                          parent_job_id = NULL) {
+  index <- ugplot_collaboration_read_index(jobs_dir)
+  if (!is.null(states)) index <- index[index$state %in% as.character(states), , drop = FALSE]
+  if (!is.null(parent_job_id)) {
+    index <- index[index$parent_job_id %in% as.character(parent_job_id), , drop = FALSE]
+  }
+  as.character(index$task_id)
+}
+
 ugplot_collaboration_lock_stale <- function(lock_dir, legacy_stale_seconds = 60) {
   owner_path <- file.path(lock_dir, "owner.rds")
   owner <- if (file.exists(owner_path)) {
@@ -65,6 +142,7 @@ ugplot_collaboration_write_task <- function(task, jobs_dir = ugplot_default_jobs
   task_dir <- ugplot_collaboration_task_dir(task$task_id, jobs_dir)
   ugplot_ensure_dir(task_dir)
   ugplot_write_rds_atomic(task, file.path(task_dir, "task.rds"))
+  ugplot_collaboration_update_index(task, jobs_dir)
   invisible(task)
 }
 
@@ -203,7 +281,7 @@ ugplot_collaboration_claim_task <- function(client_id, capabilities = list(),
   if (!nzchar(client_id)) stop("A collaboration client ID is required.", call. = FALSE)
   root <- ugplot_collaboration_dir(jobs_dir)
   if (!dir.exists(root)) return(NULL)
-  task_ids <- basename(list.dirs(root, full.names = TRUE, recursive = FALSE))
+  task_ids <- ugplot_collaboration_task_ids(jobs_dir, states = c("pending", "leased"))
   for (task_id in task_ids) {
     claimed <- ugplot_collaboration_with_lock(ugplot_collaboration_task_dir(task_id, jobs_dir), {
       task <- ugplot_collaboration_read_task(task_id, jobs_dir)
@@ -371,9 +449,9 @@ ugplot_collaboration_encode_rds <- function(value) {
 }
 
 ugplot_collaboration_public_status <- function(jobs_dir = ugplot_default_jobs_dir()) {
-  root <- ugplot_collaboration_dir(jobs_dir)
-  task_ids <- if (dir.exists(root)) basename(list.dirs(root, full.names = TRUE, recursive = FALSE)) else character(0)
-  tasks <- Filter(Negate(is.null), lapply(task_ids, ugplot_collaboration_read_task, jobs_dir = jobs_dir))
+  index <- ugplot_collaboration_read_index(jobs_dir)
+  open_ids <- as.character(index$task_id[index$state %in% c("pending", "leased")])
+  tasks <- Filter(Negate(is.null), lapply(open_ids, ugplot_collaboration_refresh_task, jobs_dir = jobs_dir))
   pending_tasks <- Filter(function(task) identical(task$state %||% "", "pending"), tasks)
   parent_cache <- new.env(parent = emptyenv())
   pending_parent <- lapply(pending_tasks, function(task) {
@@ -389,12 +467,8 @@ ugplot_collaboration_public_status <- function(jobs_dir = ugplot_default_jobs_di
     get(cache_key, envir = parent_cache, inherits = FALSE)
   })
   pending_active <- vapply(pending_parent, function(parent) isTRUE(parent$active), logical(1))
-  nonpending_tasks <- Filter(function(task) !identical(task$state %||% "", "pending"), tasks)
-  states <- if (length(nonpending_tasks) > 0L) {
-    table(vapply(nonpending_tasks, function(task) as.character(task$state %||% "unknown"), character(1)))
-  } else {
-    integer(0)
-  }
+  index <- ugplot_collaboration_read_index(jobs_dir)
+  states <- table(as.character(index$state))
   state_count <- function(name) {
     value <- suppressWarnings(as.integer(states[name]))
     if (length(value) == 0L || is.na(value)) 0L else value
@@ -412,8 +486,7 @@ ugplot_collaboration_public_status <- function(jobs_dir = ugplot_default_jobs_di
 
 ugplot_collaboration_compatibility <- function(capabilities = list(),
                                                jobs_dir = ugplot_default_jobs_dir()) {
-  root <- ugplot_collaboration_dir(jobs_dir)
-  task_ids <- if (dir.exists(root)) basename(list.dirs(root, full.names = TRUE, recursive = FALSE)) else character(0)
+  task_ids <- ugplot_collaboration_task_ids(jobs_dir, states = "pending")
   available <- unique(as.character(capabilities$models %||% character(0)))
   inspected <- Filter(Negate(is.null), lapply(task_ids, function(task_id) {
     task <- ugplot_collaboration_refresh_task(task_id, jobs_dir)
@@ -577,10 +650,8 @@ ugplot_collaboration_active_contributors <- function(job_id,
   job_id <- ugplot_validate_job_id(job_id)
   root <- ugplot_collaboration_dir(jobs_dir)
   if (!dir.exists(root)) return(data.frame())
-  safe_job_id <- gsub("[^A-Za-z0-9._-]", "_", job_id)
-  task_prefixes <- paste0(safe_job_id, c("_analyze_", "_screen_"))
-  task_dirs <- list.dirs(root, full.names = TRUE, recursive = FALSE)
-  task_dirs <- task_dirs[vapply(basename(task_dirs), function(path) any(startsWith(path, task_prefixes)), logical(1))]
+  task_ids <- ugplot_collaboration_task_ids(jobs_dir, states = "leased", parent_job_id = job_id)
+  task_dirs <- file.path(root, gsub("[^A-Za-z0-9._-]", "_", task_ids))
   if (length(task_dirs) == 0L) return(data.frame())
   task_paths <- file.path(task_dirs, "task.rds")
   info <- suppressWarnings(file.info(task_paths))

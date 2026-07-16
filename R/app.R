@@ -12857,12 +12857,12 @@ server <- function(input, output, session) {
           token = server$token %||% "",
           include_groups = FALSE,
           resource_lines = 20L,
-          timeout_seconds = 3
+          timeout_seconds = 5
         )
       } else {
         status <- ugplot_remote_job_status(
           server_url = server$url, job_id = job_id,
-          token = server$token %||% "", timeout_seconds = 3
+          token = server$token %||% "", timeout_seconds = 5
         )
         list(
           checked_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
@@ -12871,11 +12871,24 @@ server <- function(input, output, session) {
         )
       }
     }, error = function(e) {
-      remote_job_monitor_state(list(
-        checked_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
-        server = server_name, job_id = job_id, error = conditionMessage(e)
-      ))
-      if (!isTRUE(quiet)) showNotification(paste("Job monitor failed:", conditionMessage(e)), type = "warning", duration = 5)
+      message <- conditionMessage(e)
+      transient <- grepl("timed? ?out|timeout|0 bytes received", message, ignore.case = TRUE)
+      if (transient) {
+        previous <- isolate(remote_job_monitor_state())
+        previous$checked_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+        previous$server <- server_name
+        previous$job_id <- job_id
+        previous$error <- ""
+        previous$stale <- TRUE
+        previous$stale_message <- "The server is busy; the last successful reading is still displayed."
+        remote_job_monitor_state(previous)
+      } else {
+        remote_job_monitor_state(list(
+          checked_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
+          server = server_name, job_id = job_id, error = message, stale = FALSE
+        ))
+        if (!isTRUE(quiet)) showNotification(paste("Job monitor failed:", message), type = "warning", duration = 5)
+      }
       NULL
     })
     if (is.null(snapshot)) return(invisible(NULL))
@@ -12905,7 +12918,7 @@ server <- function(input, output, session) {
     }
     remote_job_monitor_state(list(
       checked_at = remote_status_scalar(snapshot$checked_at, format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")),
-      server = server_name, job_id = job_id, error = ""
+      server = server_name, job_id = job_id, error = "", stale = FALSE, stale_message = ""
     ))
     invisible(status)
   }
@@ -13840,6 +13853,12 @@ server <- function(input, output, session) {
     active_state <- state %in% c("queued", "running", "draining")
     health <- if (nzchar(monitor_error)) {
       list(label = "Monitor warning", class = "warning", detail = monitor_error)
+    } else if (isTRUE(monitor$stale)) {
+      list(
+        label = "Server busy",
+        class = "queued",
+        detail = remote_status_scalar(monitor$stale_message, "Last successful reading retained.")
+      )
     } else if (state == "finished") {
       list(label = "Finished", class = "finished", detail = "The job completed successfully.")
     } else if (state %in% c("failed", "stopped")) {
