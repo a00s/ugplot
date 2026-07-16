@@ -62,3 +62,27 @@ test_that("build versions compare date and suffix versions", {
     fixed = TRUE
   )
 })
+
+test_that("lightweight remote monitor summarizes distributed screening", {
+  summarize <- ugplot_test_internal("ugplot_remote_distributed_summary")
+  structured <- summarize(list(
+    message = "Distributed screening: 3/2148 group(s); active Fy2:TG2, Fy3:TG3",
+    distributed_state = list(
+      completed = 3L, total = 2148L, active = 2L,
+      active_groups = c("Fy2:TG2", "Fy3:TG3")
+    )
+  ))
+  expect_equal(structured$completed, 3)
+  expect_equal(structured$total, 2148)
+  expect_equal(structured$processing, 2)
+  expect_equal(structured$pending, 2143)
+  expect_equal(structured$active_groups, c("Fy2:TG2", "Fy3:TG3"))
+
+  legacy <- summarize(list(
+    message = "Distributed screening: 9/771 group(s); active Fy3:TG5, Fy2:TG17"
+  ))
+  expect_equal(legacy$completed, 9)
+  expect_equal(legacy$total, 771)
+  expect_equal(legacy$processing, 2)
+  expect_equal(legacy$active_groups, c("Fy3:TG5", "Fy2:TG17"))
+})

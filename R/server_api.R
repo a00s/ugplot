@@ -189,6 +189,18 @@ ugplot_read_discovery_csv <- function(path) {
   )
 }
 
+ugplot_public_report_text <- function(value, max_chars = 240L) {
+  value <- paste(as.character(value %||% ""), collapse = " ")
+  value <- gsub("[[:cntrl:]]", " ", value)
+  value <- trimws(gsub("[[:space:]]+", " ", value))
+  max_chars <- suppressWarnings(as.integer(max_chars))
+  if (is.na(max_chars) || max_chars < 1L) max_chars <- 240L
+  if (nchar(value, type = "chars") > max_chars) {
+    value <- paste0(substr(value, 1L, max_chars - 1L), "…")
+  }
+  value
+}
+
 ugplot_job_discovery_report <- function(job_id,
                                         jobs_dir = ugplot_default_jobs_dir()) {
   paths <- ugplot_job_discovery_report_paths(job_id, jobs_dir)
@@ -310,11 +322,52 @@ ugplot_job_discovery_report <- function(job_id,
   }
 
   total <- 0L
+  manifest <- data.frame()
   if (file.exists(paths$manifest)) {
     manifest <- tryCatch(readRDS(paths$manifest), error = function(e) data.frame())
     if (is.data.frame(manifest)) total <- nrow(manifest)
   }
   if (total < nrow(screening)) total <- nrow(screening)
+  contributor_rows <- tryCatch(
+    ugplot_collaboration_active_contributors(job_id, jobs_dir),
+    error = function(e) data.frame()
+  )
+  if (is.data.frame(manifest) && nrow(manifest) > 0L && "State" %in% names(manifest)) {
+    active_index <- which(as.character(manifest$State) %in% c("dispatching", "submitted", "running"))
+    if (length(active_index) > 0L) {
+      field <- function(name, default = "") {
+        if (name %in% names(manifest)) as.character(manifest[[name]][active_index]) else rep(default, length(active_index))
+      }
+      progress_values <- if ("Progress" %in% names(manifest)) {
+        suppressWarnings(as.numeric(manifest$Progress[active_index]))
+      } else rep(0, length(active_index))
+      progress_values[!is.finite(progress_values)] <- 0
+      server_rows <- data.frame(
+        group_id = field("GroupID"), executor = field("Worker", "ugPlot server"),
+        executor_type = "server", progress = pmax(0, pmin(1, progress_values)),
+        message = field("Message", "Processing scientific task"), candidate = "",
+        stringsAsFactors = FALSE
+      )
+      contributor_rows <- if (is.data.frame(contributor_rows) && nrow(contributor_rows) > 0L) {
+        rbind(contributor_rows, server_rows)
+      } else server_rows
+    }
+  }
+  contributors <- if (is.data.frame(contributor_rows) && nrow(contributor_rows) > 0L) {
+    unname(lapply(seq_len(nrow(contributor_rows)), function(i) {
+      row <- contributor_rows[i, , drop = FALSE]
+      progress <- suppressWarnings(as.numeric(row$progress[[1]] %||% 0))
+      if (!is.finite(progress)) progress <- 0
+      list(
+        scientist = ugplot_public_report_text(row$executor[[1]], 80L),
+        kind = if (identical(as.character(row$executor_type[[1]]), "collaboration")) "public scientist" else "ugPlot server",
+        group = ugplot_public_report_text(row$group_id[[1]], 60L),
+        progress = max(0, min(1, progress)),
+        activity = ugplot_public_report_text(row$message[[1]], 180L),
+        candidate = ugplot_public_report_text(row$candidate[[1]], 80L)
+      )
+    }))
+  } else list()
   list(
     protocol_version = 1L,
     job = list(
@@ -330,6 +383,10 @@ ugplot_job_discovery_report <- function(job_id,
       total = as.integer(total),
       screened = as.integer(nrow(screening)),
       stabilized = as.integer(nrow(stability))
+    ),
+    collaboration = list(
+      active = as.integer(length(contributors)),
+      contributors = contributors
     ),
     discoveries = if (is.data.frame(discoveries) && nrow(discoveries) > 0L) {
       unname(lapply(seq_len(nrow(discoveries)), function(i) as.list(discoveries[i, , drop = FALSE])))
@@ -372,15 +429,18 @@ ugplot_discovery_report_html <- function(job_id = "") {
     '*{box-sizing:border-box}body{margin:0;font:15px/1.45 Inter,system-ui,sans-serif;color:var(--ink);background:radial-gradient(circle at 8% 12%,#e9e2ff 0,transparent 27%),radial-gradient(circle at 92% 15%,#d9fbff 0,transparent 28%),#f6f9ff}',
     '.shell{max-width:1500px;margin:auto;padding:28px}.hero,.panel{background:#fffdfdcc;border:1px solid #fff;border-radius:26px;box-shadow:0 18px 50px #28366d12}.hero{padding:28px 32px;margin-bottom:20px}.brand{display:flex;align-items:center;gap:22px}.brand img{width:min(260px,34vw);height:auto}.brand-copy{min-width:0}.eyebrow{color:var(--violet);font-weight:800;letter-spacing:.13em;font-size:12px}.hero h1{font-size:clamp(28px,4vw,48px);margin:6px 0}.hero p{color:var(--muted);margin:0}.controls{display:flex;align-items:center;gap:10px}.controls select,.controls input{height:46px;border:1px solid var(--line);border-radius:14px;background:#fff;color:var(--ink);font:inherit;outline:none;transition:border-color .2s,box-shadow .2s}.controls select{min-width:275px;padding:0 42px 0 15px;font-weight:750}.controls input{width:340px;padding:0 16px}.controls select:focus,.controls input:focus{border-color:#8875ff;box-shadow:0 0 0 4px #715cff18}.controls input::placeholder{color:#929ab1}',
     '.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:20px 0}.stat{padding:18px 20px;background:#ffffffd9;border:1px solid #fff;border-radius:18px}.stat b{display:block;font-size:28px}.stat span{color:var(--muted);font-size:12px;text-transform:uppercase;font-weight:800}.panel{padding:20px}.toolbar{display:flex;align-items:center;gap:18px;justify-content:space-between;margin-bottom:16px}.toolbar strong{font-size:17px}.live{color:var(--green);font-weight:800}.table-wrap{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:16px}table{border-collapse:separate;border-spacing:0;width:100%;min-width:1200px}th{position:sticky;top:0;background:#f7f8fe;text-align:left;padding:13px 12px;color:#687392;font-size:11px;letter-spacing:.08em;text-transform:uppercase;z-index:1}td{padding:11px 12px;border-top:1px solid #edf0f8;white-space:nowrap}tr:hover td{background:#f7fbff}.badge{padding:5px 9px;border-radius:999px;font-size:11px;font-weight:800}.awaiting-analysis{background:#eef1f8;color:#69738d}.preliminary{background:#fff0dc;color:#a96000}.stabilized{background:#dcfaef;color:#087958}.stability-complete{background:#e8efff;color:#3159a5}.type-ml{background:#fff0e7;color:#d65b18}.type-cpg{background:#dff6ff;color:#0878a7}.type-both{background:#f5ddff;color:#8c189a}.empty{text-align:center;padding:60px;color:var(--muted)}.note{font-size:12px;color:var(--muted);margin-top:10px}',
+    '.collab{margin-bottom:20px}.collab-head{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:14px}.collab-head strong{font-size:18px}.collab-head span{color:var(--green);font-weight:800}.contributors{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.contributor{padding:15px;border:1px solid var(--line);border-radius:17px;background:linear-gradient(135deg,#fbfaff,#f3fdff)}.contributor-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.contributor-name{font-size:16px;font-weight:850}.contributor-kind{color:var(--violet);font-size:10px;text-transform:uppercase;font-weight:850;letter-spacing:.08em}.contributor-group{padding:4px 8px;border-radius:999px;background:#e8e2ff;color:#5640c9;font-size:11px;font-weight:800}.contributor-activity{color:var(--muted);font-size:13px;margin:8px 0}.contributor-track{height:7px;border-radius:999px;background:#e8ebf5;overflow:hidden}.contributor-fill{height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--violet),var(--cyan))}.contributor-progress{display:block;text-align:right;color:var(--muted);font-size:11px;margin-top:4px}.collab-empty{color:var(--muted);padding:8px 2px}',
     '@media(max-width:900px){.shell{padding:12px}.brand{align-items:flex-start;flex-direction:column}.brand img{width:210px}.stats{grid-template-columns:1fr 1fr}.toolbar{align-items:stretch;flex-direction:column}.controls{align-items:stretch;flex-direction:column}.controls select,.controls input{width:100%;min-width:0}}</style></head><body>',
     '<main class="shell"><section class="hero"><div class="brand"><img src="/reports/assets/ugplot.png" alt="ugPlot"><div class="brand-copy"><div class="eyebrow">UGPLOT LIVE DISCOVERY REPORT</div><h1 id="title">Scientific discoveries as they emerge</h1><p id="subtitle">The report is loading the job identified by this URL.</p></div></div></section>',
     '<section class="stats"><div class="stat"><b id="total">&mdash;</b><span>Total groups</span></div><div class="stat"><b id="screened">&mdash;</b><span>Screened</span></div><div class="stat"><b id="stabilized">&mdash;</b><span>Stabilized</span></div><div class="stat"><b id="best">&mdash;</b><span>Best median R&sup2;</span></div></section>',
+    '<section class="panel collab"><div class="collab-head"><strong>Science collaboration</strong><span id="collab-live">&#9679; checking contributors</span></div><div class="contributors" id="contributors"><div class="collab-empty">Checking who is helping this discovery.</div></div></section>',
     '<section class="panel"><div class="toolbar"><div><strong>Discovery table</strong> <span class="live" id="live">&#9679; loading snapshot</span></div><div class="controls"><select id="sort" aria-label="Order discoveries"><option value="combined">Best overall performance</option><option value="ml">Best ML R2</option><option value="cpg">Best CpG correlation</option></select><input id="search" type="search" aria-label="Search discoveries" placeholder="Search gene, transcript, CpG or model"></div></div><div class="table-wrap"><table><thead><tr>',
     '<th>Status</th><th>Type</th><th>Gene</th><th>Transcripts</th><th>Best CpG</th><th>CpG &rho;</th><th>Model</th><th>Median R&sup2;</th><th>Min R&sup2;</th><th>Max R&sup2;</th><th>Seeds</th><th>Samples</th><th>Group</th></tr></thead><tbody id="rows"></tbody></table><div class="empty" id="empty">Connect to a job to see its discoveries.</div></div><div class="note">A computational group may contain multiple biological transcripts only when their effective CpG and sample matrices are identical. Awaiting analysis means the group is known but model screening is not complete. Preliminary evidence comes from model screening. Stabilized evidence has completed the configured seed stability analysis.</div></section></main>',
     '<script>const initialJob=', encoded_job, ';const $=id=>document.getElementById(id);let all=[];const scalar=v=>Array.isArray(v)?v[0]:v;const normalize=o=>Object.fromEntries(Object.entries(o||{}).map(([k,v])=>[k,scalar(v)]));const fmt=v=>v===null||v===undefined||v===""||!Number.isFinite(Number(v))?"\\u2014":Number(v).toFixed(3);',
     'function badge(v){const c=v.replace(/ /g,"-");return `<span class="badge ${c}">${v}</span>`}function typeBadge(v){let c=v.startsWith("ML")?"type-ml":v.includes("&")?"type-both":"type-cpg";return `<span class="badge ${c}">${v}</span>`}',
+    'function renderContributors(raw){const host=$("contributors");host.replaceChildren();const items=(Array.isArray(raw)?raw:Object.values(raw||{})).map(normalize);$("collab-live").textContent="\u25cf "+(items.length?items.length+" working now":"waiting for contributors");if(!items.length){const empty=document.createElement("div");empty.className="collab-empty";empty.textContent="No public scientist or worker server is active right now.";host.append(empty);return}items.forEach(row=>{const card=document.createElement("article");card.className="contributor";const top=document.createElement("div");top.className="contributor-top";const identity=document.createElement("div");const name=document.createElement("div");name.className="contributor-name";name.textContent=row.scientist||"Anonymous scientist";const kind=document.createElement("div");kind.className="contributor-kind";kind.textContent=row.kind||"contributor";identity.append(name,kind);const group=document.createElement("span");group.className="contributor-group";group.textContent=row.group||"scientific task";top.append(identity,group);const activity=document.createElement("div");activity.className="contributor-activity";activity.textContent=(row.activity||"Scientific computation in progress")+(row.candidate?" \u00b7 "+row.candidate:"");const track=document.createElement("div");track.className="contributor-track";const fill=document.createElement("div");fill.className="contributor-fill";const progress=Math.max(0,Math.min(1,Number(row.progress)||0));fill.style.width=(progress*100).toFixed(1)+"%";track.append(fill);const label=document.createElement("span");label.className="contributor-progress";label.textContent=Math.round(progress*100)+"% complete";card.append(top,activity,track,label);host.append(card)})}',
     'function esc(v){const d=document.createElement("div");d.textContent=v??"";return d.innerHTML}function memberList(v){return esc(v).replaceAll(";","<br>")}function render(){const q=$("search").value.toLowerCase();const mode=$("sort").value;const score=r=>{const ml=Number(r.median_r2),cpg=Math.abs(Number(r.cpg_rho));if(mode==="combined")return Number.isFinite(ml)&&Number.isFinite(cpg)?(ml+cpg)/2:Number.isFinite(cpg)?cpg/2:-Infinity;const v=mode==="cpg"?cpg:ml;return Number.isFinite(v)?v:-Infinity};const data=all.filter(r=>Object.values(r).join(" ").toLowerCase().includes(q)).sort((a,b)=>score(b)-score(a));$("rows").innerHTML=data.map(r=>`<tr><td>${badge(esc(r.status))}</td><td>${typeBadge(esc(r.type))}</td><td><b>${memberList(r.gene)}</b></td><td>${memberList(r.transcript)}</td><td>${esc(r.best_cpg)}</td><td>${fmt(r.cpg_rho)}</td><td>${esc(r.model)}</td><td><b>${fmt(r.median_r2)}</b></td><td>${fmt(r.min_r2)}</td><td>${fmt(r.max_r2)}</td><td>${fmt(r.seeds).replace(".000","")}</td><td>${fmt(r.samples).replace(".000","")}</td><td>${esc(r.group)}</td></tr>`).join("");$("empty").style.display=data.length?"none":"block"}$("search").oninput=render;$("sort").onchange=render;',
-    'async function load(){if(!initialJob)return;try{const r=await fetch(`/reports/${encodeURIComponent(initialJob)}/data`,{cache:"no-store"});if(!r.ok)throw Error(await r.text());const d=await r.json();const job=normalize(d.job);const progress=normalize(d.progress);const raw=Array.isArray(d.discoveries)?d.discoveries:Object.values(d.discoveries||{});all=raw.map(normalize);$("total").textContent=progress.total||"\\u2014";$("screened").textContent=progress.screened||0;$("stabilized").textContent=progress.stabilized||0;const vals=all.map(x=>Number(x.median_r2)).filter(Number.isFinite);$("best").textContent=vals.length?Math.max(...vals).toFixed(3):"\\u2014";$("title").textContent=(job.accession||"ugPlot")+" live discoveries";$("subtitle").textContent=(job.target?"Target: "+job.target+" \\u00b7 ":"")+(job.message||job.state);$("live").textContent="\\u25cf updated "+new Date().toLocaleTimeString();render()}catch(e){$("live").textContent="\\u25cf "+e.message;$("live").style.color="#d44"}}load();setInterval(load,10000);</script></body></html>')
+    'async function load(){if(!initialJob)return;try{const r=await fetch(`/reports/${encodeURIComponent(initialJob)}/data`,{cache:"no-store"});if(!r.ok)throw Error(await r.text());const d=await r.json();const job=normalize(d.job);const progress=normalize(d.progress);const collaboration=d.collaboration||{};const raw=Array.isArray(d.discoveries)?d.discoveries:Object.values(d.discoveries||{});all=raw.map(normalize);renderContributors(collaboration.contributors);$("total").textContent=progress.total||"\\u2014";$("screened").textContent=progress.screened||0;$("stabilized").textContent=progress.stabilized||0;const vals=all.map(x=>Number(x.median_r2)).filter(Number.isFinite);$("best").textContent=vals.length?Math.max(...vals).toFixed(3):"\\u2014";$("title").textContent=(job.accession||"ugPlot")+" live discoveries";$("subtitle").textContent=(job.target?"Target: "+job.target+" \\u00b7 ":"")+(job.message||job.state);$("live").textContent="\\u25cf updated "+new Date().toLocaleTimeString();render()}catch(e){$("live").textContent="\\u25cf "+e.message;$("live").style.color="#d44"}}load();setInterval(load,10000);</script></body></html>')
 }
 
 #' Start a ugplot job server

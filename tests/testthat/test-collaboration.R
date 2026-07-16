@@ -334,6 +334,7 @@ test_that("job group activity identifies collaborative and server executors", {
   claim <- ugplot_test_internal("ugplot_collaboration_claim_task")
   heartbeat <- ugplot_test_internal("ugplot_collaboration_heartbeat")
   activity <- ugplot_test_internal("ugplot_collaboration_job_group_activity")
+  active_contributors <- ugplot_test_internal("ugplot_collaboration_active_contributors")
   publish(
     paste(job_id, "screen", "TG2", sep = ":"), job_id, list(value = 1),
     requirements = list(models = "lm"), jobs_dir = root
@@ -359,6 +360,13 @@ test_that("job group activity identifies collaborative and server executors", {
   expect_match(collaborative$message, "ranger")
   expect_equal(fixed$executor, "Fy3")
   expect_equal(fixed$progress, 0.35)
+
+  active <- active_contributors(job_id, root)
+  expect_equal(nrow(active), 1L)
+  expect_equal(active$executor, "Alice")
+  expect_equal(active$group_id, "TG2")
+  expect_equal(active$progress, 0.42)
+  expect_match(active$message, "Comparing models", fixed = TRUE)
 })
 
 test_that("collaboration payload can be staged without loading it in the Shiny process", {

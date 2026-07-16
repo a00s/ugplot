@@ -1646,7 +1646,12 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
           workers = unique(vapply(workers, function(worker) as.character(worker$name), character(1))),
           completed = done,
           total = nrow(manifest),
-          active = length(active_rows)
+          active = length(active_rows),
+          active_groups = if (length(active_rows) > 0L) {
+            paste0(manifest$Worker[active_rows], ":", manifest$GroupID[active_rows])
+          } else {
+            character(0)
+          }
         )
       )
     }

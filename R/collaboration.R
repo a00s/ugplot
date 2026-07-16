@@ -570,6 +570,50 @@ ugplot_collaboration_job_group_activity <- function(job_id,
   )
 }
 
+ugplot_collaboration_active_contributors <- function(job_id,
+                                                     jobs_dir = ugplot_default_jobs_dir(),
+                                                     max_candidates = 128L) {
+  job_id <- ugplot_validate_job_id(job_id)
+  root <- ugplot_collaboration_dir(jobs_dir)
+  if (!dir.exists(root)) return(data.frame())
+  task_prefix <- paste0(gsub("[^A-Za-z0-9._-]", "_", job_id), "_screen_")
+  task_dirs <- list.dirs(root, full.names = TRUE, recursive = FALSE)
+  task_dirs <- task_dirs[startsWith(basename(task_dirs), task_prefix)]
+  if (length(task_dirs) == 0L) return(data.frame())
+  task_paths <- file.path(task_dirs, "task.rds")
+  info <- suppressWarnings(file.info(task_paths))
+  task_paths <- task_paths[!is.na(info$mtime)]
+  info <- info[!is.na(info$mtime), , drop = FALSE]
+  if (length(task_paths) == 0L) return(data.frame())
+  task_paths <- task_paths[order(info$mtime, decreasing = TRUE)]
+  max_candidates <- suppressWarnings(as.integer(max_candidates))
+  if (is.na(max_candidates) || max_candidates < 1L) max_candidates <- 128L
+  task_paths <- utils::head(task_paths, max_candidates)
+  rows <- Filter(Negate(is.null), lapply(task_paths, function(path) {
+    task <- tryCatch(readRDS(path), error = function(e) NULL)
+    if (!is.list(task) || !identical(as.character(task$parent_job_id %||% ""), job_id)) return(NULL)
+    task <- ugplot_collaboration_reap_task(task)
+    if (!identical(as.character(task$state %||% ""), "leased")) return(NULL)
+    progress <- suppressWarnings(as.numeric(task$client_progress %||% 0))
+    if (!is.finite(progress)) progress <- 0
+    task_id <- as.character(task$task_id %||% "")
+    task_id_prefix <- paste0(job_id, ":screen:")
+    group_id <- if (startsWith(task_id, task_id_prefix)) {
+      substring(task_id, nchar(task_id_prefix) + 1L)
+    } else task_id
+    data.frame(
+      group_id = group_id,
+      executor = as.character(task$scientist_name %||% task$client_id %||% "Public scientist"),
+      executor_type = "collaboration",
+      progress = max(0, min(1, progress)),
+      message = as.character(task$client_message %||% "Collaborative experiment running"),
+      candidate = as.character(task$client_candidate %||% ""),
+      stringsAsFactors = FALSE
+    )
+  }))
+  if (length(rows) == 0L) data.frame() else do.call(rbind, rows)
+}
+
 ugplot_collaboration_append_event <- function(path, type, data = list()) {
   events <- if (file.exists(path)) tryCatch(readRDS(path), error = function(e) list()) else list()
   events[[length(events) + 1L]] <- list(

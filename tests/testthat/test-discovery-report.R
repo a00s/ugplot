@@ -59,7 +59,14 @@ test_that("incremental discovery report upgrades screened groups with stability"
   )
   dir.create(dirname(paths$groups), recursive = TRUE, showWarnings = FALSE)
   utils::write.csv(group_candidates, paths$groups, row.names = FALSE)
-  write_atomic(data.frame(GroupID = c("TG1", "TG2", "TG3")), paths$manifest)
+  write_atomic(data.frame(
+    GroupID = c("TG1", "TG2", "TG3"),
+    Worker = c("", "Fy2", ""),
+    State = c("completed", "running", "pending"),
+    Progress = c(1, 0.37, 0),
+    Message = c("Completed", "Comparing candidate models", "Waiting"),
+    stringsAsFactors = FALSE
+  ), paths$manifest)
 
   report <- report_job(status$id, jobs_dir)
   expect_equal(report$progress$total, 3L)
@@ -75,6 +82,11 @@ test_that("incremental discovery report upgrades screened groups with stability"
   expect_equal(report$discoveries[[3]]$status, "awaiting analysis")
   expect_equal(report$discoveries[[3]]$best_cpg, "cg3")
   expect_false(any(grepl("Path$", names(report$discoveries[[1]]))))
+  expect_equal(report$collaboration$active, 1L)
+  expect_equal(report$collaboration$contributors[[1]]$scientist, "Fy2")
+  expect_equal(report$collaboration$contributors[[1]]$kind, "ugPlot server")
+  expect_equal(report$collaboration$contributors[[1]]$group, "TG2")
+  expect_equal(report$collaboration$contributors[[1]]$progress, 0.37)
 })
 
 test_that("discovery report HTML accepts a direct job link", {
@@ -92,6 +104,23 @@ test_that("discovery report HTML accepts a direct job link", {
   expect_match(report_html, "computational group may contain multiple biological transcripts", fixed = TRUE)
   expect_match(report_html, "(ml+cpg)/2", fixed = TRUE)
   expect_match(report_html, 'class="controls"', fixed = TRUE)
+  expect_match(report_html, "Science collaboration", fixed = TRUE)
+  expect_match(report_html, 'name.textContent=row.scientist', fixed = TRUE)
+  expect_match(report_html, 'activity.textContent=', fixed = TRUE)
+  expect_false(grepl('innerHTML=row.scientist', report_html, fixed = TRUE))
+})
+
+test_that("public collaboration text is bounded and cannot become report markup", {
+  public_text <- ugplot_test_internal("ugplot_public_report_text")
+  malicious <- paste0("<img src=x onerror=alert(1)>", "\n", paste(rep("x", 200), collapse = ""))
+  cleaned <- public_text(malicious, 40L)
+  expect_false(grepl("\n", cleaned, fixed = TRUE))
+  expect_lte(nchar(cleaned), 40L)
+  expect_match(cleaned, "<img src=x", fixed = TRUE)
+
+  html <- ugplot_test_internal("ugplot_discovery_report_html")("job-safe")
+  expect_match(html, 'name.textContent=row.scientist', fixed = TRUE)
+  expect_false(grepl(malicious, html, fixed = TRUE))
 })
 
 test_that("discovery report snapshot is a reusable static JSON artifact", {
@@ -117,5 +146,6 @@ test_that("discovery report snapshot is a reusable static JSON artifact", {
   expect_true(file.exists(path))
   snapshot <- jsonlite::read_json(path, simplifyVector = FALSE)
   expect_equal(snapshot$job$id, status$id)
+  expect_equal(snapshot$collaboration$active, 0L)
   expect_identical(snapshot$discoveries, list())
 })

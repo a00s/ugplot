@@ -188,6 +188,53 @@ ugplot_remote_job_monitor <- function(server_url, job_id, token = "", include_gr
   parsed
 }
 
+ugplot_remote_distributed_summary <- function(status) {
+  status <- status %||% list()
+  distributed <- status$distributed_state %||% list()
+  number <- function(value, default = NA_real_) {
+    value <- suppressWarnings(as.numeric(value %||% default))
+    if (length(value) == 0L || !is.finite(value[[1]])) default else value[[1]]
+  }
+  completed <- number(distributed$completed, NA_real_)
+  total <- number(distributed$total, NA_real_)
+  processing <- number(distributed$active, NA_real_)
+  active_groups <- as.character(distributed$active_groups %||% character(0))
+  active_groups <- trimws(active_groups[nzchar(trimws(active_groups))])
+
+  message <- as.character(status$message %||% "")
+  if ((!is.finite(completed) || !is.finite(total)) && nzchar(message)) {
+    match <- regexec(
+      "Distributed screening: *([0-9]+)/([0-9]+) group\\(s\\); *active *(.*)$",
+      message,
+      perl = TRUE,
+      ignore.case = TRUE
+    )
+    pieces <- regmatches(message, match)[[1]]
+    if (length(pieces) >= 4L) {
+      completed <- suppressWarnings(as.numeric(pieces[[2]]))
+      total <- suppressWarnings(as.numeric(pieces[[3]]))
+      active_text <- trimws(pieces[[4]])
+      if (!tolower(active_text) %in% c("", "waiting", "none")) {
+        active_groups <- trimws(strsplit(active_text, ",", fixed = TRUE)[[1]])
+        active_groups <- active_groups[nzchar(active_groups)]
+      }
+    }
+  }
+  if (!is.finite(processing)) processing <- length(active_groups)
+  pending <- if (is.finite(total) && is.finite(completed)) {
+    max(0, total - completed - processing)
+  } else {
+    NA_real_
+  }
+  list(
+    completed = completed,
+    total = total,
+    processing = processing,
+    pending = pending,
+    active_groups = active_groups
+  )
+}
+
 ugplot_remote_job_log <- function(server_url, job_id, token = "", max_lines = 200L) {
   request <- ugplot_remote_request(
     server_url,

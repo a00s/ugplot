@@ -13815,6 +13815,16 @@ server <- function(input, output, session) {
     active_groups <- if (is.data.frame(groups) && processing > 0L && "group_id" %in% names(groups)) {
       paste(utils::head(as.character(groups$group_id[group_states == "processing"]), 3L), collapse = ", ")
     } else ""
+    if (total == 0L && exists("ugplot_remote_distributed_summary", mode = "function", inherits = TRUE)) {
+      distributed_summary <- ugplot_remote_distributed_summary(status)
+      if (is.finite(distributed_summary$total)) {
+        total <- as.integer(distributed_summary$total)
+        completed <- as.integer(distributed_summary$completed %||% 0L)
+        processing <- as.integer(distributed_summary$processing %||% 0L)
+        waiting <- as.integer(distributed_summary$pending %||% max(0L, total - completed - processing))
+        active_groups <- paste(utils::head(distributed_summary$active_groups, 3L), collapse = ", ")
+      }
+    }
 
     parse_time <- function(value) {
       value <- as.character(value %||% "")
