@@ -206,6 +206,33 @@ test_that("job runner records progress and result", {
   expect_equal(result$summary$columns, 2)
 })
 
+test_that("job runner accepts structured progress phases from GEO workers", {
+  jobs_dir <- tempfile("ugplot-phased-progress-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  run_job_from_dir <- ugplot_test_internal("ugplot_run_job_from_dir")
+
+  status <- create_job(
+    data.frame(x = 1:3),
+    config = list(runner = "ugplot_run_placeholder_job"),
+    jobs_dir = jobs_dir
+  )
+  ugplot_test_local_namespace_binding("ugplot_run_placeholder_job", function(
+      dataset, config = list(), progress_callback = function(...) NULL) {
+    progress_callback(
+      progress = 0.5,
+      message = "Screening transcript group",
+      phase = "screening",
+      future_metadata = "accepted without breaking the job"
+    )
+    list(ok = TRUE)
+  })
+
+  expect_silent(run_job_from_dir(status$id, jobs_dir))
+  final_status <- readRDS(file.path(jobs_dir, status$id, "status.rds"))
+  expect_equal(final_status$state, "finished")
+  expect_equal(final_status$current_phase, "screening")
+})
+
 test_that("background jobs survive launcher process object collection", {
   skip_if_not_installed("callr")
   skip_on_os("windows")
