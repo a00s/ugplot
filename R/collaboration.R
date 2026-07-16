@@ -512,7 +512,8 @@ ugplot_collaboration_job_group_activity <- function(job_id,
     if (!is.finite(progress)) progress <- 0
     message <- as.character(value_at("Message", index, value_at("Error", index, "")))
     task <- if (isTRUE(inspect_collaboration)) {
-      ugplot_collaboration_read_task(paste(job_id, "screen", group_id, sep = ":"), jobs_dir)
+      complete_task <- ugplot_collaboration_read_task(paste(job_id, "analyze", group_id, sep = ":"), jobs_dir)
+      if (is.list(complete_task)) complete_task else ugplot_collaboration_read_task(paste(job_id, "screen", group_id, sep = ":"), jobs_dir)
     } else {
       NULL
     }
@@ -576,9 +577,10 @@ ugplot_collaboration_active_contributors <- function(job_id,
   job_id <- ugplot_validate_job_id(job_id)
   root <- ugplot_collaboration_dir(jobs_dir)
   if (!dir.exists(root)) return(data.frame())
-  task_prefix <- paste0(gsub("[^A-Za-z0-9._-]", "_", job_id), "_screen_")
+  safe_job_id <- gsub("[^A-Za-z0-9._-]", "_", job_id)
+  task_prefixes <- paste0(safe_job_id, c("_analyze_", "_screen_"))
   task_dirs <- list.dirs(root, full.names = TRUE, recursive = FALSE)
-  task_dirs <- task_dirs[startsWith(basename(task_dirs), task_prefix)]
+  task_dirs <- task_dirs[vapply(basename(task_dirs), function(path) any(startsWith(path, task_prefixes)), logical(1))]
   if (length(task_dirs) == 0L) return(data.frame())
   task_paths <- file.path(task_dirs, "task.rds")
   info <- suppressWarnings(file.info(task_paths))
@@ -597,9 +599,10 @@ ugplot_collaboration_active_contributors <- function(job_id,
     progress <- suppressWarnings(as.numeric(task$client_progress %||% 0))
     if (!is.finite(progress)) progress <- 0
     task_id <- as.character(task$task_id %||% "")
-    task_id_prefix <- paste0(job_id, ":screen:")
-    group_id <- if (startsWith(task_id, task_id_prefix)) {
-      substring(task_id, nchar(task_id_prefix) + 1L)
+    task_id_prefixes <- paste0(job_id, c(":analyze:", ":screen:"))
+    matched_prefix <- task_id_prefixes[startsWith(task_id, task_id_prefixes)]
+    group_id <- if (length(matched_prefix) > 0L) {
+      substring(task_id, nchar(matched_prefix[[1]]) + 1L)
     } else task_id
     data.frame(
       group_id = group_id,
@@ -632,7 +635,7 @@ ugplot_collaboration_run_payload <- function(payload, cpu_limit = 1L, event_path
   }
   config <- payload$config
   runner_name <- as.character(config$runner %||% "")
-  allowed_runners <- c("ugplot_run_geo_screen_group_job")
+  allowed_runners <- c("ugplot_run_geo_complete_group_job", "ugplot_run_geo_screen_group_job")
   if (!(runner_name %in% allowed_runners)) stop("Unsupported collaboration runner.", call. = FALSE)
   config$cpu_limit <- max(1L, suppressWarnings(as.integer(cpu_limit)))
   config$parallel_enabled <- config$cpu_limit > 1L

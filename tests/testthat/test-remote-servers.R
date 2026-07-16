@@ -85,4 +85,12 @@ test_that("lightweight remote monitor summarizes distributed screening", {
   expect_equal(legacy$total, 771)
   expect_equal(legacy$processing, 2)
   expect_equal(legacy$active_groups, c("Fy3:TG5", "Fy2:TG17"))
+
+  complete <- summarize(list(
+    message = "Distributed complete analysis: 4/2148 group(s); active Fy2:TG7"
+  ))
+  expect_equal(complete$completed, 4)
+  expect_equal(complete$total, 2148)
+  expect_equal(complete$processing, 1)
+  expect_equal(complete$active_groups, "Fy2:TG7")
 })

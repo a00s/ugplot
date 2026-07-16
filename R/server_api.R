@@ -103,7 +103,7 @@ ugplot_validate_remote_job_config <- function(config) {
     "ugplot_run_ml_job",
     "ugplot_run_geo_pipeline_job"
   )
-  internal_runners <- c("ugplot_run_geo_screen_group_job")
+  internal_runners <- c("ugplot_run_geo_complete_group_job", "ugplot_run_geo_screen_group_job")
   allowed <- runner %in% public_runners ||
     (runner %in% internal_runners && isTRUE(config$internal_worker_task))
   if (!isTRUE(allowed)) {

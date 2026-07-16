@@ -172,7 +172,7 @@ test_that("claim skips unavailable tasks and continues through the queue", {
 test_that("collaboration runner emits structured scientific events", {
   run_payload <- ugplot_test_internal("ugplot_collaboration_run_payload")
   event_path <- tempfile(fileext = ".rds")
-  ugplot_test_local_namespace_binding("ugplot_run_geo_screen_group_job", function(
+  ugplot_test_local_namespace_binding("ugplot_run_geo_complete_group_job", function(
       dataset, config, progress_callback = function(...) NULL, partial_callback = NULL) {
     progress_callback(
       progress = 0.25,
@@ -184,7 +184,7 @@ test_that("collaboration runner emits structured scientific events", {
       stringsAsFactors = FALSE
     )))
     list(
-      kind = "geo_screen_group",
+      kind = "geo_complete_group",
       group_id = "example",
       screen_result = list(best_model_name = "lm")
     )
@@ -194,7 +194,7 @@ test_that("collaboration runner emits structured scientific events", {
     list(
       dataset = data.frame(target = 1:5, feature = 5:1),
       config = list(
-        runner = "ugplot_run_geo_screen_group_job", target_column = "age",
+        runner = "ugplot_run_geo_complete_group_job", target_column = "age",
         distributed_group = data.frame(GroupID = "TG1", Gene = "GENE1", stringsAsFactors = FALSE)
       )
     ),

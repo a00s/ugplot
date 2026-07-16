@@ -21,6 +21,13 @@ test_that("remote runner allowlist blocks arbitrary functions", {
   expect_null(sanitized$resume_result_path)
   expect_equal(
     validate(list(
+      runner = "ugplot_run_geo_complete_group_job",
+      internal_worker_task = TRUE
+    ))$runner,
+    "ugplot_run_geo_complete_group_job"
+  )
+  expect_equal(
+    validate(list(
       runner = "ugplot_run_geo_screen_group_job",
       internal_worker_task = TRUE
     ))$runner,
@@ -38,6 +45,73 @@ test_that("remote runner allowlist blocks arbitrary functions", {
     validate(list(runner = "ugplot_run_geo_pipeline_job", accession = "https://attacker.invalid")),
     "require an accession"
   )
+})
+
+test_that("local transcript analysis completes stability before the next group", {
+  root <- tempfile("local-complete-groups-")
+  dir.create(root)
+  dataset_paths <- vapply(c("TG1", "TG2"), function(group_id) {
+    path <- file.path(root, paste0(group_id, ".csv"))
+    utils::write.csv(
+      data.frame(sample_id = c("S1", "S2"), target = c(1, 2), cg1 = c(0.2, 0.8)),
+      path, row.names = FALSE
+    )
+    path
+  }, character(1))
+  groups <- data.frame(
+    GroupID = c("TG1", "TG2"), TriggerMaxAbsRho = c(0.9, 0.8),
+    DatasetPath = unname(dataset_paths), stringsAsFactors = FALSE
+  )
+  order <- character(0)
+  ugplot_test_local_namespace_binding("ugplot_geo_screen_group", function(
+      dataset, group, source, config, screen_path, importance_path,
+      progress_callback = NULL, partial_callback = NULL) {
+    group_id <- as.character(group$GroupID[[1]])
+    order <<- c(order, paste0("screen-", group_id))
+    list(
+      summary = data.frame(
+        GroupID = group_id, BestModel = "lm", Phase = "screening",
+        PrincipalTranscript = paste0("ENST-", group_id),
+        TriggerMaxAbsRho = as.numeric(group$TriggerMaxAbsRho[[1]]),
+        BestMetric = 0.8, MedianMetric = 0.8,
+        DatasetPath = config$coordinator_dataset_path,
+        ScreenResultPath = screen_path, ImportancePath = "",
+        stringsAsFactors = FALSE
+      ),
+      screen_result = list(best_model_name = "lm"), importance = data.frame()
+    )
+  })
+  ugplot_test_local_namespace_binding("ugplot_geo_run_transcript_stability_remote", function(
+      screen_summary, cache_dir, source = "processed", config = list(), metadata = NULL,
+      progress_callback = NULL, partial_callback = NULL) {
+    group_id <- as.character(screen_summary$GroupID[[1]])
+    order <<- c(order, paste0("stability-", group_id))
+    data.frame(GroupID = group_id, Phase = "stability", Stable = TRUE)
+  })
+  ugplot_test_local_namespace_binding("ugplot_geo_enrich_ml_summary_remote", function(summary, ...) summary)
+
+  run_local <- ugplot_test_internal("ugplot_geo_run_transcript_ml_remote")
+  result <- run_local(
+    groups, cache_dir = root, source = "raw_sesame",
+    config = list(models = "lm", geo_ml_screen_seeds = 1L)
+  )
+
+  expect_equal(result$GroupID, c("TG1", "TG2"))
+  expect_equal(order, c("screen-TG1", "stability-TG1", "screen-TG2", "stability-TG2"))
+})
+
+test_that("stability completion requires every configured stratum", {
+  complete <- ugplot_test_internal("ugplot_geo_stability_complete_groups")
+  screen <- data.frame(GroupID = "TG1", BestModel = "lm", stringsAsFactors = FALSE)
+  metadata <- data.frame(sample_id = c("S1", "S2"), sex = c("F", "M"), stringsAsFactors = FALSE)
+  partial <- data.frame(
+    GroupID = "TG1", StratumColumn = "sex", StratumValue = "F",
+    stringsAsFactors = FALSE
+  )
+  finished <- rbind(partial, data.frame(GroupID = "TG1", StratumColumn = "sex", StratumValue = "M"))
+
+  expect_length(complete(screen, partial, list(geo_ml_stability_group_column = "sex"), metadata), 0L)
+  expect_equal(complete(screen, finished, list(geo_ml_stability_group_column = "sex"), metadata), "TG1")
 })
 
 test_that("public job servers require authentication", {
@@ -118,7 +192,20 @@ test_that("worker screening runner returns a portable group result", {
       importance = data.frame(CpG = "cg1", Overall = 1)
     )
   })
-  run_worker <- ugplot_test_internal("ugplot_run_geo_screen_group_job")
+  ugplot_test_local_namespace_binding("ugplot_geo_complete_group_stability", function(...) {
+    list(
+      summary = data.frame(GroupID = "TG1", Phase = "stability", Stable = TRUE),
+      artifacts = list(list(
+        summary = data.frame(
+          GroupID = "TG1", Phase = "stability", StratumColumn = "", StratumValue = "",
+          StabilityResultPath = "", ImportancePath = "", stringsAsFactors = FALSE
+        ),
+        result = list(best_model_name = "lm"),
+        importance = data.frame(CpG = "cg1", Overall = 1)
+      ))
+    )
+  })
+  run_worker <- ugplot_test_internal("ugplot_run_geo_complete_group_job")
   result <- run_worker(
     data.frame(target = 1:3, cg1 = 3:1),
     list(
@@ -131,10 +218,12 @@ test_that("worker screening runner returns a portable group result", {
     )
   )
 
-  expect_equal(result$kind, "geo_screen_group")
+  expect_equal(result$kind, "geo_complete_group")
+  expect_equal(result$protocol_version, 2L)
   expect_equal(result$group_id, "TG1")
   expect_equal(result$worker_name, "Fy3")
   expect_equal(result$summary$DatasetPath, "/coordinator/TG1.csv")
+  expect_length(result$stability_artifacts, 1L)
 })
 
 test_that("distributed scheduler checkpoints worker results in coordinator cache", {
@@ -190,17 +279,29 @@ test_that("distributed scheduler checkpoints worker results in coordinator cache
     ImportancePath = "/worker/importance.csv",
     stringsAsFactors = FALSE
   )
+  stability_summary <- worker_summary
+  stability_summary$Phase <- "stability"
+  stability_summary$StratumColumn <- ""
+  stability_summary$StratumValue <- ""
+  stability_summary$Stable <- TRUE
+  stability_summary$StabilityResultPath <- "/worker/stability.rds"
   ugplot_test_local_namespace_binding("ugplot_remote_create_job", function(...) list(id = "worker-job-1"))
   ugplot_test_local_namespace_binding("ugplot_remote_job_status", function(...) {
     list(state = "finished", resumable = FALSE)
   })
   ugplot_test_local_namespace_binding("ugplot_remote_get_result", function(...) {
     list(
-      kind = "geo_screen_group",
+      kind = "geo_complete_group",
       group_id = "TG1",
       summary = worker_summary,
       screen_result = list(best_model_name = "lm"),
-      importance = data.frame(CpG = "cg1", Overall = 1)
+      importance = data.frame(CpG = "cg1", Overall = 1),
+      stability_summary = stability_summary,
+      stability_artifacts = list(list(
+        summary = stability_summary,
+        result = list(best_model_name = "lm", final_summary = list(metric_value = 0.72)),
+        importance = data.frame(CpG = "cg1", Overall = 0.9)
+      ))
     )
   })
   ugplot_test_local_namespace_binding("ugplot_remote_delete_job", function(...) list(deleted = TRUE))
@@ -246,6 +347,9 @@ test_that("distributed scheduler checkpoints worker results in coordinator cache
   expect_equal(result$DatasetPath, dataset_path)
   expect_true(file.exists(result$ScreenResultPath))
   expect_true(file.exists(result$ImportancePath))
+  final_summary <- utils::read.csv(file.path(pipeline_dir, "summary.csv"), stringsAsFactors = FALSE)
+  expect_equal(final_summary$Phase, "stability")
+  expect_true(file.exists(final_summary$StabilityResultPath))
   expect_equal(manifest$State, "completed")
   expect_equal(manifest$Attempts, 1L)
 })

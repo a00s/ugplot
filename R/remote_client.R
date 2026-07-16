@@ -204,7 +204,7 @@ ugplot_remote_distributed_summary <- function(status) {
   message <- as.character(status$message %||% "")
   if ((!is.finite(completed) || !is.finite(total)) && nzchar(message)) {
     match <- regexec(
-      "Distributed screening: *([0-9]+)/([0-9]+) group\\(s\\); *active *(.*)$",
+      "Distributed (?:screening|complete analysis): *([0-9]+)/([0-9]+) group\\(s\\); *active *(.*)$",
       message,
       perl = TRUE,
       ignore.case = TRUE
