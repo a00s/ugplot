@@ -85,6 +85,13 @@ test_that("lightweight job listing does not refresh or reopen job configuration"
   expect_equal(listed$id, status$id)
   expect_equal(listed$target, "age")
   expect_equal(listed$models, "lm, glm")
+
+  persisted <- readRDS(file.path(jobs_dir, status$id, "status.rds"))
+  persisted$state <- "failed"
+  persisted$resumable <- FALSE
+  saveRDS(persisted, file.path(jobs_dir, status$id, "status.rds"))
+  listed_after_restart <- list_jobs(jobs_dir, lightweight = TRUE)
+  expect_true(listed_after_restart$resumable)
 })
 
 test_that("Windows tasklist receives its PID filter as one quoted argument", {

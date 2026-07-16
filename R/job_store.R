@@ -915,7 +915,10 @@ ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir(), include_inter
       return(NULL)
     }
     if (isTRUE(lightweight)) {
-      status$resumable <- isTRUE(status$resumable %||% ugplot_job_resumable(status, jobs_dir))
+      # `resumable` may have been persisted as FALSE while the process was
+      # running. Re-evaluate it from the current state and the two small file
+      # existence checks so a server restart immediately exposes Resume.
+      status$resumable <- ugplot_job_resumable(status, jobs_dir)
       status$config_summary <- status$config_summary %||% list(target = "", models = "")
       return(status)
     }
