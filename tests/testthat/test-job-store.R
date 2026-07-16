@@ -49,6 +49,44 @@ test_that("focused job monitor returns a compact single-job snapshot", {
   expect_equal(nrow(snapshot$group_activity$groups), 0L)
 })
 
+test_that("focused job monitor does not perform a full status refresh", {
+  jobs_dir <- tempfile("ugplot-monitor-light-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  monitor_snapshot <- ugplot_test_internal("ugplot_job_monitor_snapshot")
+
+  status <- create_job(
+    data.frame(x = 1:3),
+    config = list(runner = "ugplot_run_placeholder_job"),
+    jobs_dir = jobs_dir
+  )
+  ugplot_test_local_namespace_binding("ugplot_read_job_status", function(...) {
+    stop("full status refresh should not be used")
+  })
+
+  snapshot <- monitor_snapshot(status$id, jobs_dir, include_groups = FALSE)
+  expect_equal(snapshot$status$id, status$id)
+})
+
+test_that("lightweight job listing does not refresh or reopen job configuration", {
+  jobs_dir <- tempfile("ugplot-list-light-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  list_jobs <- ugplot_test_internal("ugplot_list_jobs")
+
+  status <- create_job(
+    data.frame(x = 1:3),
+    config = list(target = "age", models = c("lm", "glm")),
+    jobs_dir = jobs_dir
+  )
+  ugplot_test_local_namespace_binding("ugplot_refresh_job_status", function(...) {
+    stop("full status refresh should not be used")
+  })
+
+  listed <- list_jobs(jobs_dir, lightweight = TRUE)
+  expect_equal(listed$id, status$id)
+  expect_equal(listed$target, "age")
+  expect_equal(listed$models, "lm, glm")
+})
+
 test_that("Windows tasklist receives its PID filter as one quoted argument", {
   tasklist_args <- ugplot_test_internal("ugplot_windows_tasklist_args")(12345)
 

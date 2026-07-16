@@ -638,7 +638,9 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
   })
 
   pr$handle("GET", "/jobs", function() {
-    ugplot_list_jobs(jobs_dir)
+    # The overview is intentionally metadata-only. Full status/configuration
+    # inspection remains available through the individual job endpoints.
+    ugplot_list_jobs(jobs_dir, lightweight = TRUE)
   })
 
   pr$handle(

@@ -389,7 +389,14 @@ ugplot_read_job_resources <- function(job_id, jobs_dir = ugplot_default_jobs_dir
 ugplot_job_monitor_snapshot <- function(job_id, jobs_dir = ugplot_default_jobs_dir(),
                                         include_groups = TRUE, resource_lines = 60L) {
   ugplot_validate_job_id(job_id)
-  status <- ugplot_read_job_status(job_id, jobs_dir)
+  # This endpoint is polled by the focused monitor and must stay cheap.  A full
+  # status refresh also opens config.rds, which can contain a very large GEO
+  # configuration.  The background job is the owner of status.rds and resource
+  # telemetry already tells the monitor whether that process is alive.
+  status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+  if (!is.list(status)) {
+    stop("Job not found: ", job_id, call. = FALSE)
+  }
   resources <- ugplot_read_job_resources(job_id, jobs_dir, max_lines = resource_lines)
   group_activity <- list(groups = data.frame())
   if (isTRUE(include_groups) && identical(as.character(status$type %||% ""), "geo")) {
@@ -672,6 +679,7 @@ ugplot_create_job <- function(dataset, config = list(), jobs_dir = ugplot_defaul
     error = NULL,
     result_path = NULL,
     partial_result_path = NULL,
+    config_summary = ugplot_config_summary(config),
     timeout = suppressWarnings(as.numeric(config$timeout %||% NA_real_)),
     watchdog_timeout_multiplier = suppressWarnings(as.numeric(config$watchdog_timeout_multiplier %||% 3))
   )
@@ -713,6 +721,14 @@ ugplot_job_config_summary <- function(status, jobs_dir = ugplot_default_jobs_dir
     return(empty_summary)
   }
   config <- tryCatch(readRDS(config_path), error = function(e) list())
+  ugplot_config_summary(config)
+}
+
+ugplot_config_summary <- function(config) {
+  empty_summary <- list(target = "", models = "")
+  if (!is.list(config)) {
+    return(empty_summary)
+  }
   models <- config$models %||% config$model_names %||% character(0)
   if (identical(config$type %||% "", "geo") || identical(config$runner %||% "", "ugplot_run_geo_pipeline_job")) {
     return(list(
@@ -884,7 +900,8 @@ ugplot_refresh_job_status <- function(status, jobs_dir = ugplot_default_jobs_dir
   status
 }
 
-ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir(), include_internal = FALSE) {
+ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir(), include_internal = FALSE,
+                             lightweight = FALSE) {
   if (!dir.exists(jobs_dir)) {
     return(data.frame())
   }
@@ -896,6 +913,11 @@ ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir(), include_inter
     )
     if (!is.list(status) || (!isTRUE(include_internal) && isTRUE(status$internal_worker_task))) {
       return(NULL)
+    }
+    if (isTRUE(lightweight)) {
+      status$resumable <- isTRUE(status$resumable %||% ugplot_job_resumable(status, jobs_dir))
+      status$config_summary <- status$config_summary %||% list(target = "", models = "")
+      return(status)
     }
     tryCatch(ugplot_refresh_job_status(status, jobs_dir), error = function(e) NULL)
   })
