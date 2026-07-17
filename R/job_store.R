@@ -699,6 +699,33 @@ ugplot_read_job_status <- function(job_id, jobs_dir = ugplot_default_jobs_dir())
   ugplot_refresh_job_status(status, jobs_dir)
 }
 
+# Return the progress already persisted by a worker without loading its job
+# configuration or rebuilding any detailed monitoring data. Distributed
+# coordinators poll this frequently, so it must stay inexpensive even while a
+# worker is using all available CPU. A dead or timed-out process still goes
+# through the regular refresh once so retry/resume semantics remain intact.
+ugplot_read_job_status_lightweight <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+  if (is.null(status)) {
+    stop("Job not found: ", job_id, call. = FALSE)
+  }
+
+  state <- as.character(status$state %||% "")
+  pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
+  should_check <- state %in% c("running", "draining") && !is.na(pid)
+  if (isTRUE(should_check)) {
+    alive <- ugplot_process_alive(pid)
+    timed_out <- isTRUE(alive) && ugplot_running_job_timed_out(status)
+    if (!isTRUE(alive) || isTRUE(timed_out)) {
+      return(ugplot_refresh_job_status(status, jobs_dir))
+    }
+  }
+
+  status$resumable <- ugplot_job_resumable(status, jobs_dir)
+  status$config_summary <- status$config_summary %||% list(target = "", models = "")
+  status
+}
+
 ugplot_job_resumable <- function(status, jobs_dir = ugplot_default_jobs_dir()) {
   if (!is.list(status) || is.null(status$id)) {
     return(FALSE)

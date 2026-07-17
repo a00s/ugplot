@@ -156,7 +156,7 @@ ugplot_remote_model_deps <- function(server_url, token = "") {
 }
 
 ugplot_remote_job_status <- function(server_url, job_id, token = "", timeout_seconds = 15) {
-  request <- ugplot_remote_request(server_url, paste0("jobs/", job_id), token)
+  request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/status"), token)
   response <- httr::GET(request$url, request$headers, httr::timeout(timeout_seconds))
   ugplot_remote_parse(response)
 }

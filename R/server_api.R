@@ -697,6 +697,19 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
     ugplot_model_dependency_status()
   })
 
+  pr$handle("GET", "/jobs/<job_id>/status", function(job_id, res) {
+    tryCatch(
+      {
+        res$setHeader("Cache-Control", "no-store")
+        ugplot_read_job_status_lightweight(job_id, jobs_dir)
+      },
+      error = function(e) {
+        res$status <- 404
+        list(error = conditionMessage(e))
+      }
+    )
+  })
+
   pr$handle("GET", "/jobs/<job_id>", function(job_id, res) {
     tryCatch(
       {

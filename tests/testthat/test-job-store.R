@@ -214,6 +214,72 @@ test_that("public job listing does not refresh internal worker jobs", {
   expect_equal(refreshed_ids, public$id)
 })
 
+test_that("lightweight worker status preserves live progress without a full refresh", {
+  jobs_dir <- tempfile("ugplot-light-worker-status-")
+  dir.create(jobs_dir)
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  write_job_status <- ugplot_test_internal("ugplot_write_job_status")
+  read_lightweight <- ugplot_test_internal("ugplot_read_job_status_lightweight")
+
+  status <- create_job(
+    data.frame(x = 1),
+    config = list(
+      runner = "ugplot_run_geo_complete_group_job",
+      internal_worker_task = TRUE,
+      request_id = "parent:analyze:TG2"
+    ),
+    jobs_dir = jobs_dir,
+    type = "geo_worker"
+  )
+  status$state <- "running"
+  status$pid <- 12345L
+  status$progress <- 0.42
+  status$message <- "Screening TG2: Running RRF dataset seed 1 training seed 4"
+  status$current_model <- "RRF"
+  write_job_status(status$id, status, jobs_dir)
+
+  ugplot_test_local_namespace_binding("ugplot_process_alive", function(...) TRUE)
+  ugplot_test_local_namespace_binding("ugplot_running_job_timed_out", function(...) FALSE)
+  ugplot_test_local_namespace_binding("ugplot_refresh_job_status", function(...) {
+    stop("full refresh must not run for a live worker")
+  })
+
+  observed <- read_lightweight(status$id, jobs_dir)
+  expect_equal(observed$progress, 0.42)
+  expect_equal(observed$current_model, "RRF")
+  expect_match(observed$message, "Screening TG2")
+  expect_false(observed$resumable)
+})
+
+test_that("lightweight worker status still refreshes a dead process", {
+  jobs_dir <- tempfile("ugplot-dead-worker-status-")
+  dir.create(jobs_dir)
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  write_job_status <- ugplot_test_internal("ugplot_write_job_status")
+  read_lightweight <- ugplot_test_internal("ugplot_read_job_status_lightweight")
+
+  status <- create_job(
+    data.frame(x = 1),
+    config = list(internal_worker_task = TRUE),
+    jobs_dir = jobs_dir,
+    type = "geo_worker"
+  )
+  status$state <- "running"
+  status$pid <- 12345L
+  write_job_status(status$id, status, jobs_dir)
+
+  ugplot_test_local_namespace_binding("ugplot_process_alive", function(...) FALSE)
+  ugplot_test_local_namespace_binding("ugplot_refresh_job_status", function(status, ...) {
+    status$state <- "failed"
+    status$message <- "Background process stopped before finishing"
+    status
+  })
+
+  observed <- read_lightweight(status$id, jobs_dir)
+  expect_equal(observed$state, "failed")
+  expect_match(observed$message, "stopped before finishing")
+})
+
 test_that("job bundles redact distributed worker tokens", {
   redact <- ugplot_test_internal("ugplot_redact_job_config")
   config <- list(
