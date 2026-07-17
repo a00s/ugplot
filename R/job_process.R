@@ -228,6 +228,12 @@ ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugp
   if (nzchar(request_id)) {
     existing <- ugplot_find_job_by_request_id(request_id, jobs_dir)
     if (is.list(existing)) {
+      if ((existing$state %||% "") %in% c("failed", "stopped")) {
+        resumed <- ugplot_resume_background_job(existing$id, jobs_dir)
+        resumed$reused <- TRUE
+        resumed$restarted <- TRUE
+        return(resumed)
+      }
       return(list(job = existing, process = NULL, reused = TRUE))
     }
   }

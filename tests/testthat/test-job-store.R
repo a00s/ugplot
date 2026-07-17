@@ -133,6 +133,50 @@ test_that("internal worker jobs are hidden and request ids are idempotent", {
   expect_equal(find_request("parent:screen:TG1", jobs_dir)$id, internal$id)
 })
 
+test_that("idempotent worker requests restart an existing failed task", {
+  jobs_dir <- tempfile("ugplot-retry-worker-jobs-")
+  dir.create(jobs_dir)
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  write_job_status <- ugplot_test_internal("ugplot_write_job_status")
+  start_job <- ugplot_test_internal("ugplot_start_background_job")
+  read_job_status <- ugplot_test_internal("ugplot_read_job_status")
+
+  internal <- create_job(
+    data.frame(x = 2),
+    config = list(
+      runner = "ugplot_run_geo_complete_group_job",
+      internal_worker_task = TRUE,
+      parent_job_id = "parent",
+      worker_name = "Fy2",
+      request_id = "parent:analyze:TG1"
+    ),
+    jobs_dir = jobs_dir,
+    type = "geo_worker"
+  )
+  internal$state <- "failed"
+  internal$message <- "Failed"
+  internal$error <- "Failure produced by an older worker build"
+  write_job_status(internal$id, internal, jobs_dir)
+
+  launched <- character(0)
+  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
+    launched <<- c(launched, job_id)
+    list(job = read_job_status(job_id, jobs_dir), process = NULL)
+  })
+
+  restarted <- start_job(
+    data.frame(x = 2),
+    config = list(request_id = "parent:analyze:TG1"),
+    jobs_dir = jobs_dir
+  )
+
+  expect_identical(restarted$job$id, internal$id)
+  expect_identical(launched, internal$id)
+  expect_true(restarted$reused)
+  expect_true(restarted$restarted)
+  expect_equal(readRDS(file.path(jobs_dir, internal$id, "status.rds"))$state, "queued")
+})
+
 test_that("public job listing does not refresh internal worker jobs", {
   jobs_dir <- tempfile("ugplot-fast-public-jobs-")
   dir.create(jobs_dir)
