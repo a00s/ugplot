@@ -636,7 +636,7 @@ test_that("crashed ML jobs auto-resume with an attempt limit", {
   expect_equal(limited_status$auto_resume_count, 2L)
 })
 
-test_that("crashed GEO worker groups auto-resume their persistent checkpoint", {
+test_that("recently crashed GEO coordinators and worker groups auto-resume their checkpoints", {
   read_job_status <- ugplot_test_internal("ugplot_read_job_status")
   ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
     list(job = read_job_status(job_id, jobs_dir), process = NULL)
@@ -646,25 +646,30 @@ test_that("crashed GEO worker groups auto-resume their persistent checkpoint", {
   create_job <- ugplot_test_internal("ugplot_create_job")
   write_job_status <- ugplot_test_internal("ugplot_write_job_status")
   auto_resume <- ugplot_test_internal("ugplot_auto_resume_crashed_jobs")
-  status <- create_job(
-    data.frame(target = 1:3, cg1 = c(0.1, 0.2, 0.3)),
-    config = list(
-      runner = "ugplot_run_geo_complete_group_job",
-      internal_worker_task = TRUE,
-      auto_resume_max_attempts = 2L
-    ),
-    jobs_dir = jobs_dir
-  )
-  status$state <- "failed"
-  status$message <- "Background process stopped before finishing"
-  status$error <- "The worker server stopped."
-  write_job_status(status$id, status, jobs_dir)
+  statuses <- lapply(c("ugplot_run_geo_pipeline_job", "ugplot_run_geo_complete_group_job"), function(runner) {
+    status <- create_job(
+      data.frame(target = 1:3, cg1 = c(0.1, 0.2, 0.3)),
+      config = list(
+        runner = runner,
+        internal_worker_task = !identical(runner, "ugplot_run_geo_pipeline_job"),
+        auto_resume_max_attempts = 2L
+      ),
+      jobs_dir = jobs_dir
+    )
+    status$state <- "failed"
+    status$message <- "Background process stopped before finishing"
+    status$error <- "The server stopped."
+    write_job_status(status$id, status, jobs_dir)
+    status
+  })
 
   auto_resume(jobs_dir)
-  resumed_status <- readRDS(file.path(jobs_dir, status$id, "status.rds"))
+  resumed_statuses <- lapply(statuses, function(status) {
+    readRDS(file.path(jobs_dir, status$id, "status.rds"))
+  })
 
-  expect_equal(resumed_status$state, "queued")
-  expect_equal(resumed_status$auto_resume_count, 1L)
+  expect_equal(vapply(resumed_statuses, `[[`, character(1), "state"), c("queued", "queued"))
+  expect_equal(vapply(resumed_statuses, `[[`, integer(1), "auto_resume_count"), c(1L, 1L))
 })
 
 test_that("resource monitor persists Linux job and host diagnostics", {

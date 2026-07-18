@@ -345,6 +345,7 @@ ugplot_auto_resume_crashed_jobs <- function(jobs_dir = ugplot_default_jobs_dir()
     config <- tryCatch(readRDS(config_path), error = function(e) list())
     resumable_runners <- c(
       "ugplot_run_ml_job",
+      "ugplot_run_geo_pipeline_job",
       "ugplot_run_geo_complete_group_job",
       "ugplot_run_geo_screen_group_job"
     )
@@ -352,6 +353,13 @@ ugplot_auto_resume_crashed_jobs <- function(jobs_dir = ugplot_default_jobs_dir()
       next
     }
     if (identical(config$auto_resume_crashed_jobs, FALSE)) {
+      next
+    }
+    recency_seconds <- suppressWarnings(as.numeric(config$auto_resume_crash_recency_seconds %||% 300))
+    if (!is.finite(recency_seconds) || recency_seconds < 1) recency_seconds <- 300
+    crashed_at <- ugplot_status_time(status$updated_at %||% NA_character_)
+    crash_age <- if (is.na(crashed_at)) Inf else as.numeric(difftime(Sys.time(), crashed_at, units = "secs"))
+    if (!is.finite(crash_age) || crash_age > recency_seconds) {
       next
     }
     max_attempts <- suppressWarnings(as.integer(config$auto_resume_max_attempts %||% 5L))
