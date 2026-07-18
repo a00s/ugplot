@@ -1401,11 +1401,11 @@ ugplot_geo_screen_group <- function(dataset, group, source, config, screen_path,
     screen_config,
     progress_callback = progress_callback %||% function(...) NULL,
     partial_callback = function(partial) {
-      saveRDS(partial, screen_path)
+      ugplot_geo_write_checkpoint(partial, screen_path)
       if (is.function(partial_callback)) partial_callback(partial)
     }
   )
-  saveRDS(screen_result, screen_path)
+  ugplot_geo_write_checkpoint(screen_result, screen_path)
   metric_values <- ugplot_geo_ml_metric_values(screen_result)
   model_counts <- ugplot_geo_ml_model_run_counts(screen_result)
   importance <- ugplot_geo_ml_importance_table(screen_result$best_model, group, source, "screening")
@@ -1580,6 +1580,32 @@ ugplot_geo_write_distributed_manifest <- function(manifest, path) {
     saveRDS(manifest, path)
   }
   invisible(path)
+}
+
+# ML checkpoints must survive an abrupt process or server stop. Writing to a
+# temporary file first prevents a half-written RDS from replacing the last
+# usable checkpoint.
+ugplot_geo_write_checkpoint <- function(value, path) {
+  if (exists("ugplot_write_rds_atomic", mode = "function", inherits = TRUE)) {
+    ugplot_write_rds_atomic(value, path)
+  } else {
+    ugplot_ensure_dir(dirname(path))
+    temporary_path <- paste0(path, ".tmp-", Sys.getpid())
+    on.exit(unlink(temporary_path, force = TRUE), add = TRUE)
+    saveRDS(value, temporary_path)
+    if (!file.rename(temporary_path, path)) {
+      stop("Could not write checkpoint: ", path, call. = FALSE)
+    }
+  }
+  invisible(path)
+}
+
+ugplot_geo_can_resume_worker_task <- function(status, attempts, max_attempts, draining = FALSE) {
+  attempts <- suppressWarnings(as.integer(attempts %||% 0L))
+  max_attempts <- suppressWarnings(as.integer(max_attempts %||% 1L))
+  if (is.na(attempts)) attempts <- 0L
+  if (is.na(max_attempts) || max_attempts < 1L) max_attempts <- 1L
+  !isTRUE(draining) && is.list(status) && isTRUE(status$resumable) && attempts < max_attempts
 }
 
 ugplot_geo_transcript_group_cache_complete <- function(candidates, group_paths) {
@@ -1990,10 +2016,11 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
       if (inherits(status, "error")) {
         manifest$PollFailures[[row_index]] <- manifest$PollFailures[[row_index]] + 1L
         manifest$Error[[row_index]] <- conditionMessage(status)
-        if (manifest$PollFailures[[row_index]] >= 5L) {
-          manifest$State[[row_index]] <- "pending"
-          manifest$JobID[[row_index]] <- ""
-        }
+        manifest$Message[[row_index]] <- paste0(
+          "Waiting for ", as.character(worker$name), " status; checkpoint remains assigned (",
+          manifest$PollFailures[[row_index]], " failed check(s))"
+        )
+        manifest$UpdatedAt[[row_index]] <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
         next
       }
       manifest$PollFailures[[row_index]] <- 0L
@@ -2016,18 +2043,21 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
           worker$token %||% ""
         ), silent = TRUE)
       } else if (remote_state %in% c("failed", "stopped")) {
-        status_message <- as.character(status$message %||% "")
-        crashed <- identical(status_message, "Background process stopped before finishing") ||
-          grepl("^Timed out", status_message) ||
-          identical(remote_state, "stopped")
-        if (!isTRUE(draining) && isTRUE(status$resumable) && isTRUE(crashed) &&
-            manifest$Attempts[[row_index]] <= max_attempts) {
+        if (ugplot_geo_can_resume_worker_task(
+          status, manifest$Attempts[[row_index]], max_attempts, draining
+        )) {
           resumed <- tryCatch(
             ugplot_remote_resume_job(worker$url, manifest$JobID[[row_index]], worker$token %||% ""),
             error = function(e) NULL
           )
           if (!is.null(resumed)) {
+            manifest$Attempts[[row_index]] <- manifest$Attempts[[row_index]] + 1L
             manifest$State[[row_index]] <- "running"
+            manifest$Message[[row_index]] <- paste0(
+              "Resuming ", manifest$GroupID[[row_index]], " from its saved model/seed checkpoint"
+            )
+            manifest$Error[[row_index]] <- ""
+            manifest$UpdatedAt[[row_index]] <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
             next
           }
         }
@@ -2453,11 +2483,11 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
             }
           },
           partial_callback = function(partial) {
-            saveRDS(partial, stability_path)
+            ugplot_geo_write_checkpoint(partial, stability_path)
             if (is.function(partial_callback)) partial_callback(partial)
           }
         )
-        saveRDS(stability_result, stability_path)
+        ugplot_geo_write_checkpoint(stability_result, stability_path)
         metric_values <- ugplot_geo_ml_metric_values(stability_result)
         stable_state <- ugplot_geo_stability_state(metric_values, min_seeds, window, tolerance)
         if (isTRUE(stable_state$stable) || length(metric_values) >= max_seeds || current_end >= max_seeds) {

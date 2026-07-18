@@ -539,7 +539,20 @@ ugplot_write_rds_atomic <- function(object, path) {
   tmp_path <- paste0(path, ".tmp-", Sys.getpid(), "-", as.integer(stats::runif(1, 1, 1e9)))
   saveRDS(object, tmp_path)
   try(Sys.chmod(tmp_path, mode = "0600"), silent = TRUE)
-  if (!file.rename(tmp_path, path)) {
+  replaced <- if (.Platform$OS.type == "windows" && file.exists(path)) {
+    backup_path <- paste0(path, ".backup-", Sys.getpid())
+    unlink(backup_path, force = TRUE)
+    backed_up <- file.rename(path, backup_path)
+    installed <- isTRUE(backed_up) && file.rename(tmp_path, path)
+    if (!isTRUE(installed) && isTRUE(backed_up)) {
+      file.rename(backup_path, path)
+    }
+    if (isTRUE(installed)) unlink(backup_path, force = TRUE)
+    installed
+  } else {
+    file.rename(tmp_path, path)
+  }
+  if (!isTRUE(replaced)) {
     unlink(tmp_path)
     stop("Could not write file: ", path, call. = FALSE)
   }

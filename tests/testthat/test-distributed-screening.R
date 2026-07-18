@@ -170,6 +170,31 @@ test_that("distributed retry waits for a different busy worker", {
   expect_true(compatible("", "Fy3", 2L))
 })
 
+test_that("failed worker tasks resume the same checkpoint while attempts remain", {
+  can_resume <- ugplot_test_internal("ugplot_geo_can_resume_worker_task")
+  status <- list(state = "failed", resumable = TRUE, message = "Any worker failure")
+
+  expect_true(can_resume(status, attempts = 1L, max_attempts = 3L))
+  expect_false(can_resume(status, attempts = 3L, max_attempts = 3L))
+  expect_false(can_resume(status, attempts = 1L, max_attempts = 3L, draining = TRUE))
+  expect_false(can_resume(list(state = "failed", resumable = FALSE), 1L, 3L))
+})
+
+test_that("GEO checkpoints are written as readable atomic files", {
+  write_checkpoint <- ugplot_test_internal("ugplot_geo_write_checkpoint")
+  path <- file.path(tempfile("geo-checkpoint-"), "screen-result.rds")
+  checkpoint <- list(results_table = data.frame(Model = "lm", dataset_seed = 1L, training_seed = 1L))
+
+  write_checkpoint(checkpoint, path)
+  updated_checkpoint <- checkpoint
+  updated_checkpoint$results_table$Model <- "rpart"
+  write_checkpoint(updated_checkpoint, path)
+
+  expect_true(file.exists(path))
+  expect_equal(readRDS(path), updated_checkpoint)
+  expect_length(Sys.glob(paste0(path, ".tmp-*")), 0L)
+})
+
 test_that("smooth drain waits for every fixed and collaborative worker", {
   drain_ready <- ugplot_test_internal("ugplot_geo_drain_ready")
 

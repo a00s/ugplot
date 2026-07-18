@@ -343,7 +343,12 @@ ugplot_auto_resume_crashed_jobs <- function(jobs_dir = ugplot_default_jobs_dir()
     }
     config_path <- file.path(ugplot_job_dir(job_id, jobs_dir), "config.rds")
     config <- tryCatch(readRDS(config_path), error = function(e) list())
-    if (!identical(config$runner %||% "", "ugplot_run_ml_job")) {
+    resumable_runners <- c(
+      "ugplot_run_ml_job",
+      "ugplot_run_geo_complete_group_job",
+      "ugplot_run_geo_screen_group_job"
+    )
+    if (!(config$runner %||% "") %in% resumable_runners) {
       next
     }
     if (identical(config$auto_resume_crashed_jobs, FALSE)) {
