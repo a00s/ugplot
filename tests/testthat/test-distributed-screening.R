@@ -47,6 +47,32 @@ test_that("remote runner allowlist blocks arbitrary functions", {
   )
 })
 
+test_that("distributed telemetry exposes the last status from every active server", {
+  summarize_tasks <- ugplot_test_internal("ugplot_geo_distributed_active_tasks")
+  group_from_task <- ugplot_test_internal("ugplot_geo_collaboration_group_from_task_id")
+  manifest <- data.frame(
+    GroupID = c("TG1", "TG2", "TG3"),
+    Worker = c("Fy2", "Fy3", ""),
+    JobID = c("worker-1", "worker-2", ""),
+    State = c("running", "submitted", "pending"),
+    Progress = c(0.37, 0.08, 0),
+    Message = c("Training ranger", "Downloading mission", "Waiting for worker"),
+    UpdatedAt = c("now", "now", ""),
+    Attempts = c(1L, 1L, 0L),
+    PollFailures = c(0L, 0L, 0L),
+    Error = c("", "", ""),
+    stringsAsFactors = FALSE
+  )
+  tasks <- summarize_tasks(manifest)
+  expect_length(tasks, 2L)
+  expect_equal(vapply(tasks, `[[`, character(1), "worker"), c("Fy2", "Fy3"))
+  expect_equal(vapply(tasks, `[[`, numeric(1), "progress"), c(0.37, 0.08))
+  expect_equal(vapply(tasks, `[[`, character(1), "message"), c("Training ranger", "Downloading mission"))
+  expect_equal(group_from_task("parent:analyze:TG17", "parent"), "TG17")
+  expect_equal(group_from_task("parent:screen:TG18", "parent"), "TG18")
+  expect_equal(group_from_task("another:analyze:TG1", "parent"), "")
+})
+
 test_that("local transcript analysis completes stability before the next group", {
   root <- tempfile("local-complete-groups-")
   dir.create(root)

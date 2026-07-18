@@ -69,7 +69,13 @@ test_that("lightweight remote monitor summarizes distributed screening", {
     message = "Distributed screening: 3/2148 group(s); active Fy2:TG2, Fy3:TG3",
     distributed_state = list(
       completed = 3L, total = 2148L, active = 2L,
-      active_groups = c("Fy2:TG2", "Fy3:TG3")
+      active_groups = c("Fy2:TG2", "Fy3:TG3"),
+      active_tasks = list(
+        list(worker = "Fy2", group = "TG2", state = "running", progress = 0.42,
+             message = "Training ranger", error = "", updated_at = "2026-07-18 11:00:00 +0200"),
+        list(worker = "Fy3", group = "TG3", state = "running", progress = 0.18,
+             message = "Preparing dataset", error = "", updated_at = "2026-07-18 11:00:01 +0200")
+      )
     )
   ))
   expect_equal(structured$completed, 3)
@@ -77,6 +83,9 @@ test_that("lightweight remote monitor summarizes distributed screening", {
   expect_equal(structured$processing, 2)
   expect_equal(structured$pending, 2143)
   expect_equal(structured$active_groups, c("Fy2:TG2", "Fy3:TG3"))
+  expect_equal(structured$active_tasks$worker, c("Fy2", "Fy3"))
+  expect_equal(structured$active_tasks$progress, c(0.42, 0.18))
+  expect_equal(structured$active_tasks$message, c("Training ranger", "Preparing dataset"))
 
   legacy <- summarize(list(
     message = "Distributed screening: 9/771 group(s); active Fy3:TG5, Fy2:TG17"

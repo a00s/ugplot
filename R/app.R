@@ -13825,11 +13825,15 @@ server <- function(input, output, session) {
     processing <- sum(group_states == "processing", na.rm = TRUE)
     waiting <- sum(group_states %in% c("pending", "waiting", "queued"), na.rm = TRUE)
     total <- length(group_states)
+    distributed_summary <- list(active_tasks = data.frame())
+    if (exists("ugplot_remote_distributed_summary", mode = "function", inherits = TRUE)) {
+      distributed_summary <- ugplot_remote_distributed_summary(status)
+    }
+    active_tasks <- distributed_summary$active_tasks %||% data.frame()
     active_groups <- if (is.data.frame(groups) && processing > 0L && "group_id" %in% names(groups)) {
       paste(utils::head(as.character(groups$group_id[group_states == "processing"]), 3L), collapse = ", ")
     } else ""
-    if (total == 0L && exists("ugplot_remote_distributed_summary", mode = "function", inherits = TRUE)) {
-      distributed_summary <- ugplot_remote_distributed_summary(status)
+    if (total == 0L) {
       if (is.finite(distributed_summary$total)) {
         total <- as.integer(distributed_summary$total)
         completed <- as.integer(distributed_summary$completed %||% 0L)
@@ -13934,6 +13938,36 @@ server <- function(input, output, session) {
         metric("Monitor checked", checked_display, "manual refresh")
       )
     }
+    worker_cards <- if (is.data.frame(active_tasks) && nrow(active_tasks) > 0L) {
+      lapply(seq_len(nrow(active_tasks)), function(i) {
+        task <- active_tasks[i, , drop = FALSE]
+        task_progress <- suppressWarnings(as.numeric(task$progress[[1]] %||% 0))
+        if (!is.finite(task_progress)) task_progress <- 0
+        task_progress <- max(0, min(1, task_progress))
+        task_message <- as.character(task$message[[1]] %||% "Working")
+        task_error <- as.character(task$error[[1]] %||% "")
+        task_state <- as.character(task$state[[1]] %||% "running")
+        task_worker <- as.character(task$worker[[1]] %||% "Worker")
+        task_group <- as.character(task$group[[1]] %||% "")
+        tags$article(
+          class = paste("remote-monitor-worker", paste0("remote-monitor-worker-", gsub("[^a-z]", "", tolower(task_state)))),
+          tags$div(
+            class = "remote-monitor-worker-heading",
+            tags$strong(htmltools::htmlEscape(task_worker)),
+            tags$span(htmltools::htmlEscape(if (nzchar(task_group)) task_group else task_state)),
+            tags$b(paste0(round(task_progress * 100), "%"))
+          ),
+          tags$div(
+            class = "remote-monitor-worker-progress",
+            tags$span(style = paste0("width:", round(task_progress * 100, 1), "%"))
+          ),
+          tags$p(htmltools::htmlEscape(task_message)),
+          if (nzchar(task_error)) tags$small(class = "remote-monitor-worker-error", htmltools::htmlEscape(task_error))
+        )
+      })
+    } else {
+      list()
+    }
     tags$section(
       class = paste("remote-selected-monitor", paste0("remote-selected-monitor-", health$class)),
       tags$div(
@@ -13953,6 +13987,11 @@ server <- function(input, output, session) {
       tags$div(
         class = "remote-monitor-metrics",
         monitor_metrics
+      ),
+      if (length(worker_cards) > 0L) tags$div(
+        class = "remote-monitor-workers",
+        tags$div(class = "remote-monitor-workers-title", "Servers working on this job"),
+        worker_cards
       )
     )
   })

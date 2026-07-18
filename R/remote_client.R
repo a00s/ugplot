@@ -200,6 +200,47 @@ ugplot_remote_distributed_summary <- function(status) {
   processing <- number(distributed$active, NA_real_)
   active_groups <- as.character(distributed$active_groups %||% character(0))
   active_groups <- trimws(active_groups[nzchar(trimws(active_groups))])
+  normalize_active_tasks <- function(value) {
+    fields <- c("worker", "group", "job_id", "state", "progress", "message", "error", "updated_at")
+    if (is.data.frame(value)) {
+      rows <- lapply(seq_len(nrow(value)), function(i) as.list(value[i, , drop = FALSE]))
+    } else if (is.list(value) && length(value) > 0L && any(fields %in% names(value))) {
+      rows <- list(value)
+    } else if (is.list(value)) {
+      rows <- value
+    } else {
+      rows <- list()
+    }
+    rows <- Filter(Negate(is.null), lapply(rows, function(row) {
+      if (!is.list(row)) return(NULL)
+      scalar <- function(name, default = "") {
+        item <- row[[name]] %||% default
+        if (length(item) == 0L || is.null(item) || is.na(item[[1]])) default else as.character(item[[1]])
+      }
+      progress <- suppressWarnings(as.numeric(row$progress %||% 0))
+      if (length(progress) == 0L || !is.finite(progress[[1]])) progress <- 0
+      data.frame(
+        worker = scalar("worker"),
+        group = scalar("group"),
+        job_id = scalar("job_id"),
+        state = scalar("state"),
+        progress = max(0, min(1, progress[[1]])),
+        message = scalar("message"),
+        error = scalar("error"),
+        updated_at = scalar("updated_at"),
+        stringsAsFactors = FALSE
+      )
+    }))
+    if (length(rows) == 0L) {
+      return(data.frame(
+        worker = character(), group = character(), job_id = character(), state = character(),
+        progress = numeric(), message = character(), error = character(), updated_at = character(),
+        stringsAsFactors = FALSE
+      ))
+    }
+    do.call(rbind, rows)
+  }
+  active_tasks <- normalize_active_tasks(distributed$active_tasks %||% list())
 
   message <- as.character(status$message %||% "")
   if ((!is.finite(completed) || !is.finite(total)) && nzchar(message)) {
@@ -231,7 +272,8 @@ ugplot_remote_distributed_summary <- function(status) {
     total = total,
     processing = processing,
     pending = pending,
-    active_groups = active_groups
+    active_groups = active_groups,
+    active_tasks = active_tasks
   )
 }
 
