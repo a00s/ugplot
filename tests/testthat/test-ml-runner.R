@@ -4,6 +4,23 @@ local_ml_runner_env <- function() {
   )
 }
 
+test_that("model search progress is not presented as seed stability", {
+  format_signal <- ugplot_test_internal("ugplot_format_model_search_signal")
+
+  signal <- format_signal(
+    values = c(0.12, NA, 0.24, Inf),
+    completed_runs = 16,
+    total_runs = 199,
+    metric_name = "R2"
+  )
+
+  expect_equal(
+    signal,
+    "Model search: 2 valid results for R2 | model attempt 16/199"
+  )
+  expect_false(grepl("Stability|seed", signal, ignore.case = TRUE))
+})
+
 sample_ml_data <- function() {
   sample_path <- file.path("inst", "extdata", "sample.csv")
   if (!file.exists(sample_path)) {

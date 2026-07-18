@@ -1,3 +1,28 @@
+ugplot_format_model_search_signal <- function(values, completed_runs = NULL, total_runs = NULL,
+                                               metric_name = "R2") {
+  values <- suppressWarnings(as.numeric(unlist(values, use.names = FALSE)))
+  valid_runs <- sum(is.finite(values))
+
+  completed_runs <- suppressWarnings(as.integer(completed_runs)[1])
+  total_runs <- suppressWarnings(as.integer(total_runs)[1])
+  if (!is.finite(completed_runs) || completed_runs < 0L) {
+    completed_runs <- valid_runs
+  }
+  completed_runs <- max(completed_runs, valid_runs)
+
+  attempt_label <- if (is.finite(total_runs) && total_runs > 0L) {
+    paste0("model attempt ", completed_runs, "/", total_runs)
+  } else {
+    paste0(completed_runs, " model attempts processed")
+  }
+  result_label <- if (valid_runs == 1L) "valid result" else "valid results"
+
+  paste0(
+    "Model search: ", valid_runs, " ", result_label,
+    " for ", metric_name, " | ", attempt_label
+  )
+}
+
 ugplot_ml_safe_num <- function(value, fallback) {
   if (is.null(value) || length(value) == 0) {
     return(fallback)

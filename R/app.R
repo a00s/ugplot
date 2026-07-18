@@ -14704,7 +14704,15 @@ server <- function(input, output, session) {
     ok_rows <- if ("Status" %in% names(results)) as.character(results$Status) == "OK" else rep(TRUE, nrow(results))
     values <- suppressWarnings(as.numeric(results[[metric_name]][ok_rows]))
     values <- values[is.finite(values)]
-    list(metric_name = metric_name, values = values)
+    final_summary <- result$final_summary %||% list()
+    completed_runs <- suppressWarnings(as.integer(final_summary$completed_runs %||% nrow(results))[1])
+    total_runs <- suppressWarnings(as.integer(final_summary$total_runs %||% NA_integer_)[1])
+    list(
+      metric_name = metric_name,
+      values = values,
+      completed_runs = completed_runs,
+      total_runs = total_runs
+    )
   })
 
   output$remote_job_running_details <- renderText({
@@ -14724,7 +14732,12 @@ server <- function(input, output, session) {
       sections <- c(sections, geo_details)
     }
     if (!is.null(metric_data)) {
-      sections <- c(sections, format_running_stability_signal(metric_data$values, metric_name = metric_data$metric_name))
+      sections <- c(sections, ugplot_format_model_search_signal(
+        metric_data$values,
+        completed_runs = metric_data$completed_runs,
+        total_runs = metric_data$total_runs,
+        metric_name = metric_data$metric_name
+      ))
     }
     paste(unique(sections[nzchar(sections)]), collapse = "\n\n")
   })
@@ -15152,7 +15165,12 @@ server <- function(input, output, session) {
           metric_values <- metric_values[is.finite(metric_values)]
           mean_label <- if (length(metric_values) > 0) round(mean(metric_values), 4) else "N/A"
           median_label <- if (length(metric_values) > 0) round(median(metric_values), 4) else "N/A"
-          stability_signal <- format_running_stability_signal(metric_values, metric_name = metric_name)
+          model_search_signal <- ugplot_format_model_search_signal(
+            metric_values,
+            completed_runs = current_run_index,
+            total_runs = total_search_runs,
+            metric_name = metric_name
+          )
           metric_distribution <- format_running_metric_distribution(metric_values, metric_name = metric_name)
           progress_percent <- round((current_run_index / total_search_runs) * 100)
           best_model_label <- if (is.finite(best_result)) {
@@ -15184,7 +15202,7 @@ server <- function(input, output, session) {
             ") | train ", loop_seed, " (", seed_position, "/", total_seed_runs, ")\n\n",
             "Worst ", best_metric_name, ": ", worst_label, "\n",
             "Current summary: mean ", mean_label, " | median ", median_label, "\n",
-            stability_signal, "\n\n",
+            model_search_signal, "\n\n",
             metric_distribution
           )
         }
