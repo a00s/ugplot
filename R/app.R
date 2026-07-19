@@ -448,7 +448,7 @@ getImage <- function(fileName) {
 
 # Define the UI of the application
 ui <- fluidPage(
-  tags$script("
+  tags$script(HTML("
     function filterCheckboxGroup(inputSelector, groupSelector) {
       var query = ($(inputSelector).val() || '').toLowerCase().trim();
       $(groupSelector + ' .checkbox').each(function() {
@@ -532,7 +532,7 @@ ui <- fluidPage(
         svg.find('polyline').attr({ points: points, fill: 'none', stroke: '#2563eb', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
       }
     });
-  "),
+  ")),
   uiOutput("geo_ml_live_progress_ui"),
   includeCSS(path_to_css()),
   add_busy_spinner(spin = "fading-circle"),
