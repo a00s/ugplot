@@ -477,11 +477,22 @@ ui <- fluidPage(
       });
     }
 
+    // Bind delegated handlers immediately. The checkbox groups are rendered
+    // dynamically, so waiting only for shiny:sessioninitialized can miss the
+    // event when this script is inserted after the session has connected.
+    setupTableListFilters();
+    $(function() {
+      setupTableListFilters();
+    });
+    $(document).on('shiny:connected shiny:value', function() {
+      window.requestAnimationFrame(setupTableListFilters);
+    });
+
     $(document).on('shiny:sessioninitialized', function(event) {
       setInterval(function() {
         Shiny.setInputValue('keepAlive', Math.random());
       }, 60000);
-      setInterval(setupTableListFilters, 500);
+      setupTableListFilters();
     });
 
     Shiny.addCustomMessageHandler('geoProgress', function(x) {
