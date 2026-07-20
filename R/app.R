@@ -4695,6 +4695,7 @@ server <- function(input, output, session) {
       cpu_limit = cpu_limit,
       parallel_enabled = isTRUE(input$config_parallel_cubist_models) && cpu_limit > 1L,
       use_callr_timeout = TRUE,
+      skip_remaining_model_seeds_on_timeout = TRUE,
       restart_parallel_each_model = isTRUE(input$config_restart_parallel_each_model),
       retry_parallel_connection_errors = isTRUE(input$config_retry_parallel_connection_errors),
       screen_seeds = screen_seeds
@@ -15129,6 +15130,7 @@ server <- function(input, output, session) {
         all_models <- input$ml_checkbox_group
         active_models <- all_models
         skipped_models <- character(0)
+        timeout_skipped_models <- character(0)
         auto_skip_enabled <- isTRUE(input$ml_auto_skip_bad_models)
         min_r2_threshold <- suppressWarnings(as.numeric(input$ml_min_r2_skip))
         if (is.na(min_r2_threshold)) {
@@ -15210,7 +15212,8 @@ server <- function(input, output, session) {
             " | Model: ", count_model, "/", max(1, active_model_count), "\n",
             "Running: ", model_name, "\n",
             "Seed: dataset ", loop_dataset_seed, " (", dataset_position, "/", total_dataset_runs,
-            ") | train ", loop_seed, " (", seed_position, "/", total_seed_runs, ")\n\n",
+            ") | train ", loop_seed, " (", seed_position, "/", total_seed_runs, ")\n",
+            "Timeout per model/seed attempt: ", input$ml_timeout, " seconds\n\n",
             "Worst ", best_metric_name, ": ", worst_label, "\n",
             "Current summary: mean ", mean_label, " | median ", median_label, "\n",
             model_search_signal, "\n\n",
@@ -15399,6 +15402,30 @@ server <- function(input, output, session) {
               current_run_index <- ((dataset_position - 1) * total_model_runs * total_seed_runs) +
                 ((count_model - 1) * total_seed_runs) +
                 seed_position
+              if (model_name %in% timeout_skipped_models) {
+                append_ml_result_row(data.frame(
+                  Model = model_name,
+                  Status = "SKIPPED_TIMEOUT",
+                  elapsed_seconds = 0,
+                  Error = "Skipped because another seed for this model timed out",
+                  dataset_seed = loop_dataset_seed,
+                  training_seed = loop_seed,
+                  threshold_scope = threshold_scope,
+                  imputation_scope = imputation_scope
+                ))
+                completed_search_runs <- completed_search_runs + 1
+                set_search_progress(
+                  model_name = model_name,
+                  loop_dataset_seed = loop_dataset_seed,
+                  loop_seed = loop_seed,
+                  count_model = count_model,
+                  active_model_count = total_model_runs,
+                  seed_position = seed_position,
+                  dataset_position = dataset_position,
+                  progress_runs = completed_search_runs
+                )
+                next
+              }
               if (do_seed == 1) {
                 set.seed(loop_seed)
               }
@@ -15503,6 +15530,7 @@ server <- function(input, output, session) {
                   run_error <<- paste0("Timed out after ", input$ml_timeout, " seconds")
                   ml_error_message_text(paste(ml_error_message_text(), " ", "TIMEOUT:", model_name, "/"))
                   print(paste("Training timed out for model:", model_name))
+                  timeout_skipped_models <<- union(timeout_skipped_models, model_name)
                   mark_model_skipped(model_name, "timeout")
                   return(NULL)
                 }, error = function(e) {
@@ -15734,12 +15762,14 @@ server <- function(input, output, session) {
           status_values <- as.character(final_results$Status)
           ok_runs <- sum(status_values == "OK", na.rm = TRUE)
           timeout_runs <- sum(status_values == "TIMEOUT", na.rm = TRUE)
+          skipped_timeout_runs <- sum(status_values == "SKIPPED_TIMEOUT", na.rm = TRUE)
           incompatible_runs <- sum(status_values == "INCOMPATIBLE", na.rm = TRUE)
           invalid_metric_runs <- sum(status_values == "INVALID_METRICS", na.rm = TRUE)
           error_runs <- sum(status_values == "ERROR", na.rm = TRUE)
         } else {
           ok_runs <- 0L
           timeout_runs <- 0L
+          skipped_timeout_runs <- 0L
           incompatible_runs <- 0L
           invalid_metric_runs <- 0L
           error_runs <- 0L
@@ -15765,6 +15795,7 @@ server <- function(input, output, session) {
           total_elapsed_seconds = round(proc.time()[["elapsed"]] - search_start_time, 3),
           ok_runs = ok_runs,
           timeout_runs = timeout_runs,
+          skipped_timeout_runs = skipped_timeout_runs,
           incompatible_runs = incompatible_runs,
           invalid_metric_runs = invalid_metric_runs,
           error_runs = error_runs,

@@ -280,6 +280,10 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
   restart_parallel_each_model <- isTRUE(config$restart_parallel_each_model)
   retry_parallel_connection_errors <- isTRUE(config$retry_parallel_connection_errors)
   timeout <- max(1, ugplot_ml_safe_num(config$timeout, 1200))
+  skip_remaining_model_seeds_on_timeout <- !identical(
+    config$skip_remaining_model_seeds_on_timeout,
+    FALSE
+  )
 
   models <- config$models %||% config$model_names %||% "lm"
   models <- unique(as.character(models))
@@ -329,6 +333,7 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
   mae_values <- list()
   rmse_values <- list()
   completed_run_keys <- character(0)
+  timeout_skipped_models <- character(0)
 
   run_key <- function(model_name, dataset_seed, training_seed) {
     paste(as.character(model_name), as.character(dataset_seed), as.character(training_seed), sep = "\r")
@@ -364,6 +369,14 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
     resumed_results$.resume_key <- NULL
     results <<- resumed_results
     completed_runs <<- min(length(completed_run_keys), total_runs)
+
+    if (isTRUE(skip_remaining_model_seeds_on_timeout) && "Status" %in% names(results)) {
+      timed_out_rows <- as.character(results$Status) == "TIMEOUT"
+      timeout_skipped_models <<- unique(as.character(results$Model[timed_out_rows]))
+      timeout_skipped_models <<- timeout_skipped_models[
+        nzchar(timeout_skipped_models) & !is.na(timeout_skipped_models)
+      ]
+    }
 
     ok_rows <- if ("Status" %in% names(results)) as.character(results$Status) == "OK" else rep(TRUE, nrow(results))
     for (row_index in which(ok_rows)) {
@@ -469,6 +482,7 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
       total_runs = total_runs,
       ok_runs = sum(status_values == "OK", na.rm = TRUE),
       timeout_runs = sum(status_values == "TIMEOUT", na.rm = TRUE),
+      skipped_timeout_runs = sum(status_values == "SKIPPED_TIMEOUT", na.rm = TRUE),
       incompatible_runs = sum(status_values == "INCOMPATIBLE", na.rm = TRUE),
       invalid_metric_runs = sum(status_values == "INVALID_METRICS", na.rm = TRUE),
       error_runs = sum(status_values == "ERROR", na.rm = TRUE),
@@ -639,6 +653,31 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
           )
           next
         }
+        if (isTRUE(skip_remaining_model_seeds_on_timeout) && model_name %in% timeout_skipped_models) {
+          results <- ugplot_ml_append_row(results, data.frame(
+            Model = model_name,
+            Status = "SKIPPED_TIMEOUT",
+            elapsed_seconds = 0,
+            Error = "Skipped because another seed for this model timed out",
+            dataset_seed = dataset_seed,
+            training_seed = training_seed,
+            threshold_scope = threshold_scope,
+            imputation_scope = imputation_scope
+          ))
+          completed_runs <- completed_runs + 1L
+          completed_run_keys <- c(completed_run_keys, current_run_key)
+          progress_callback(
+            progress = completed_runs / total_runs,
+            message = paste(
+              "Skipping", model_name,
+              "dataset seed", dataset_seed,
+              "training seed", training_seed,
+              "because an earlier seed timed out"
+            )
+          )
+          partial_callback(current_result(partial = TRUE))
+          next
+        }
         set.seed(training_seed)
         attempt_start <- proc.time()[["elapsed"]]
         progress_callback(
@@ -649,6 +688,7 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
             model = model_name,
             dataset_seed = dataset_seed,
             training_seed = training_seed,
+            timeout_seconds = timeout,
             started_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
           )
         )
@@ -679,7 +719,8 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
                       "dataset seed", dataset_seed,
                       "training seed", training_seed,
                       "-", phase,
-                      "- elapsed", round(elapsed), "seconds"
+                      "- elapsed", round(elapsed),
+                      "/ timeout", timeout, "seconds"
                     )
                   )
                 }
@@ -802,6 +843,9 @@ ugplot_run_ml_job <- function(dataset, config = list(), progress_callback = func
             threshold_scope = threshold_scope,
             imputation_scope = imputation_scope
           ))
+        }
+        if (identical(run_status, "TIMEOUT") && isTRUE(skip_remaining_model_seeds_on_timeout)) {
+          timeout_skipped_models <- union(timeout_skipped_models, model_name)
         }
         completed_runs <- completed_runs + 1L
         completed_run_keys <- c(completed_run_keys, current_run_key)

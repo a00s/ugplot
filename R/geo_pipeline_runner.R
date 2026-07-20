@@ -1299,6 +1299,7 @@ ugplot_geo_ml_pipeline_config <- function(models, seed_end, timeout, best_only_m
     cpu_limit = cpu_limit,
     parallel_enabled = isTRUE(parallel_enabled) && cpu_limit > 1L,
     use_callr_timeout = TRUE,
+    skip_remaining_model_seeds_on_timeout = TRUE,
     restart_parallel_each_model = isTRUE(restart_parallel_each_model),
     retry_parallel_connection_errors = isTRUE(retry_parallel_connection_errors)
   )

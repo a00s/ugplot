@@ -59,13 +59,15 @@ test_that("remote ML runner trains a model on sample data", {
   expect_equal(result$results_table$Status, "OK")
 })
 
-test_that("remote ML runner timeout skips one model and continues", {
+test_that("remote ML runner timeout skips remaining seeds for that model and continues", {
   skip_on_os("windows")
   local_env <- local_ml_runner_env()
   timed_out <- FALSE
+  train_calls <- character(0)
   ugplot_test_local_namespace_binding("ugplot_ml_train_with_timeout", function(train_set, target_name, model_name,
                                                                                ctrl, tune_length, timeout,
                                                                                model_libraries, ...) {
+    train_calls <<- c(train_calls, model_name)
     if (identical(model_name, "lm") && !timed_out) {
       timed_out <<- TRUE
       condition <- simpleError("callr timed out")
@@ -91,7 +93,7 @@ test_that("remote ML runner timeout skips one model and continues", {
       dataset_seed_start = 1,
       dataset_seed_end = 1,
       training_seed_start = 1,
-      training_seed_end = 1,
+      training_seed_end = 3,
       timeout = 1,
       performance_mode = "custom",
       cv_method = "cv",
@@ -102,9 +104,72 @@ test_that("remote ML runner timeout skips one model and continues", {
   )
 
   expect_true("TIMEOUT" %in% result$results_table$Status)
+  expect_true("SKIPPED_TIMEOUT" %in% result$results_table$Status)
   expect_true("OK" %in% result$results_table$Status)
   expect_equal(result$final_summary$timeout_runs, 1)
-  expect_equal(result$final_summary$ok_runs, 1)
+  expect_equal(result$final_summary$skipped_timeout_runs, 2)
+  expect_equal(result$final_summary$ok_runs, 3)
+  expect_equal(sum(train_calls == "lm"), 1)
+  expect_equal(sum(train_calls == "glm"), 3)
+  expect_equal(result$final_summary$completed_runs, 6)
+})
+
+test_that("remote ML runner preserves timeout model skips on resume", {
+  skip_on_os("windows")
+  local_env <- local_ml_runner_env()
+  train_calls <- character(0)
+  ugplot_test_local_namespace_binding("ugplot_ml_train_direct", function(train_set, target_name, model_name,
+                                                                         ctrl, tune_length, model_libraries, ...) {
+    train_calls <<- c(train_calls, model_name)
+    suppressWarnings(
+      caret::train(
+        stats::as.formula(paste(target_name, "~ .")),
+        data = train_set,
+        method = model_name,
+        trControl = ctrl,
+        tuneLength = tune_length
+      )
+    )
+  })
+
+  result <- local_env$ugplot_run_ml_job(
+    dataset = sample_ml_data(),
+    config = list(
+      target = "age",
+      models = c("lm", "glm"),
+      dataset_seed_start = 1,
+      dataset_seed_end = 1,
+      training_seed_start = 1,
+      training_seed_end = 3,
+      timeout = 1,
+      performance_mode = "custom",
+      cv_method = "cv",
+      cv_folds = 2,
+      tune_length = 1,
+      cpu_limit = 1,
+      use_callr_timeout = FALSE,
+      resume_result = list(
+        results_table = data.frame(
+          Model = "lm",
+          Status = "TIMEOUT",
+          elapsed_seconds = 1,
+          Error = "Timed out after 1 seconds",
+          dataset_seed = 1L,
+          training_seed = 1L,
+          threshold_scope = "full_before_split",
+          imputation_scope = "split_separate",
+          stringsAsFactors = FALSE
+        )
+      )
+    )
+  )
+
+  expect_equal(sum(train_calls == "lm"), 0)
+  expect_equal(sum(train_calls == "glm"), 3)
+  expect_equal(result$final_summary$timeout_runs, 1)
+  expect_equal(result$final_summary$skipped_timeout_runs, 2)
+  expect_equal(result$final_summary$ok_runs, 3)
+  expect_equal(result$final_summary$completed_runs, 6)
 })
 
 test_that("remote ML runner resumes after completed partial rows", {
