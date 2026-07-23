@@ -8,7 +8,8 @@ That transcript order is the key output. When the same target is evaluated acros
 
 ugPlot also provides the supporting workbench needed to make those comparisons reproducible: load and clean matrix-like datasets, explore patterns visually, train and compare machine learning models, analyze saved models on new data, and run long GEO jobs on a remote server while monitoring progress in the browser.
 
-Preprint DOI: https://doi.org/10.64898/2026.02.09.704870
+DOI: https://doi.org/10.1007/s10522-026-10473-6
+
 
 ---
 
