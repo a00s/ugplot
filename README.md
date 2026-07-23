@@ -10,7 +10,6 @@ ugPlot also provides the supporting workbench needed to make those comparisons r
 
 DOI: https://doi.org/10.1007/s10522-026-10473-6
 
-
 ---
 
 ## Core idea
@@ -181,7 +180,7 @@ Think of the tabs as checkpoints:
 - **MODEL ANALYSIS** answers: "Does a saved model behave sensibly on this dataset?"
 - **GEO IMPORT** answers: "Can a public methylation accession be turned into CpG/transcript-level hypotheses?"
 
-The **CITE UGPLOT** button in the top-right header copies the preprint DOI, confirms the action inside the app, and also tries to open the preprint in a new browser window. If the browser blocks the new window, the DOI remains copied and can be pasted manually.
+The **CITE UGPLOT** button in the top-right header copies the official article DOI, confirms the action inside the app, and also tries to open the article in a new browser window. If the browser blocks the new window, the DOI remains copied and can be pasted manually.
 
 ---
 

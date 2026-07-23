@@ -548,8 +548,8 @@ ui <- fluidPage(
       tags$button(
         class = "ugplot-doi-link",
         type = "button",
-        `data-doi` = "https://doi.org/10.64898/2026.02.09.704870",
-        title = "Copy the ugPlot DOI and open the preprint",
+        `data-doi` = "https://doi.org/10.1007/s10522-026-10473-6",
+        title = "Copy the ugPlot DOI and open the official article",
         onclick = "
           (function(button) {
             var doi = button.getAttribute('data-doi');
@@ -589,7 +589,7 @@ ui <- fluidPage(
           })(this);
         ",
         tags$span(class = "ugplot-doi-label", "CITE UGPLOT"),
-        tags$span("doi.org/10.64898/2026.02.09.704870")
+        tags$span("doi.org/10.1007/s10522-026-10473-6")
       )
     )
   ),
@@ -1944,13 +1944,13 @@ server <- function(input, output, session) {
     copied <- isTRUE(input$ugplot_doi_copy_result$ok)
     opened <- isTRUE(input$ugplot_doi_copy_result$opened)
     message <- if (copied && opened) {
-      "ugPlot DOI copied; opening the preprint."
+      "ugPlot DOI copied; opening the official article."
     } else if (copied) {
       "ugPlot DOI copied. The browser blocked the new window."
     } else if (opened) {
-      "Opening the ugPlot preprint, but the DOI could not be copied automatically."
+      "Opening the ugPlot official article, but the DOI could not be copied automatically."
     } else {
-      "Could not copy the DOI or open the preprint automatically."
+      "Could not copy the DOI or open the official article automatically."
     }
     showNotification(
       message,
