@@ -1314,9 +1314,16 @@ ugplot_geo_ml_group_dataset <- function(group, sample_ids = NULL, keep_sample_id
   } else if (is.data.frame(group$matrix)) {
     dataset <- group$matrix
   } else if (!is.na(dataset_path) && nzchar(dataset_path) && file.exists(dataset_path)) {
-    dataset <- utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE)
+    dataset <- if (grepl("\\.rds$", dataset_path, ignore.case = TRUE)) {
+      readRDS(dataset_path)
+    } else {
+      utils::read.csv(dataset_path, stringsAsFactors = FALSE, check.names = FALSE)
+    }
   } else {
     stop("Transcript group dataset file is missing: ", dataset_path, call. = FALSE)
+  }
+  if (!is.data.frame(dataset)) {
+    stop("Transcript group dataset must contain a data frame: ", dataset_path, call. = FALSE)
   }
   if (!is.null(sample_ids)) {
     sample_ids <- unique(as.character(sample_ids))
@@ -2490,6 +2497,31 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
         )
         ugplot_geo_write_checkpoint(stability_result, stability_path)
         metric_values <- ugplot_geo_ml_metric_values(stability_result)
+        if (length(metric_values) <= existing_n) {
+          results_table <- stability_result$results_table %||% data.frame()
+          statuses <- if (is.data.frame(results_table) && "Status" %in% names(results_table)) {
+            status_counts <- table(as.character(results_table$Status), useNA = "ifany")
+            paste(paste0(names(status_counts), "=", as.integer(status_counts)), collapse = ", ")
+          } else {
+            "no run status available"
+          }
+          errors <- if (is.data.frame(results_table) && "Error" %in% names(results_table)) {
+            unique(trimws(as.character(results_table$Error)))
+          } else {
+            character(0)
+          }
+          errors <- errors[nzchar(errors) & !is.na(errors)]
+          stop(
+            paste0(
+              "Stability ", group_id, " / ", stratum_label, " with ", best_model,
+              " produced no ", if (existing_n > 0L) "additional " else "",
+              "valid metrics in the seed batch ending at ", current_end,
+              " (", statuses, ")",
+              if (length(errors) > 0L) paste0(". First error: ", errors[[1]]) else ""
+            ),
+            call. = FALSE
+          )
+        }
         stable_state <- ugplot_geo_stability_state(metric_values, min_seeds, window, tolerance)
         if (isTRUE(stable_state$stable) || length(metric_values) >= max_seeds || current_end >= max_seeds) {
           break

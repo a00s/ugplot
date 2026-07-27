@@ -126,6 +126,72 @@ test_that("local transcript analysis completes stability before the next group",
   expect_equal(order, c("screen-TG1", "stability-TG1", "screen-TG2", "stability-TG2"))
 })
 
+test_that("transcript group datasets load RDS checkpoints without CSV corruption", {
+  load_group <- ugplot_test_internal("ugplot_geo_ml_group_dataset")
+  dataset_path <- tempfile("transcript-group-", fileext = ".rds")
+  dataset <- data.frame(
+    sample_id = c("S1", "S2"),
+    target = c(10, 20),
+    cg00000001 = c(0.1, 0.9),
+    check.names = FALSE
+  )
+  saveRDS(dataset, dataset_path)
+
+  loaded <- load_group(
+    data.frame(DatasetPath = dataset_path, stringsAsFactors = FALSE),
+    keep_sample_id = TRUE
+  )
+
+  expect_identical(loaded$dataset, dataset)
+  expect_equal(loaded$sample_count, 2L)
+})
+
+test_that("stability stops after a seed batch with no valid metrics", {
+  run_stability <- ugplot_test_internal("ugplot_geo_run_transcript_stability_remote")
+  cache_dir <- tempfile("stability-no-valid-")
+  dir.create(cache_dir)
+  dataset_path <- file.path(cache_dir, "TG1.rds")
+  saveRDS(
+    data.frame(target = 1:6, cg00000001 = seq(0.1, 0.6, by = 0.1)),
+    dataset_path
+  )
+  calls <- 0L
+  ugplot_test_local_namespace_binding("ugplot_run_ml_job", function(...) {
+    calls <<- calls + 1L
+    list(
+      results_table = data.frame(
+        Model = rep("gbm", 2),
+        dataset_seed = rep(1L, 2),
+        training_seed = 1:2,
+        Status = rep("ERROR", 2),
+        Error = rep("Please use column names for x", 2),
+        stringsAsFactors = FALSE
+      ),
+      final_summary = list(metric_value = NA_real_),
+      best_model = NULL
+    )
+  })
+
+  expect_error(
+    run_stability(
+      screen_summary = data.frame(
+        GroupID = "TG1",
+        BestModel = "gbm",
+        DatasetPath = dataset_path,
+        stringsAsFactors = FALSE
+      ),
+      cache_dir = cache_dir,
+      config = list(
+        geo_ml_min_stability_seeds = 2L,
+        geo_ml_max_stability_seeds = 4L,
+        geo_ml_stability_window = 2L
+      )
+    ),
+    "produced no valid metrics.*ERROR=2.*Please use column names for x"
+  )
+  expect_equal(calls, 1L)
+})
+
 test_that("stability completion requires every configured stratum", {
   complete <- ugplot_test_internal("ugplot_geo_stability_complete_groups")
   screen <- data.frame(GroupID = "TG1", BestModel = "lm", stringsAsFactors = FALSE)
