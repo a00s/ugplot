@@ -32,8 +32,12 @@ This is the easiest and most reliable way to run ugPlot with all dependencies al
 
 ```bash
 podman pull ghcr.io/a00s/ugplot:latest
-podman run --name ugplot -p 3838:3838 ghcr.io/a00s/ugplot:latest
-podman start -a ugplot
+podman run -d --name ugplot --restart unless-stopped -p 3838:3838 ghcr.io/a00s/ugplot:latest
+
+# Later:
+podman stop ugplot
+podman start ugplot
+podman logs -f ugplot
 
 ---- you are using mac you need to run this first ----
 podman machine init
@@ -133,6 +137,52 @@ Then, in the ugPlot app:
 3. Add the same token used in `ugPlotServerStart()`.
 4. In **MACHINE LEARNING**, choose **Run target → Remote server**.
 5. Submit the job and monitor it in **JOBS**.
+
+### 4) Running only a Science Collab client
+
+Use this mode on a computer that should contribute CPU without opening the
+ugPlot web app and without becoming a remote job server. A Science Collab
+client does not need the server bearer token: it can only receive public
+missions and return the result of the mission it leased. It cannot submit
+arbitrary jobs to the server.
+
+From R:
+
+```r
+library(ugplot)
+
+ugPlotScienceCollab(
+  coordinator = "192.168.1.20", # bare IP/hostname uses port 8080
+  scientist_name = "Alice",
+  cpu_limit = 4,
+  install_model_deps = TRUE
+)
+```
+
+The first run checks the local caret models and attempts to install every
+missing model dependency. It then keeps waiting for work until you press
+`Ctrl+C`. Use an HTTPS URL or a trusted private network when mission data must
+not travel over plain HTTP.
+
+Run the same client persistently in the background with the prebuilt image:
+
+```bash
+podman pull ghcr.io/a00s/ugplot:latest
+podman run -d --name ugplot-collab --restart unless-stopped \
+  ghcr.io/a00s/ugplot:latest \
+  Rscript -e "library(ugplot); ugPlotScienceCollab(coordinator='192.168.1.20', scientist_name='Alice', cpu_limit=4, install_model_deps=TRUE)"
+
+podman logs -f ugplot-collab
+podman stop ugplot-collab
+podman start ugplot-collab
+```
+
+Inside the web app, **SCIENCE COLLAB** also accepts a coordinator IP or URL
+directly. Saving the server under **CONFIGURATIONS** is optional for
+collaboration and no server job token is requested. Entering a coordinator
+directly disables the configured-server selector and restricts collaboration
+to that coordinator; clear the address to choose a saved server again.
+
 ---
 
 # How-To Manual
@@ -445,6 +495,20 @@ While a GEO job is running, click **Live report** in its **JOBS** row. You can a
 ```text
 http://YOUR-SERVER:8080/reports/JOB-ID
 ```
+
+<img src="man/img/live-discovery-server-status.png" alt="Live discovery report showing server job progress, active workers, and preliminary transcript results" width="1000">
+
+In this example, the web report shows the live status of a distributed server
+job:
+
+- the top cards show total, screened, and stabilized transcript groups plus the
+  best median R² observed so far;
+- **Science collaboration** shows each ugPlot server or Science Collab client
+  currently working, its assigned group, activity, and progress;
+- the discovery table is populated while the job is still running and marks
+  results as **awaiting analysis**, **preliminary**, or **stabilized**;
+- the green update time confirms that the browser is still receiving the
+  server's latest saved snapshot.
 
 The page is public and refreshes automatically. As soon as a transcript group and CpG are known, a gray **awaiting analysis** row appears. Orange **preliminary** rows have completed model screening, and green **stabilized** rows have completed the configured seed stability analysis. Use the search field to find a gene, transcript, CpG, model, or transcript group.
 
@@ -976,7 +1040,8 @@ Science Collab is most useful when a long analysis is in progress and additional
 
 ### 10.2 Before you start
 
-- Add the server in **CONFIGURATIONS**.
+- Enter the coordinator IP or URL directly, or choose a server previously saved
+  in **CONFIGURATIONS**.
 - Make sure that server has an active collaborative job.
 - Choose a number of CPU cores that still leaves your computer comfortable to use.
 - Keep the ugPlot window open while contributing.

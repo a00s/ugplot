@@ -214,6 +214,7 @@ source_local_helper <- function(file_name, function_name = NULL, always_reload =
 source_local_helper("00_version.R", "ugplot_build_version", always_reload = TRUE)
 source_local_helper("job_store.R", "ugplot_ensure_dir", always_reload = TRUE)
 source_local_helper("collaboration.R", "ugplot_collaboration_claim_task", always_reload = TRUE)
+source_local_helper("collaboration_client.R", "ugPlotScienceCollab", always_reload = TRUE)
 source_local_helper("collaboration_ui.R", "ugplot_collaboration_tab_ui", always_reload = TRUE)
 source_local_helper("server_deps.R", "ugPlotInstallModelDeps", always_reload = TRUE)
 source_local_helper("remote_client.R", "ugplot_remote_create_job", always_reload = TRUE)

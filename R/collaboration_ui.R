@@ -75,6 +75,20 @@ ugplot_collaboration_tab_ui <- function(id, total_system_cpus = 1L) {
   )
 }
 
+ugplot_collaboration_coordinator_candidates <- function(servers, direct_url = "",
+                                                        selected = "") {
+  direct_url <- trimws(as.character(direct_url %||% ""))
+  if (nzchar(direct_url)) {
+    return(data.frame(
+      name = "Direct coordinator",
+      url = ugplot_science_collab_url(direct_url),
+      stringsAsFactors = FALSE
+    ))
+  }
+  if (!is.data.frame(servers) || nrow(servers) == 0L) return(servers)
+  servers[order(as.character(servers$name) != as.character(selected %||% "")), , drop = FALSE]
+}
+
 ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpus = 1L) {
   shiny::moduleServer(id, function(input, output, session) {
     state <- shiny::reactiveVal("idle")
@@ -98,17 +112,28 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
     client_id <- paste0("scientist-", format(Sys.time(), "%Y%m%d%H%M%S"), "-", sample(1000:9999, 1))
 
     selected_server <- function() {
+      direct_url <- trimws(as.character(input$server_url %||% ""))
+      if (nzchar(direct_url)) {
+        return(data.frame(
+          name = "Direct coordinator",
+          url = ugplot_science_collab_url(direct_url),
+          stringsAsFactors = FALSE
+        ))
+      }
       servers <- remote_servers()
       selected <- as.character(input$server_name %||% "")
       row <- servers[as.character(servers$name) == selected, , drop = FALSE]
-      if (nrow(row) != 1L) stop("Choose a collaboration coordinator.", call. = FALSE)
+      if (nrow(row) != 1L) {
+        stop("Enter a coordinator IP/URL or choose a configured server.", call. = FALSE)
+      }
       row
     }
     available_coordinators <- function() {
-      servers <- remote_servers()
-      if (!is.data.frame(servers) || nrow(servers) == 0L) return(servers)
-      selected <- as.character(input$server_name %||% "")
-      servers[order(as.character(servers$name) != selected), , drop = FALSE]
+      ugplot_collaboration_coordinator_candidates(
+        remote_servers(),
+        direct_url = input$server_url %||% "",
+        selected = input$server_name %||% ""
+      )
     }
     append_local_event <- function(type, data = list()) {
       current <- events()
@@ -133,14 +158,34 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
 
     output$server_picker <- shiny::renderUI({
       servers <- remote_servers()
-      if (!is.data.frame(servers) || nrow(servers) == 0L) {
-        return(shiny::tags$p(class = "collab-empty-visual", "Configure a remote server first."))
-      }
-      shiny::selectInput(
-        session$ns("server_name"), "Preferred coordinator",
-        choices = stats::setNames(as.character(servers$name), as.character(servers$name)),
-        selected = as.character(servers$name[[1]])
+      shiny::tagList(
+        shiny::textInput(
+          session$ns("server_url"), "Coordinator IP or URL",
+          value = "", placeholder = "192.168.1.20 or https://collab.example.org"
+        ),
+        if (is.data.frame(servers) && nrow(servers) > 0L) {
+          shiny::selectInput(
+            session$ns("server_name"), "Or use a configured coordinator",
+            choices = stats::setNames(as.character(servers$name), as.character(servers$name)),
+            selected = as.character(servers$name[[1]])
+          )
+        } else {
+          shiny::tags$p(
+            class = "collab-empty-visual",
+            "No saved coordinator is needed: enter its IP or URL above."
+          )
+        },
+        shiny::tags$small(
+          class = "collab-privacy-note",
+          "Science Collab uses the public mission channel and does not request the server job token."
+        )
       )
+    })
+
+    shiny::observe({
+      remote_servers()
+      direct_url <- trimws(as.character(input$server_url %||% ""))
+      shinyjs::toggleState("server_name", condition = !nzchar(direct_url))
     })
 
     output$connection_badge <- shiny::renderUI({

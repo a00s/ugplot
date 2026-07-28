@@ -13,6 +13,43 @@ ugplot_test_active_collaboration_parent <- function(root, parent_job_id = "paren
   )
 }
 
+test_that("Science Collab accepts a bare coordinator IP or hostname", {
+  normalize <- ugplot_test_internal("ugplot_science_collab_url")
+
+  expect_equal(normalize("192.168.1.20"), "http://192.168.1.20:8080")
+  expect_equal(normalize("worker.example:9090"), "http://worker.example:9090")
+  expect_equal(
+    normalize("https://collab.example.org/"),
+    "https://collab.example.org"
+  )
+  expect_error(normalize(""), "coordinator")
+  expect_error(normalize("ftp://example.org"), "HTTP")
+})
+
+test_that("headless Science Collab declares its runtime dependencies", {
+  packages <- ugplot_test_internal("ugplot_science_collab_client_packages")()
+  expect_setequal(packages, c("httr", "jsonlite", "processx"))
+})
+
+test_that("a direct Science Collab coordinator excludes configured servers", {
+  candidates <- ugplot_test_internal("ugplot_collaboration_coordinator_candidates")
+  servers <- data.frame(
+    name = c("Fy1", "Fy2"),
+    url = c("http://fy1:8080", "http://fy2:8080"),
+    token = c("one", "two"),
+    stringsAsFactors = FALSE
+  )
+
+  direct <- candidates(servers, direct_url = "192.168.1.20")
+  expect_equal(nrow(direct), 1L)
+  expect_equal(direct$name, "Direct coordinator")
+  expect_equal(direct$url, "http://192.168.1.20:8080")
+  expect_false("token" %in% names(direct))
+
+  configured <- candidates(servers, selected = "Fy2")
+  expect_equal(configured$name, c("Fy2", "Fy1"))
+})
+
 test_that("collaboration recovers a lock left by a terminated process", {
   root <- tempfile("collaboration-")
   task_dir <- file.path(root, "collaboration", "orphaned-task")
