@@ -21,6 +21,92 @@ test_that("model search progress is not presented as seed stability", {
   expect_false(grepl("Stability|seed", signal, ignore.case = TRUE))
 })
 
+test_that("ML worker registries terminate residual processes", {
+  skip_on_os("windows")
+  skip_if_not(dir.exists("/proc/self"))
+  skip_if_not_installed("callr")
+  cleanup_registry <- ugplot_test_internal("ugplot_ml_cleanup_worker_registry")
+  registry_path <- tempfile("ugplot-worker-registry-", fileext = ".workers.rds")
+  worker_token <- paste0("test-worker-", Sys.getpid())
+  worker <- callr::r_bg(
+    function() Sys.sleep(60),
+    supervise = FALSE,
+    cleanup = FALSE,
+    env = c(UGPLOT_WORKER_TOKEN = worker_token)
+  )
+  withr::defer({
+    if (worker$is_alive()) worker$kill()
+    unlink(registry_path, force = TRUE)
+  })
+  saveRDS(
+    list(
+      trainer_pid = Sys.getpid(),
+      worker_pids = worker$get_pid(),
+      worker_token = worker_token,
+      registered_at = Sys.time()
+    ),
+    registry_path
+  )
+
+  cleaned <- cleanup_registry(registry_path)
+  worker$wait(timeout = 3000)
+
+  expect_equal(cleaned, worker$get_pid())
+  expect_false(worker$is_alive())
+  expect_false(file.exists(registry_path))
+})
+
+test_that("ML worker cleanup does not terminate a reused or unrelated PID", {
+  skip_on_os("windows")
+  skip_if_not(dir.exists("/proc/self"))
+  skip_if_not_installed("callr")
+  cleanup_registry <- ugplot_test_internal("ugplot_ml_cleanup_worker_registry")
+  registry_path <- tempfile("ugplot-unrelated-registry-", fileext = ".workers.rds")
+  worker <- callr::r_bg(
+    function() Sys.sleep(60),
+    supervise = FALSE,
+    cleanup = FALSE,
+    env = c(UGPLOT_WORKER_TOKEN = "actual-token")
+  )
+  withr::defer({
+    if (worker$is_alive()) worker$kill()
+    unlink(registry_path, force = TRUE)
+  })
+  saveRDS(
+    list(
+      worker_pids = worker$get_pid(),
+      worker_token = "stale-token",
+      registered_at = Sys.time()
+    ),
+    registry_path
+  )
+
+  expect_length(cleanup_registry(registry_path), 0L)
+  expect_true(worker$is_alive())
+  expect_false(file.exists(registry_path))
+})
+
+test_that("ML worker registry cleanup removes stale and invalid registries", {
+  cleanup_registries <- ugplot_test_internal("ugplot_ml_cleanup_worker_registries")
+  model_log_dir <- tempfile("ugplot-model-logs-")
+  dir.create(model_log_dir)
+  withr::defer(unlink(model_log_dir, recursive = TRUE, force = TRUE))
+  saveRDS(
+    list(worker_pids = c(NA_integer_, -1L)),
+    file.path(model_log_dir, ".finished.workers.rds")
+  )
+  writeLines(
+    "interrupted registry write",
+    file.path(model_log_dir, ".invalid.workers.rds")
+  )
+
+  expect_length(cleanup_registries(model_log_dir), 0L)
+  expect_length(
+    list.files(model_log_dir, pattern = "[.]workers[.]rds$", all.files = TRUE),
+    0L
+  )
+})
+
 sample_ml_data <- function() {
   sample_path <- file.path("inst", "extdata", "sample.csv")
   if (!file.exists(sample_path)) {

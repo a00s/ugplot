@@ -79,6 +79,123 @@ ugplot_ml_classify_error <- function(error_message) {
   }
 }
 
+ugplot_ml_process_alive <- function(pid) {
+  pid <- suppressWarnings(as.integer(pid))
+  if (length(pid) != 1L || is.na(pid) || pid <= 0L) {
+    return(FALSE)
+  }
+  if (.Platform$OS.type == "windows") {
+    output <- tryCatch(
+      suppressWarnings(
+        system2(
+          "tasklist",
+          c("/FI", shQuote(paste0("PID eq ", pid)), "/NH"),
+          stdout = TRUE,
+          stderr = FALSE
+        )
+      ),
+      error = function(e) character(0)
+    )
+    return(any(grepl(paste0("\\b", pid, "\\b"), output)))
+  }
+  isTRUE(tryCatch(tools::pskill(pid, signal = 0), error = function(e) FALSE))
+}
+
+ugplot_ml_terminate_process <- function(pid) {
+  pid <- suppressWarnings(as.integer(pid))
+  if (length(pid) != 1L || is.na(pid) || pid <= 0L || identical(pid, Sys.getpid())) {
+    return(invisible(FALSE))
+  }
+  if (.Platform$OS.type == "windows") {
+    try(
+      system2(
+        "taskkill", c("/PID", as.character(pid), "/T", "/F"),
+        stdout = FALSE, stderr = FALSE
+      ),
+      silent = TRUE
+    )
+    return(invisible(TRUE))
+  }
+  try(tools::pskill(pid, signal = tools::SIGTERM), silent = TRUE)
+  for (attempt in seq_len(10L)) {
+    if (!ugplot_ml_process_alive(pid)) break
+    Sys.sleep(0.05)
+  }
+  if (ugplot_ml_process_alive(pid)) {
+    try(tools::pskill(pid, signal = tools::SIGKILL), silent = TRUE)
+  }
+  invisible(TRUE)
+}
+
+ugplot_ml_worker_registry_pids <- function(path) {
+  if (is.null(path) || !nzchar(as.character(path)) || !file.exists(path)) {
+    return(integer(0))
+  }
+  registry <- tryCatch(readRDS(path), error = function(e) NULL)
+  pids <- if (is.list(registry)) registry$worker_pids else registry
+  pids <- unique(suppressWarnings(as.integer(unlist(pids, use.names = FALSE))))
+  pids[!is.na(pids) & pids > 0L]
+}
+
+ugplot_ml_process_has_worker_token <- function(pid, token) {
+  token <- as.character(token %||% "")
+  if (!nzchar(token)) return(FALSE)
+  environ_path <- file.path("/proc", as.character(as.integer(pid)), "environ")
+  if (!file.exists(environ_path)) {
+    return(.Platform$OS.type != "unix")
+  }
+  bytes <- tryCatch(
+    readBin(environ_path, what = "raw", n = 1024L * 1024L),
+    error = function(e) raw(0)
+  )
+  if (length(bytes) == 0L) return(FALSE)
+  boundaries <- c(0L, which(bytes == as.raw(0)), length(bytes) + 1L)
+  entries <- vapply(seq_len(length(boundaries) - 1L), function(i) {
+    start <- boundaries[[i]] + 1L
+    end <- boundaries[[i + 1L]] - 1L
+    if (end < start) "" else rawToChar(bytes[start:end])
+  }, character(1))
+  paste0("UGPLOT_WORKER_TOKEN=", token) %in% entries
+}
+
+ugplot_ml_cleanup_worker_registry <- function(path) {
+  registry <- if (!is.null(path) && nzchar(as.character(path)) && file.exists(path)) {
+    tryCatch(readRDS(path), error = function(e) NULL)
+  } else {
+    NULL
+  }
+  pids <- ugplot_ml_worker_registry_pids(path)
+  token <- if (is.list(registry)) as.character(registry$worker_token %||% "") else ""
+  verified <- pids[
+    vapply(pids, function(pid) {
+      ugplot_ml_process_alive(pid) &&
+        ugplot_ml_process_has_worker_token(pid, token)
+    }, logical(1))
+  ]
+  for (pid in verified) {
+    ugplot_ml_terminate_process(pid)
+  }
+  if (!is.null(path) && nzchar(as.character(path))) {
+    unlink(path, force = TRUE)
+  }
+  invisible(verified)
+}
+
+ugplot_ml_cleanup_worker_registries <- function(model_log_dir) {
+  if (is.null(model_log_dir) || !nzchar(as.character(model_log_dir)) ||
+      !dir.exists(model_log_dir)) {
+    return(invisible(integer(0)))
+  }
+  paths <- list.files(
+    model_log_dir,
+    pattern = "[.]workers[.]rds$",
+    full.names = TRUE,
+    all.files = TRUE
+  )
+  cleaned <- unlist(lapply(paths, ugplot_ml_cleanup_worker_registry), use.names = FALSE)
+  invisible(unique(suppressWarnings(as.integer(cleaned))))
+}
+
 ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctrl,
                                          tune_length, timeout, model_libraries,
                                          parallel_enabled = FALSE, cpu_limit = 1L,
@@ -95,14 +212,25 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
   safe_run_name <- gsub("[^A-Za-z0-9_.-]+", "_", paste(c(model_name, run_key), collapse = "_"))
   stdout_path <- NULL
   stderr_path <- NULL
+  worker_token <- paste(
+    Sys.getpid(),
+    format(Sys.time(), "%Y%m%d%H%M%OS6"),
+    sample.int(.Machine$integer.max, 1L),
+    sep = "-"
+  )
+  worker_registry_path <- tempfile(paste0("ugplot-", safe_run_name, "-"), fileext = ".workers.rds")
   if (!is.null(model_log_dir) && nzchar(as.character(model_log_dir))) {
     dir.create(model_log_dir, recursive = TRUE, showWarnings = FALSE)
+    ugplot_ml_cleanup_worker_registries(model_log_dir)
     stdout_path <- file.path(model_log_dir, paste0(safe_run_name, ".stdout.log"))
     stderr_path <- file.path(model_log_dir, paste0(safe_run_name, ".stderr.log"))
+    worker_registry_path <- file.path(model_log_dir, paste0(".", safe_run_name, ".workers.rds"))
+    ugplot_ml_cleanup_worker_registry(worker_registry_path)
   }
   process <- callr::r_bg(
     func = function(train_set, target_name, model_name, ctrl, tune_length,
-                    model_libraries, parallel_enabled, cpu_limit, lib_paths) {
+                    model_libraries, parallel_enabled, cpu_limit, lib_paths,
+                    worker_registry_path, worker_token) {
       .libPaths(lib_paths)
       Sys.setenv(
         OMP_NUM_THREADS = cpu_limit,
@@ -110,16 +238,30 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
         OPENBLAS_NUM_THREADS = cpu_limit,
         VECLIB_MAXIMUM_THREADS = cpu_limit,
         NUMEXPR_NUM_THREADS = cpu_limit,
-        UGPLOT_CPU_LIMIT = cpu_limit
+        UGPLOT_CPU_LIMIT = cpu_limit,
+        UGPLOT_WORKER_TOKEN = worker_token
       )
       for (lib in model_libraries) {
         suppressPackageStartupMessages(library(lib, character.only = TRUE))
       }
 
       cl <- NULL
-      if (isTRUE(parallel_enabled)) {
+      if (isTRUE(parallel_enabled) && cpu_limit > 1L) {
         cl <- parallel::makeCluster(cpu_limit)
         doParallel::registerDoParallel(cl)
+        worker_pids <- unique(suppressWarnings(as.integer(unlist(
+          parallel::clusterCall(cl, Sys.getpid),
+          use.names = FALSE
+        ))))
+        saveRDS(
+          list(
+            trainer_pid = Sys.getpid(),
+            worker_pids = worker_pids,
+            worker_token = worker_token,
+            registered_at = Sys.time()
+          ),
+          worker_registry_path
+        )
       }
       on.exit({
         if (!is.null(cl)) {
@@ -146,7 +288,9 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
       model_libraries = model_libraries,
       parallel_enabled = isTRUE(parallel_enabled),
       cpu_limit = max(1L, as.integer(cpu_limit)),
-      lib_paths = lib_paths
+      lib_paths = lib_paths,
+      worker_registry_path = worker_registry_path,
+      worker_token = worker_token
     ),
     stdout = stdout_path %||% NULL,
     stderr = stderr_path %||% NULL,
@@ -163,6 +307,7 @@ ugplot_ml_train_with_timeout <- function(train_set, target_name, model_name, ctr
       try(process$kill_tree(), silent = TRUE)
       try(process$kill(), silent = TRUE)
     }
+    ugplot_ml_cleanup_worker_registry(worker_registry_path)
   }, add = TRUE)
 
   started_at <- proc.time()[["elapsed"]]
