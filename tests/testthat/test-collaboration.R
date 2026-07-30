@@ -347,6 +347,13 @@ test_that("job group activity identifies collaborative and server executors", {
   dir.create(cache_root)
   job_id <- "parent-job"
   ugplot_test_active_collaboration_parent(root, job_id)
+  parent_status_path <- file.path(root, job_id, "status.rds")
+  parent_status <- readRDS(parent_status_path)
+  parent_status$message <- "Distributed complete analysis: 1/3 group(s); active Fy3:TG3"
+  parent_status$distributed_state <- list(
+    completed = 1L, total = 3L, active = 1L, active_groups = "Fy3:TG3"
+  )
+  saveRDS(parent_status, parent_status_path)
   saveRDS(
     list(
       type = "geo", runner = "ugplot_run_geo_pipeline_job", accession = "GSE1",

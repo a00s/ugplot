@@ -573,6 +573,31 @@ ugplot_model_timing_summary <- function(results) {
   summary[order(severity, -summary$`Total minutes`, summary$Model, na.last = TRUE), , drop = FALSE]
 }
 
+ugplot_idle_distributed_state <- function(state) {
+  if (!is.list(state)) {
+    state <- list()
+  }
+  state$active <- 0L
+  state$active_groups <- character(0)
+  state$active_tasks <- data.frame()
+  state
+}
+
+ugplot_active_distributed_group_ids <- function(status) {
+  if (!is.list(status) ||
+      !grepl("^Distributed (screening|complete analysis):", as.character(status$message %||% ""), ignore.case = TRUE)) {
+    return(character(0))
+  }
+  state <- status$distributed_state %||% list()
+  active <- suppressWarnings(as.integer(state$active %||% 0L))
+  if (length(active) == 0L || !is.finite(active) || active < 1L) {
+    return(character(0))
+  }
+  groups <- trimws(as.character(state$active_groups %||% character(0)))
+  groups <- groups[nzchar(groups)]
+  unique(sub("^[^:]*:", "", groups))
+}
+
 ugplot_read_job_model_timing <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
   preview <- tryCatch(ugplot_read_job_preview_result(job_id, jobs_dir), error = function(e) NULL)
   stored_result <- function() {

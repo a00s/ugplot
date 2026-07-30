@@ -477,6 +477,32 @@ test_that("job previews retain elapsed time and summarize model timeout behavior
   expect_equal(summary$Signal[summary$Model == "fast"], "Healthy")
 })
 
+test_that("local GEO stages clear stale active workers without losing progress", {
+  idle <- ugplot_test_internal("ugplot_idle_distributed_state")
+  active_groups <- ugplot_test_internal("ugplot_active_distributed_group_ids")
+  state <- list(
+    workers = c("Fy2", "Fy3"), completed = 10L, total = 2148L, active = 2L,
+    active_groups = c("Fy3:TG9", "Fy2:TG17"),
+    active_tasks = data.frame(worker = c("Fy3", "Fy2"), group = c("TG9", "TG17"))
+  )
+  waiting <- idle(state)
+
+  expect_equal(waiting$completed, 10L)
+  expect_equal(waiting$total, 2148L)
+  expect_equal(waiting$workers, c("Fy2", "Fy3"))
+  expect_equal(waiting$active, 0L)
+  expect_length(waiting$active_groups, 0L)
+  expect_equal(nrow(waiting$active_tasks), 0L)
+  expect_length(active_groups(list(
+    message = "Building transcript ML datasets for |rho| >= 0.7",
+    distributed_state = state
+  )), 0L)
+  expect_equal(active_groups(list(
+    message = "Distributed complete analysis: 10/2148 group(s); active Fy3:TG9, Fy2:TG17",
+    distributed_state = state
+  )), c("TG9", "TG17"))
+})
+
 test_that("model timing can recover elapsed values from older compact previews", {
   jobs_dir <- tempfile("ugplot-jobs-timing-")
   create_job <- ugplot_test_internal("ugplot_create_job")

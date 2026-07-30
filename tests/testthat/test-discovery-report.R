@@ -67,6 +67,16 @@ test_that("incremental discovery report upgrades screened groups with stability"
     Message = c("Completed", "Comparing candidate models", "Waiting"),
     stringsAsFactors = FALSE
   ), paths$manifest)
+  ugplot_test_internal("ugplot_update_job_status")(
+    status$id,
+    jobs_dir,
+    state = "running",
+    message = "Distributed complete analysis: 1/3 group(s); active Fy2:TG2",
+    distributed_state = list(
+      completed = 1L, total = 3L, active = 1L,
+      active_groups = "Fy2:TG2"
+    )
+  )
 
   report <- report_job(status$id, jobs_dir)
   expect_equal(report$progress$total, 3L)

@@ -334,6 +334,12 @@ ugplot_job_discovery_report <- function(job_id,
   )
   if (is.data.frame(manifest) && nrow(manifest) > 0L && "State" %in% names(manifest)) {
     active_index <- which(as.character(manifest$State) %in% c("dispatching", "submitted", "running"))
+    active_group_ids <- ugplot_active_distributed_group_ids(status)
+    if (length(active_index) > 0L && "GroupID" %in% names(manifest)) {
+      active_index <- active_index[as.character(manifest$GroupID[active_index]) %in% active_group_ids]
+    } else {
+      active_index <- integer(0)
+    }
     if (length(active_index) > 0L) {
       field <- function(name, default = "") {
         if (name %in% names(manifest)) as.character(manifest[[name]][active_index]) else rep(default, length(active_index))

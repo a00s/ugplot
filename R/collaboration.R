@@ -572,6 +572,8 @@ ugplot_collaboration_job_group_activity <- function(job_id,
   if (!is.data.frame(manifest) || nrow(manifest) == 0L || !"GroupID" %in% names(manifest)) {
     return(list(job_id = job_id, total = 0L, completed = 0L, processing = 0L, pending = 0L, groups = data.frame()))
   }
+  status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+  active_server_groups <- ugplot_active_distributed_group_ids(status)
   value_at <- function(column, index, default = "") {
     if (!(column %in% names(manifest))) return(default)
     value <- manifest[[column]][[index]]
@@ -612,7 +614,8 @@ ugplot_collaboration_job_group_activity <- function(job_id,
       message <- as.character(task$client_message %||% "Collaborative experiment running")
       candidate <- as.character(task$client_candidate %||% "")
       if (nzchar(candidate)) message <- paste(message, "—", candidate)
-    } else if (manifest_state %in% c("dispatching", "submitted", "running")) {
+    } else if (manifest_state %in% c("dispatching", "submitted", "running") &&
+               group_id %in% active_server_groups) {
       state <- "processing"
       executor <- worker
       executor_type <- "server"

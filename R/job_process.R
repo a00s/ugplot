@@ -75,6 +75,13 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
     }
     if (is.list(distributed_state)) {
       updates$distributed_state <- distributed_state
+    } else if (identical(runner, "ugplot_run_geo_pipeline_job") &&
+               !is.null(progress) && is.finite(suppressWarnings(as.numeric(progress))) &&
+               suppressWarnings(as.numeric(progress)) <= 0.93) {
+      current_status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+      if (is.list(current_status$distributed_state)) {
+        updates$distributed_state <- ugplot_idle_distributed_state(current_status$distributed_state)
+      }
     }
     if (is.list(stage_progress)) {
       updates$stage_progress <- stage_progress
