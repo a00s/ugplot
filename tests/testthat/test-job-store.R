@@ -733,12 +733,13 @@ test_that("GEO resume recovers an old corrupt config from a child worker", {
     data.frame(
       name = c("Fy2", "Fy3"),
       url = c("http://fy2:8080", "http://fy3:8080"),
-      token = c("token-2", "token-3"),
+      token = c("stale-token-2", "token-3"),
       cpu_limit = c(6L, 5L),
       cpu_max = c(8L, 6L),
       stringsAsFactors = FALSE
     )
   })
+  withr::local_envvar(UGPLOT_SERVER_TOKEN = "current-token-2")
 
   jobs_dir <- tempfile("ugplot-jobs-")
   create_job <- ugplot_test_internal("ugplot_create_job")
@@ -795,6 +796,10 @@ test_that("GEO resume recovers an old corrupt config from a child worker", {
   expect_equal(
     vapply(recovered$distributed_workers, function(server) server$name, character(1)),
     c("Fy2", "Fy3")
+  )
+  expect_equal(
+    vapply(recovered$distributed_workers, function(server) server$token, character(1)),
+    c("current-token-2", "token-3")
   )
   expect_null(recovered$internal_worker_task)
   expect_null(recovered$distributed_group)

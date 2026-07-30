@@ -252,10 +252,10 @@ ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugp
   ugplot_launch_background_job(status$id, jobs_dir)
 }
 
-ugplot_recover_geo_coordinator_config <- function(job_id, status,
-                                                   jobs_dir = ugplot_default_jobs_dir()) {
+ugplot_geo_child_worker_configs <- function(job_id,
+                                            jobs_dir = ugplot_default_jobs_dir()) {
   job_dirs <- list.dirs(jobs_dir, full.names = TRUE, recursive = FALSE)
-  child_configs <- Filter(Negate(is.null), lapply(job_dirs, function(job_dir) {
+  Filter(Negate(is.null), lapply(job_dirs, function(job_dir) {
     config_path <- file.path(job_dir, "config.rds")
     config <- if (file.exists(config_path)) {
       tryCatch(readRDS(config_path), error = function(e) NULL)
@@ -274,6 +274,42 @@ ugplot_recover_geo_coordinator_config <- function(job_id, status,
       modified = suppressWarnings(file.info(config_path)$mtime)
     )
   }))
+}
+
+ugplot_refresh_local_worker_token <- function(config, job_id,
+                                               jobs_dir = ugplot_default_jobs_dir()) {
+  token <- as.character(Sys.getenv("UGPLOT_SERVER_TOKEN", unset = ""))
+  workers <- config$distributed_workers %||% list()
+  if (!nzchar(token) || length(workers) == 0L) return(config)
+  if (is.data.frame(workers)) {
+    workers <- lapply(seq_len(nrow(workers)), function(i) as.list(workers[i, , drop = FALSE]))
+  }
+  child_configs <- ugplot_geo_child_worker_configs(job_id, jobs_dir)
+  local_worker_names <- unique(vapply(child_configs, function(item) {
+    as.character(item$config$worker_name %||% "")
+  }, character(1)))
+  local_worker_names <- local_worker_names[nzchar(local_worker_names)]
+  if (length(local_worker_names) == 0L) return(config)
+  changed <- FALSE
+  workers <- lapply(workers, function(worker) {
+    if (is.list(worker) &&
+        as.character(worker$name %||% "") %in% local_worker_names &&
+        !identical(as.character(worker$token %||% ""), token)) {
+      worker$token <- token
+      changed <<- TRUE
+    }
+    worker
+  })
+  if (isTRUE(changed)) {
+    config$distributed_workers <- workers
+    attr(config, "local_worker_token_refreshed") <- TRUE
+  }
+  config
+}
+
+ugplot_recover_geo_coordinator_config <- function(job_id, status,
+                                                   jobs_dir = ugplot_default_jobs_dir()) {
+  child_configs <- ugplot_geo_child_worker_configs(job_id, jobs_dir)
   if (length(child_configs) == 0L) return(NULL)
   modified <- vapply(child_configs, function(item) {
     value <- suppressWarnings(as.numeric(item$modified))
@@ -377,6 +413,15 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
       recovered
     }
   )
+  config <- ugplot_refresh_local_worker_token(config, job_id, jobs_dir)
+  if (isTRUE(attr(config, "local_worker_token_refreshed"))) {
+    attr(config, "local_worker_token_refreshed") <- NULL
+    ugplot_append_job_log(
+      job_id,
+      "Refreshed local distributed worker authentication for resume",
+      jobs_dir
+    )
+  }
   if (!file.exists(config_backup_path)) {
     ugplot_write_rds_atomic(config, config_backup_path)
   }
