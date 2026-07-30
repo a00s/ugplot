@@ -874,6 +874,32 @@ ugplot_geo_ml_model_run_counts <- function(result) {
   c(ModelsRun = models_run, ModelsOK = models_ok)
 }
 
+ugplot_geo_collect_model_timing <- function(transcript_ml_dir) {
+  if (!nzchar(transcript_ml_dir %||% "") || !dir.exists(transcript_ml_dir)) {
+    return(data.frame())
+  }
+  paths <- list.files(
+    transcript_ml_dir,
+    pattern = "^(screen_result|stability_result)\\.rds$",
+    recursive = TRUE,
+    full.names = TRUE
+  )
+  if (length(paths) == 0L) {
+    return(data.frame())
+  }
+  rows <- lapply(paths, function(path) {
+    result <- tryCatch(readRDS(path), error = function(e) NULL)
+    table <- result$results_table %||% data.frame()
+    if (!is.data.frame(table) || nrow(table) == 0L) {
+      return(NULL)
+    }
+    relative <- substring(normalizePath(path, mustWork = FALSE), nchar(normalizePath(transcript_ml_dir, mustWork = FALSE)) + 2L)
+    table$Analysis <- relative
+    table
+  })
+  ugplot_model_timing_summary(Filter(Negate(is.null), rows))
+}
+
 ugplot_geo_ml_importance_table <- function(model, group, source, phase) {
   if (is.null(model)) {
     return(data.frame())
@@ -2898,6 +2924,20 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
       resume_cached_geo = isTRUE(config$resume_cached_geo) || isTRUE(config$use_cached_geo)
     ))
     result$paths$transcript_ml_dir <- transcript_ml_dir
+    last_model_timing_refresh <- Sys.time() - 60
+    refresh_model_timing <- function(force = FALSE) {
+      now <- Sys.time()
+      elapsed <- as.numeric(difftime(now, last_model_timing_refresh, units = "secs"))
+      if (!isTRUE(force) && is.finite(elapsed) && elapsed < 30) {
+        return(invisible(FALSE))
+      }
+      timing <- ugplot_geo_collect_model_timing(transcript_ml_dir)
+      if (is.data.frame(timing) && nrow(timing) > 0L) {
+        result$tables$transcript_ml_model_timing <<- timing
+      }
+      last_model_timing_refresh <<- now
+      invisible(TRUE)
+    }
     publish(0.86, paste0("Building transcript ML datasets for |rho| >= ", threshold), force = TRUE)
     candidates_path <- file.path(
       ugplot_geo_analysis_dir(cache_dir, source),
@@ -2962,6 +3002,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
           config = config,
           metadata = metadata,
           progress_callback = function(value, message, distributed_state = NULL) {
+            refresh_model_timing()
             publish(
               0.93 + 0.04 * value,
               message,
@@ -2971,6 +3012,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
         )
         result$paths$transcript_ml_screening_summary <- file.path(transcript_ml_dir, "screening_summary.csv")
         result$tables$transcript_ml_screening <- screen_summary
+        refresh_model_timing(force = TRUE)
         result$tables$transcript_ml_importance <- ugplot_geo_collect_ml_importance_remote(screen_summary)
         result$tables$transcript_ml_final <- ugplot_geo_paper_summary_remote(
           screen_summary,
@@ -3002,6 +3044,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
           if (is.data.frame(stability_importance) && nrow(stability_importance) > 0) {
             result$tables$transcript_ml_importance <- stability_importance
           }
+          refresh_model_timing(force = TRUE)
         }
       }
     } else {

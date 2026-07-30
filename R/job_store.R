@@ -483,12 +483,131 @@ ugplot_job_result_preview <- function(result) {
   )
   if (is.data.frame(preview$results_table)) {
     keep_columns <- intersect(
-      c("Model", "R2", "Accuracy", "MAE", "RMSE", "dataset_seed", "training_seed", "Status", "Error"),
+      c("Model", "R2", "Accuracy", "MAE", "RMSE", "dataset_seed", "training_seed", "Status", "Error", "elapsed_seconds"),
       names(preview$results_table)
     )
     preview$results_table <- preview$results_table[, keep_columns, drop = FALSE]
   }
   preview
+}
+
+ugplot_model_timing_summary <- function(results) {
+  if (is.data.frame(results)) {
+    results <- list(results)
+  }
+  if (!is.list(results) || length(results) == 0L) {
+    return(data.frame())
+  }
+  rows <- lapply(seq_along(results), function(i) {
+    item <- results[[i]]
+    if (!is.data.frame(item) || nrow(item) == 0L || !"Model" %in% names(item)) {
+      return(NULL)
+    }
+    item$Analysis <- if ("Analysis" %in% names(item)) {
+      as.character(item$Analysis)
+    } else {
+      rep(paste0("analysis-", i), nrow(item))
+    }
+    item
+  })
+  rows <- Filter(Negate(is.null), rows)
+  if (length(rows) == 0L) {
+    return(data.frame())
+  }
+  all_names <- unique(unlist(lapply(rows, names), use.names = FALSE))
+  rows <- lapply(rows, function(row) {
+    missing <- setdiff(all_names, names(row))
+    for (name in missing) row[[name]] <- NA
+    row[, all_names, drop = FALSE]
+  })
+  rows <- do.call(rbind, rows)
+  rows$Model <- trimws(as.character(rows$Model))
+  rows <- rows[nzchar(rows$Model) & !is.na(rows$Model), , drop = FALSE]
+  if (nrow(rows) == 0L) {
+    return(data.frame())
+  }
+  status <- if ("Status" %in% names(rows)) toupper(trimws(as.character(rows$Status))) else rep("OK", nrow(rows))
+  status[is.na(status) | !nzchar(status)] <- "UNKNOWN"
+  elapsed <- if ("elapsed_seconds" %in% names(rows)) suppressWarnings(as.numeric(rows$elapsed_seconds)) else rep(NA_real_, nrow(rows))
+  attempted <- status != "SKIPPED_TIMEOUT"
+
+  summaries <- lapply(split(seq_len(nrow(rows)), rows$Model), function(index) {
+    model_status <- status[index]
+    model_elapsed <- elapsed[index]
+    model_attempted <- attempted[index]
+    timed <- model_elapsed[model_attempted & is.finite(model_elapsed)]
+    attempts <- sum(model_attempted)
+    timeouts <- sum(model_status == "TIMEOUT")
+    errors <- sum(model_attempted & !model_status %in% c("OK", "TIMEOUT"))
+    timeout_rate <- if (attempts > 0L) 100 * timeouts / attempts else NA_real_
+    signal <- if (timeouts >= 2L && is.finite(timeout_rate) && timeout_rate >= 50) {
+      "Frequent timeout"
+    } else if (timeouts > 0L) {
+      "Timeout observed"
+    } else if (errors > 0L) {
+      "Errors observed"
+    } else {
+      "Healthy"
+    }
+    data.frame(
+      Model = rows$Model[index[[1]]],
+      Analyses = length(unique(as.character(rows$Analysis[index]))),
+      Attempts = attempts,
+      Completed = sum(model_status == "OK"),
+      Timeouts = timeouts,
+      Errors = errors,
+      Skipped = sum(model_status == "SKIPPED_TIMEOUT"),
+      `Timeout rate` = if (is.finite(timeout_rate)) round(timeout_rate, 1) else NA_real_,
+      `Median seconds` = if (length(timed) > 0L) round(stats::median(timed), 1) else NA_real_,
+      `Mean seconds` = if (length(timed) > 0L) round(mean(timed), 1) else NA_real_,
+      `Max seconds` = if (length(timed) > 0L) round(max(timed), 1) else NA_real_,
+      `Total minutes` = if (length(timed) > 0L) round(sum(timed) / 60, 1) else NA_real_,
+      Signal = signal,
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+  })
+  summary <- do.call(rbind, summaries)
+  rownames(summary) <- NULL
+  severity <- match(summary$Signal, c("Frequent timeout", "Timeout observed", "Errors observed", "Healthy"))
+  summary[order(severity, -summary$`Total minutes`, summary$Model, na.last = TRUE), , drop = FALSE]
+}
+
+ugplot_read_job_model_timing <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  preview <- tryCatch(ugplot_read_job_preview_result(job_id, jobs_dir), error = function(e) NULL)
+  stored_result <- function() {
+    status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+    paths <- unique(c(status$partial_result_path %||% "", status$result_path %||% ""))
+    paths <- paths[nzchar(paths) & file.exists(paths)]
+    if (length(paths) == 0L) return(NULL)
+    tryCatch(readRDS(paths[[1]]), error = function(e) NULL)
+  }
+  if (!is.list(preview)) {
+    preview <- stored_result()
+  }
+  if (!is.list(preview)) {
+    return(data.frame())
+  }
+  if (identical(preview$kind %||% "", "geo_pipeline")) {
+    timing <- preview$tables$transcript_ml_model_timing %||% data.frame()
+    if (is.data.frame(timing) && nrow(timing) > 0L) {
+      return(timing)
+    }
+    transcript_ml_dir <- as.character(preview$paths$transcript_ml_dir %||% "")
+    if (nzchar(transcript_ml_dir) &&
+        exists("ugplot_geo_collect_model_timing", mode = "function", inherits = TRUE)) {
+      return(ugplot_geo_collect_model_timing(transcript_ml_dir))
+    }
+    return(data.frame())
+  }
+  rows <- preview$results_table %||% data.frame()
+  if (is.data.frame(rows) && nrow(rows) > 0L && !"elapsed_seconds" %in% names(rows)) {
+    full <- stored_result()
+    if (is.list(full) && is.data.frame(full$results_table)) {
+      rows <- full$results_table
+    }
+  }
+  ugplot_model_timing_summary(rows)
 }
 
 ugplot_job_partial_result <- function(result) {
@@ -693,6 +812,10 @@ ugplot_create_job <- function(dataset, config = list(), jobs_dir = ugplot_defaul
     result_path = NULL,
     partial_result_path = NULL,
     config_summary = ugplot_config_summary(config),
+    cpgs = {
+      count <- sum(grepl("^cg", names(dataset), ignore.case = TRUE))
+      if (count > 0L) as.integer(count) else NA_integer_
+    },
     timeout = suppressWarnings(as.numeric(config$timeout %||% NA_real_)),
     watchdog_timeout_multiplier = suppressWarnings(as.numeric(config$watchdog_timeout_multiplier %||% 3))
   )
@@ -978,6 +1101,11 @@ ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir(), include_inter
       message = status$message %||% NA_character_,
       target = status$config_summary$target %||% NA_character_,
       models = status$config_summary$models %||% NA_character_,
+      cpgs = {
+        saved <- suppressWarnings(as.integer(status$cpgs %||% NA_integer_))
+        live <- suppressWarnings(as.integer(status$stage_progress$matrix_cpgs_total %||% NA_integer_))
+        if (is.finite(saved)) saved else if (is.finite(live)) live else NA_integer_
+      },
       created_at = status$created_at %||% NA_character_,
       updated_at = status$updated_at %||% NA_character_,
       pid = status$pid %||% NA_integer_,

@@ -420,6 +420,21 @@ ugplot_remote_get_job_preview <- function(server_url, job_id, token = "", timeou
   readRDS(preview_file)
 }
 
+ugplot_remote_get_job_model_timing <- function(server_url, job_id, token = "", timeout_seconds = 20) {
+  request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/model-timing-rds"), token)
+  response <- httr::GET(request$url, request$headers, httr::timeout(timeout_seconds))
+  parsed <- ugplot_remote_parse(response)
+  content_base64 <- as.character(unlist(parsed$content_base64, use.names = FALSE))
+  content_base64 <- content_base64[nzchar(content_base64)]
+  if (length(content_base64) == 0L) {
+    stop("Remote model timing response did not include RDS content.", call. = FALSE)
+  }
+  timing_file <- tempfile(fileext = ".rds")
+  writeBin(base64enc::base64decode(content_base64[[1]]), timing_file)
+  on.exit(unlink(timing_file), add = TRUE)
+  readRDS(timing_file)
+}
+
 ugplot_remote_get_job_bundle <- function(server_url, job_id, token = "") {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/bundle-rds"), token)
   response <- httr::GET(request$url, request$headers)

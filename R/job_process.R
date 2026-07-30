@@ -78,6 +78,10 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
     }
     if (is.list(stage_progress)) {
       updates$stage_progress <- stage_progress
+      cpg_count <- suppressWarnings(as.integer(stage_progress$matrix_cpgs_total %||% NA_integer_))
+      if (length(cpg_count) > 0L && is.finite(cpg_count) && cpg_count > 0L) {
+        updates$cpgs <- cpg_count
+      }
     }
     if (!is.null(phase)) {
       updates$current_phase <- as.character(phase)

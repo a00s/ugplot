@@ -192,6 +192,40 @@ test_that("stability stops after a seed batch with no valid metrics", {
   expect_equal(calls, 1L)
 })
 
+test_that("distributed GEO checkpoints produce a durable model timing summary", {
+  collect <- ugplot_test_internal("ugplot_geo_collect_model_timing")
+  pipeline_dir <- tempfile("model-timing-")
+  dir.create(file.path(pipeline_dir, "TG1"), recursive = TRUE)
+  dir.create(file.path(pipeline_dir, "TG2", "stability_by", "sex", "F"), recursive = TRUE)
+  saveRDS(
+    list(results_table = data.frame(
+      Model = c("gbm", "glmnet"),
+      Status = c("TIMEOUT", "OK"),
+      elapsed_seconds = c(1200, 18),
+      stringsAsFactors = FALSE
+    )),
+    file.path(pipeline_dir, "TG1", "screen_result.rds")
+  )
+  saveRDS(
+    list(results_table = data.frame(
+      Model = c("gbm", "gbm"),
+      Status = c("TIMEOUT", "SKIPPED_TIMEOUT"),
+      elapsed_seconds = c(1200, 0),
+      stringsAsFactors = FALSE
+    )),
+    file.path(pipeline_dir, "TG2", "stability_by", "sex", "F", "stability_result.rds")
+  )
+
+  timing <- collect(pipeline_dir)
+  gbm <- timing[timing$Model == "gbm", , drop = FALSE]
+  expect_equal(gbm$Analyses, 2)
+  expect_equal(gbm$Attempts, 2)
+  expect_equal(gbm$Timeouts, 2)
+  expect_equal(gbm$Skipped, 1)
+  expect_equal(gbm$Signal, "Frequent timeout")
+  expect_equal(timing$Completed[timing$Model == "glmnet"], 1)
+})
+
 test_that("stability completion requires every configured stratum", {
   complete <- ugplot_test_internal("ugplot_geo_stability_complete_groups")
   screen <- data.frame(GroupID = "TG1", BestModel = "lm", stringsAsFactors = FALSE)

@@ -305,6 +305,7 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_delete_job",
     "ugplot_remote_get_result",
     "ugplot_remote_get_job_preview",
+    "ugplot_remote_get_job_model_timing",
     "ugplot_remote_get_job_bundle",
     "ugplot_remote_servers_path",
     "ugplot_default_remote_servers",
@@ -1068,6 +1069,7 @@ ui <- fluidPage(
         uiOutput("remote_job_geo_progress_report"),
         uiOutput("remote_job_resources"),
         uiOutput("remote_job_metric_panel"),
+        uiOutput("remote_job_model_timing_panel"),
         verbatimTextOutput("remote_job_running_details"),
         uiOutput("remote_job_log_panel")
       )
@@ -2593,6 +2595,7 @@ server <- function(input, output, session) {
   remote_job_groups_data <- reactiveVal(list(groups = data.frame()))
   remote_job_preview_status <- reactiveVal(NULL)
   remote_job_preview_result <- reactiveVal(NULL)
+  remote_job_timing_data <- reactiveVal(data.frame())
   remote_job_progress_estimates <- reactiveVal(list())
   remote_job_loading <- reactiveVal(FALSE)
   remote_job_monitor_state <- reactiveVal(list(checked_at = "", error = ""))
@@ -13277,6 +13280,9 @@ server <- function(input, output, session) {
       jobs <- data.frame()
     }
     raw_jobs <- jobs
+    if ("cpgs" %in% names(jobs)) {
+      names(jobs)[names(jobs) == "cpgs"] <- "CpGs"
+    }
     for (date_column in intersect(c("created_at", "updated_at"), names(jobs))) {
       jobs[[date_column]] <- sub("[[:space:]][+-][0-9]{4}$", "", as.character(jobs[[date_column]]))
     }
@@ -13519,6 +13525,7 @@ server <- function(input, output, session) {
       cached_status$id <- as.character(job_id)
       remote_job_preview_status(cached_status)
       remote_job_preview_result(NULL)
+      remote_job_timing_data(data.frame())
       remote_job_resources_data(data.frame())
       remote_job_groups_data(list(job_id = as.character(job_id), groups = data.frame()))
       remote_job_monitor_state(list(
@@ -13527,8 +13534,21 @@ server <- function(input, output, session) {
       ))
       remote_job_status_text(paste(
         "Selected", job_id,
-        "— no remote data was downloaded. Use the refresh icon in this row for lightweight status."
+        "— loading the compact model runtime summary. Use the details button for the complete checkpoint."
       ))
+      if (remote_server_supports("job_model_timing", server_name)) {
+        timing <- tryCatch({
+          server <- remote_server_by_name(server_name)
+          ugplot_remote_get_job_model_timing(
+            server_url = server$url,
+            job_id = job_id,
+            token = server$token %||% ""
+          )
+        }, error = function(e) data.frame())
+        if (is.data.frame(timing)) {
+          remote_job_timing_data(timing)
+        }
+      }
     }
   })
 
@@ -13631,6 +13651,7 @@ server <- function(input, output, session) {
     previous_job_id <- remote_status_scalar(previous_status$id)
     if (!identical(previous_job_id, job_id)) {
       remote_job_preview_result(NULL)
+      remote_job_timing_data(data.frame())
       remote_job_log_text("")
       remote_job_resources_data(data.frame())
       remote_job_groups_data(list(groups = data.frame()))
@@ -14487,6 +14508,72 @@ server <- function(input, output, session) {
       tags$div(style = "flex: 0 0 360px; max-width: 100%;", uiOutput("remote_job_running_summary")),
       tags$div(style = "flex: 1 1 420px; min-width: 320px; max-width: 620px;", plotlyOutput("remote_job_metric_distribution", height = "260px"))
     )
+  })
+
+  remote_job_model_timing_data <- reactive({
+    result <- remote_job_preview_result()
+    timing <- if (is.list(result) && identical(result$kind %||% "", "geo_pipeline")) {
+      timing <- result$tables$transcript_ml_model_timing %||% data.frame()
+      if (is.data.frame(timing)) timing else data.frame()
+    } else if (is.list(result)) {
+      ugplot_model_timing_summary(result$results_table %||% data.frame())
+    } else {
+      data.frame()
+    }
+    if (is.data.frame(timing) && nrow(timing) > 0L) timing else remote_job_timing_data()
+  })
+
+  output$remote_job_model_timing_panel <- renderUI({
+    timing <- remote_job_model_timing_data()
+    if (!is.data.frame(timing) || nrow(timing) == 0L) {
+      return(NULL)
+    }
+    tags$section(
+      class = "model-timing-panel",
+      tags$div(
+        class = "model-timing-header",
+        tags$div(
+          tags$strong("Model runtime and timeout summary"),
+          tags$p("Use repeated timeout signals and typical runtime to decide which models are worth keeping in future analyses.")
+        ),
+        tags$span(paste0(nrow(timing), " model", if (nrow(timing) == 1L) "" else "s"))
+      ),
+      DT::DTOutput("remote_job_model_timing")
+    )
+  })
+
+  output$remote_job_model_timing <- DT::renderDT({
+    timing <- remote_job_model_timing_data()
+    req(is.data.frame(timing), nrow(timing) > 0L)
+    table <- DT::datatable(
+      timing,
+      rownames = FALSE,
+      escape = TRUE,
+      selection = "none",
+      class = "compact stripe hover",
+      options = list(
+        pageLength = 15,
+        lengthChange = FALSE,
+        scrollX = TRUE,
+        order = list(list(4, "desc"), list(11, "desc"))
+      )
+    )
+    if ("Signal" %in% names(timing)) {
+      table <- DT::formatStyle(
+        table,
+        "Signal",
+        fontWeight = "700",
+        color = DT::styleEqual(
+          c("Frequent timeout", "Timeout observed", "Errors observed", "Healthy"),
+          c("#a5302d", "#9a6700", "#9a6700", "#18794e")
+        ),
+        backgroundColor = DT::styleEqual(
+          c("Frequent timeout", "Timeout observed", "Errors observed", "Healthy"),
+          c("#fff1f0", "#fff8df", "#fff8df", "#eaf8f0")
+        )
+      )
+    }
+    table
   })
 
   output$remote_job_resources <- renderUI({

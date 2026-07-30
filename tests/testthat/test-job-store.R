@@ -400,6 +400,20 @@ test_that("job listing marks dead background processes as failed", {
   expect_equal(listed$state, "failed")
 })
 
+test_that("job listing reports CpG columns from the submitted dataset", {
+  jobs_dir <- tempfile("ugplot-jobs-cpg-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  list_jobs <- ugplot_test_internal("ugplot_list_jobs")
+  status <- create_job(
+    data.frame(target = 1:3, cg0001 = 0.1, cg0002 = 0.2, other = 1),
+    config = list(models = "lm"),
+    jobs_dir = jobs_dir
+  )
+
+  jobs <- list_jobs(jobs_dir, lightweight = TRUE)
+  expect_equal(jobs$cpgs[jobs$id == status$id], 2L)
+})
+
 test_that("stopped jobs keep partial results available", {
   jobs_dir <- tempfile("ugplot-jobs-")
   dataset <- data.frame(x = 1:3)
@@ -438,6 +452,57 @@ test_that("stopped jobs keep partial results available", {
   expect_null(preview$best_model)
   loaded <- read_job_result(status$id, jobs_dir)
   expect_s3_class(loaded$best_model, "lm")
+})
+
+test_that("job previews retain elapsed time and summarize model timeout behavior", {
+  preview <- ugplot_test_internal("ugplot_job_result_preview")(list(
+    results_table = data.frame(
+      Model = c("slow", "slow", "slow", "fast"),
+      Status = c("TIMEOUT", "TIMEOUT", "SKIPPED_TIMEOUT", "OK"),
+      elapsed_seconds = c(1200, 1200, 0, 12),
+      Error = "",
+      stringsAsFactors = FALSE
+    )
+  ))
+  summarize <- ugplot_test_internal("ugplot_model_timing_summary")
+  summary <- summarize(preview$results_table)
+
+  expect_true("elapsed_seconds" %in% names(preview$results_table))
+  slow <- summary[summary$Model == "slow", , drop = FALSE]
+  expect_equal(slow$Attempts, 2)
+  expect_equal(slow$Timeouts, 2)
+  expect_equal(slow$Skipped, 1)
+  expect_equal(slow$`Timeout rate`, 100)
+  expect_equal(slow$Signal, "Frequent timeout")
+  expect_equal(summary$Signal[summary$Model == "fast"], "Healthy")
+})
+
+test_that("model timing can recover elapsed values from older compact previews", {
+  jobs_dir <- tempfile("ugplot-jobs-timing-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  write_atomic <- ugplot_test_internal("ugplot_write_rds_atomic")
+  update_status <- ugplot_test_internal("ugplot_update_job_status")
+  result_path <- ugplot_test_internal("ugplot_result_path")
+  preview_path <- ugplot_test_internal("ugplot_preview_result_path")
+  read_timing <- ugplot_test_internal("ugplot_read_job_model_timing")
+  status <- create_job(data.frame(target = 1:2, cg1 = c(0.1, 0.2)), jobs_dir = jobs_dir)
+  full_path <- result_path(status$id, jobs_dir, partial = TRUE)
+  compact_path <- preview_path(status$id, jobs_dir)
+  write_atomic(list(results_table = data.frame(
+    Model = "gbm", Status = "TIMEOUT", elapsed_seconds = 600,
+    stringsAsFactors = FALSE
+  )), full_path)
+  write_atomic(list(results_table = data.frame(
+    Model = "gbm", Status = "TIMEOUT", stringsAsFactors = FALSE
+  )), compact_path)
+  update_status(
+    status$id, jobs_dir,
+    partial_result_path = full_path,
+    preview_result_path = compact_path
+  )
+
+  timing <- read_timing(status$id, jobs_dir)
+  expect_equal(timing$`Max seconds`, 600)
 })
 
 test_that("running jobs that exceed timeout are stopped with partial result", {

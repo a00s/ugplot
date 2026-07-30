@@ -486,7 +486,9 @@ If a server card shows **VERSION MISMATCH**, update the remote server package so
 
 ![doc17 - remote job loaded result](man/img/doc17.png)
 
-After loading a job result, ugPlot displays the best-result summary, metric distribution, stability information, and job logs. For multi-seed jobs, prefer the median and interquartile range over the best single seed when reporting model performance.
+The remote jobs queue includes a **CpGs** column whenever the job dataset or GEO transcript matrix has established that count. After selecting a job, ugPlot downloads only its compact per-model timing summary; use **Load selected job details** for the larger checkpoint, logs, and telemetry.
+
+After loading a job result, ugPlot displays the best-result summary, metric distribution, stability information, and job logs. It also shows a per-model runtime and timeout summary with attempts, completed runs, skipped runs, timeout rate, and typical/maximum elapsed time. Repeated timeout signals help identify models that should be reconsidered for future analyses; a single timeout is shown separately from a recurring pattern. For multi-seed jobs, prefer the median and interquartile range over the best single seed when reporting model performance.
 
 #### Live discovery report
 
@@ -507,6 +509,8 @@ job:
   currently working, its assigned group, activity, and progress;
 - the discovery table is populated while the job is still running and marks
   results as **awaiting analysis**, **preliminary**, or **stabilized**;
+- the **CpGs** column reports how many methylation probes are evaluated in each
+  computational transcript group;
 - the green update time confirms that the browser is still receiving the
   server's latest saved snapshot.
 
