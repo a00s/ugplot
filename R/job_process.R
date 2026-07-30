@@ -276,8 +276,21 @@ ugplot_geo_child_worker_configs <- function(job_id,
   }))
 }
 
-ugplot_refresh_local_worker_token <- function(config, job_id,
-                                               jobs_dir = ugplot_default_jobs_dir()) {
+ugplot_worker_accepts_token <- function(worker, token) {
+  if (!exists("ugplot_remote_health", mode = "function", inherits = TRUE)) return(FALSE)
+  tryCatch({
+    ugplot_remote_health(
+      as.character(worker$url %||% ""),
+      token,
+      timeout_seconds = 5,
+      include_resources = FALSE
+    )
+    TRUE
+  }, error = function(e) FALSE)
+}
+
+ugplot_refresh_distributed_worker_tokens <- function(config, job_id,
+                                                      jobs_dir = ugplot_default_jobs_dir()) {
   token <- as.character(Sys.getenv("UGPLOT_SERVER_TOKEN", unset = ""))
   workers <- config$distributed_workers %||% list()
   if (!nzchar(token) || length(workers) == 0L) return(config)
@@ -289,12 +302,19 @@ ugplot_refresh_local_worker_token <- function(config, job_id,
     as.character(item$config$worker_name %||% "")
   }, character(1)))
   local_worker_names <- local_worker_names[nzchar(local_worker_names)]
-  if (length(local_worker_names) == 0L) return(config)
   changed <- FALSE
   workers <- lapply(workers, function(worker) {
-    if (is.list(worker) &&
-        as.character(worker$name %||% "") %in% local_worker_names &&
-        !identical(as.character(worker$token %||% ""), token)) {
+    if (!is.list(worker) || identical(as.character(worker$token %||% ""), token)) {
+      return(worker)
+    }
+    is_local <- as.character(worker$name %||% "") %in% local_worker_names
+    saved_token_works <- if (isTRUE(is_local)) {
+      FALSE
+    } else {
+      ugplot_worker_accepts_token(worker, as.character(worker$token %||% ""))
+    }
+    current_token_works <- isTRUE(is_local) || ugplot_worker_accepts_token(worker, token)
+    if (!isTRUE(saved_token_works) && isTRUE(current_token_works)) {
       worker$token <- token
       changed <<- TRUE
     }
@@ -302,7 +322,7 @@ ugplot_refresh_local_worker_token <- function(config, job_id,
   })
   if (isTRUE(changed)) {
     config$distributed_workers <- workers
-    attr(config, "local_worker_token_refreshed") <- TRUE
+    attr(config, "distributed_worker_tokens_refreshed") <- TRUE
   }
   config
 }
@@ -413,12 +433,12 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
       recovered
     }
   )
-  config <- ugplot_refresh_local_worker_token(config, job_id, jobs_dir)
-  if (isTRUE(attr(config, "local_worker_token_refreshed"))) {
-    attr(config, "local_worker_token_refreshed") <- NULL
+  config <- ugplot_refresh_distributed_worker_tokens(config, job_id, jobs_dir)
+  if (isTRUE(attr(config, "distributed_worker_tokens_refreshed"))) {
+    attr(config, "distributed_worker_tokens_refreshed") <- NULL
     ugplot_append_job_log(
       job_id,
-      "Refreshed local distributed worker authentication for resume",
+      "Refreshed distributed worker authentication for resume",
       jobs_dir
     )
   }
