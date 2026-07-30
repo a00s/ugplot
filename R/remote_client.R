@@ -243,6 +243,11 @@ ugplot_remote_distributed_summary <- function(status) {
   active_tasks <- normalize_active_tasks(distributed$active_tasks %||% list())
 
   message <- as.character(status$message %||% "")
+  if (!grepl("^Distributed (screening|complete analysis):", message, ignore.case = TRUE)) {
+    processing <- 0
+    active_groups <- character(0)
+    active_tasks <- active_tasks[0, , drop = FALSE]
+  }
   if ((!is.finite(completed) || !is.finite(total)) && nzchar(message)) {
     match <- regexec(
       "Distributed (?:screening|complete analysis): *([0-9]+)/([0-9]+) group\\(s\\); *active *(.*)$",

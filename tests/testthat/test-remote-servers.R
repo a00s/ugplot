@@ -103,3 +103,25 @@ test_that("lightweight remote monitor summarizes distributed screening", {
   expect_equal(complete$processing, 1)
   expect_equal(complete$active_groups, "Fy2:TG7")
 })
+
+test_that("local coordinator stages suppress stale distributed activity", {
+  summarize <- ugplot_test_internal("ugplot_remote_distributed_summary")
+  summary <- summarize(list(
+    message = "Building transcript ML datasets for |rho| >= 0.7",
+    distributed_state = list(
+      completed = 10L, total = 2148L, active = 2L,
+      active_groups = c("Fy3:TG9", "Fy2:TG17"),
+      active_tasks = list(
+        list(worker = "Fy3", group = "TG9", progress = 0.4),
+        list(worker = "Fy2", group = "TG17", progress = 0.2)
+      )
+    )
+  ))
+
+  expect_equal(summary$completed, 10)
+  expect_equal(summary$total, 2148)
+  expect_equal(summary$processing, 0)
+  expect_length(summary$active_groups, 0L)
+  expect_equal(nrow(summary$active_tasks), 0L)
+  expect_equal(summary$pending, 2138)
+})
