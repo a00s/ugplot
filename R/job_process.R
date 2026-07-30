@@ -343,6 +343,14 @@ ugplot_auto_resume_crashed_jobs <- function(jobs_dir = ugplot_default_jobs_dir()
     }
     config_path <- file.path(ugplot_job_dir(job_id, jobs_dir), "config.rds")
     config <- tryCatch(readRDS(config_path), error = function(e) list())
+    # Distributed worker jobs are owned by their coordinator. Resuming every
+    # stale worker checkpoint when a worker server restarts can launch many
+    # CPU-sized clusters at once. The coordinator polls the assigned job and
+    # explicitly resumes only the checkpoint that is still part of its
+    # manifest.
+    if (isTRUE(status$internal_worker_task) || isTRUE(config$internal_worker_task)) {
+      next
+    }
     resumable_runners <- c(
       "ugplot_run_ml_job",
       "ugplot_run_geo_pipeline_job",

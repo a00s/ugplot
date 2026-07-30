@@ -636,7 +636,7 @@ test_that("crashed ML jobs auto-resume with an attempt limit", {
   expect_equal(limited_status$auto_resume_count, 2L)
 })
 
-test_that("recently crashed GEO coordinators and worker groups auto-resume their checkpoints", {
+test_that("only GEO coordinators auto-resume after a server restart", {
   read_job_status <- ugplot_test_internal("ugplot_read_job_status")
   ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
     list(job = read_job_status(job_id, jobs_dir), process = NULL)
@@ -668,8 +668,9 @@ test_that("recently crashed GEO coordinators and worker groups auto-resume their
     readRDS(file.path(jobs_dir, status$id, "status.rds"))
   })
 
-  expect_equal(vapply(resumed_statuses, `[[`, character(1), "state"), c("queued", "queued"))
-  expect_equal(vapply(resumed_statuses, `[[`, integer(1), "auto_resume_count"), c(1L, 1L))
+  expect_equal(vapply(resumed_statuses, `[[`, character(1), "state"), c("queued", "failed"))
+  expect_equal(resumed_statuses[[1]]$auto_resume_count, 1L)
+  expect_null(resumed_statuses[[2]]$auto_resume_count)
 })
 
 test_that("resource monitor persists Linux job and host diagnostics", {
