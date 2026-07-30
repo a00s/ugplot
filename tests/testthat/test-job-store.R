@@ -677,6 +677,131 @@ test_that("resume migrates old ML jobs to isolated model timeouts", {
   expect_true(endsWith(config$model_log_dir, "model-logs"))
 })
 
+test_that("GEO resume keeps large checkpoints out of the job config", {
+  read_job_status <- ugplot_test_internal("ugplot_read_job_status")
+  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
+    list(job = read_job_status(job_id, jobs_dir), process = NULL)
+  })
+
+  jobs_dir <- tempfile("ugplot-jobs-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  write_job_status <- ugplot_test_internal("ugplot_write_job_status")
+  write_partial <- ugplot_test_internal("ugplot_write_job_partial_result")
+  resume_job <- ugplot_test_internal("ugplot_resume_background_job")
+
+  status <- create_job(
+    data.frame(request = 1),
+    config = list(
+      runner = "ugplot_run_geo_pipeline_job",
+      type = "geo",
+      accession = "GSE87571",
+      target_column = "age",
+      models = c("lm", "rpart")
+    ),
+    jobs_dir = jobs_dir
+  )
+  checkpoint <- list(
+    kind = "geo_pipeline",
+    accession = "GSE87571",
+    target_column = "age",
+    large_table = data.frame(value = rep("checkpoint-payload", 10000))
+  )
+  write_partial(status$id, checkpoint, jobs_dir)
+  status <- read_job_status(status$id, jobs_dir)
+  status$state <- "failed"
+  status$message <- "Background process stopped before finishing"
+  write_job_status(status$id, status, jobs_dir)
+
+  resume_job(status$id, jobs_dir)
+  job_dir <- file.path(jobs_dir, status$id)
+  resumed_config <- readRDS(file.path(job_dir, "config.rds"))
+  backup_config <- readRDS(file.path(job_dir, "config-resume-backup.rds"))
+
+  expect_equal(resumed_config$resume_result_path, file.path(job_dir, "partial-result.rds"))
+  expect_null(resumed_config[["resume_result"]])
+  expect_equal(backup_config$runner, "ugplot_run_geo_pipeline_job")
+  expect_lt(file.info(file.path(job_dir, "config.rds"))$size,
+            file.info(file.path(job_dir, "partial-result.rds"))$size)
+})
+
+test_that("GEO resume recovers an old corrupt config from a child worker", {
+  read_job_status <- ugplot_test_internal("ugplot_read_job_status")
+  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
+    list(job = read_job_status(job_id, jobs_dir), process = NULL)
+  })
+  ugplot_test_local_namespace_binding("ugplot_read_remote_servers", function() {
+    data.frame(
+      name = c("Fy2", "Fy3"),
+      url = c("http://fy2:8080", "http://fy3:8080"),
+      token = c("token-2", "token-3"),
+      cpu_limit = c(6L, 5L),
+      cpu_max = c(8L, 6L),
+      stringsAsFactors = FALSE
+    )
+  })
+
+  jobs_dir <- tempfile("ugplot-jobs-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  write_job_status <- ugplot_test_internal("ugplot_write_job_status")
+  write_partial <- ugplot_test_internal("ugplot_write_job_partial_result")
+  resume_job <- ugplot_test_internal("ugplot_resume_background_job")
+
+  parent <- create_job(
+    data.frame(request = 1),
+    config = list(
+      runner = "ugplot_run_geo_pipeline_job",
+      type = "geo",
+      accession = "GSE87571",
+      target_column = "age"
+    ),
+    jobs_dir = jobs_dir
+  )
+  worker <- create_job(
+    data.frame(target = 1:3, cg1 = 3:1),
+    config = list(
+      runner = "ugplot_run_geo_complete_group_job",
+      type = "geo_worker",
+      internal_worker_task = TRUE,
+      parent_job_id = parent$id,
+      worker_name = "Fy2",
+      distributed_group = data.frame(GroupID = "TG3"),
+      accession = "GSE87571",
+      matrix_source = "raw_sesame",
+      target_column = "age",
+      models = c("lm", "rpart")
+    ),
+    jobs_dir = jobs_dir
+  )
+  write_partial(parent$id, list(
+    kind = "geo_pipeline",
+    accession = "GSE87571",
+    matrix_source = "raw_sesame",
+    target_column = "age"
+  ), jobs_dir)
+  parent <- read_job_status(parent$id, jobs_dir)
+  parent$state <- "failed"
+  parent$message <- "Background process stopped before finishing"
+  parent$distributed_state <- list(workers = c("Fy2", "Fy3"))
+  write_job_status(parent$id, parent, jobs_dir)
+  config_path <- file.path(jobs_dir, parent$id, "config.rds")
+  writeBin(charToRaw("truncated-config"), config_path)
+
+  resume_job(parent$id, jobs_dir)
+  recovered <- readRDS(config_path)
+  corrupt_files <- Sys.glob(file.path(jobs_dir, parent$id, "config-corrupt-*.rds"))
+
+  expect_equal(recovered$runner, "ugplot_run_geo_pipeline_job")
+  expect_equal(recovered$models, c("lm", "rpart"))
+  expect_equal(
+    vapply(recovered$distributed_workers, function(server) server$name, character(1)),
+    c("Fy2", "Fy3")
+  )
+  expect_null(recovered$internal_worker_task)
+  expect_null(recovered$distributed_group)
+  expect_length(corrupt_files, 1L)
+  expect_true(file.exists(file.path(jobs_dir, worker$id, "config.rds")))
+})
+
 test_that("crashed ML jobs auto-resume with an attempt limit", {
   read_job_status <- ugplot_test_internal("ugplot_read_job_status")
   ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {

@@ -252,6 +252,83 @@ ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugp
   ugplot_launch_background_job(status$id, jobs_dir)
 }
 
+ugplot_recover_geo_coordinator_config <- function(job_id, status,
+                                                   jobs_dir = ugplot_default_jobs_dir()) {
+  job_dirs <- list.dirs(jobs_dir, full.names = TRUE, recursive = FALSE)
+  child_configs <- Filter(Negate(is.null), lapply(job_dirs, function(job_dir) {
+    config_path <- file.path(job_dir, "config.rds")
+    config <- if (file.exists(config_path)) {
+      tryCatch(readRDS(config_path), error = function(e) NULL)
+    } else {
+      NULL
+    }
+    if (!is.list(config) ||
+        !isTRUE(config$internal_worker_task) ||
+        !identical(as.character(config$parent_job_id %||% ""), job_id) ||
+        !(as.character(config$runner %||% "") %in%
+            c("ugplot_run_geo_complete_group_job", "ugplot_run_geo_screen_group_job"))) {
+      return(NULL)
+    }
+    list(
+      config = config,
+      modified = suppressWarnings(file.info(config_path)$mtime)
+    )
+  }))
+  if (length(child_configs) == 0L) return(NULL)
+  modified <- vapply(child_configs, function(item) {
+    value <- suppressWarnings(as.numeric(item$modified))
+    if (length(value) == 1L && is.finite(value)) value else 0
+  }, numeric(1))
+  config <- child_configs[[order(modified, decreasing = TRUE)[[1]]]]$config
+
+  partial_path <- status$partial_result_path %||%
+    ugplot_result_path(job_id, jobs_dir, partial = TRUE)
+  checkpoint <- if (!is.null(partial_path) && file.exists(partial_path)) {
+    tryCatch(readRDS(partial_path), error = function(e) NULL)
+  } else {
+    NULL
+  }
+  if (!is.list(checkpoint) || !identical(checkpoint$kind %||% "", "geo_pipeline")) {
+    return(NULL)
+  }
+  servers <- if (exists("ugplot_read_remote_servers", mode = "function", inherits = TRUE)) {
+    tryCatch(ugplot_read_remote_servers(), error = function(e) NULL)
+  } else {
+    NULL
+  }
+  if (!is.data.frame(servers) || nrow(servers) == 0L ||
+      !all(c("name", "url", "token") %in% names(servers))) {
+    return(NULL)
+  }
+  expected_workers <- unique(as.character(status$distributed_state$workers %||% character(0)))
+  expected_workers <- expected_workers[nzchar(expected_workers)]
+  if (length(expected_workers) > 0L) {
+    matched <- servers[as.character(servers$name) %in% expected_workers, , drop = FALSE]
+    if (nrow(matched) > 0L) servers <- matched
+  }
+
+  config$runner <- "ugplot_run_geo_pipeline_job"
+  config$type <- "geo"
+  config$job_name <- as.character(status$name %||% config$job_name %||% "")
+  config$accession <- as.character(checkpoint$accession %||% config$accession %||% "")
+  config$matrix_source <- as.character(checkpoint$matrix_source %||% config$matrix_source %||% "processed")
+  config$target_column <- as.character(checkpoint$target_column %||% config$target_column %||% "")
+  config$resume_cached_geo <- TRUE
+  config$resume_result <- NULL
+  config$resume_result_path <- as.character(partial_path)
+  config$resume_completed_keys <- NULL
+  config$distributed_workers <- lapply(seq_len(nrow(servers)), function(i) {
+    as.list(servers[i, , drop = FALSE])
+  })
+  worker_only_fields <- c(
+    "internal_worker_task", "parent_job_id", "worker_name", "distributed_group",
+    "coordinator_dataset_path", "request_id", "distributed_resume_screen",
+    "distributed_resume_stability_summary", "jobs_dir", "job_dir", "model_log_dir"
+  )
+  for (field in worker_only_fields) config[[field]] <- NULL
+  config
+}
+
 ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
   status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
   if (is.null(status)) {
@@ -262,7 +339,47 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
     stop("Job dataset/config is not available for resume.", call. = FALSE)
   }
   config_path <- file.path(job_dir, "config.rds")
-  config <- readRDS(config_path)
+  config_backup_path <- file.path(job_dir, "config-resume-backup.rds")
+  config <- tryCatch(
+    readRDS(config_path),
+    error = function(primary_error) {
+      backup <- if (file.exists(config_backup_path)) {
+        tryCatch(readRDS(config_backup_path), error = function(e) NULL)
+      } else {
+        NULL
+      }
+      recovered <- if (is.list(backup)) {
+        backup
+      } else {
+        ugplot_recover_geo_coordinator_config(job_id, status, jobs_dir)
+      }
+      if (!is.list(recovered)) {
+        stop(
+          "Job config is unreadable and no valid resume backup or GEO worker config is available: ",
+          conditionMessage(primary_error),
+          call. = FALSE
+        )
+      }
+      corrupt_path <- file.path(
+        job_dir,
+        paste0("config-corrupt-", format(Sys.time(), "%Y%m%d-%H%M%S"), ".rds")
+      )
+      preserved <- file.rename(config_path, corrupt_path)
+      ugplot_append_job_log(
+        job_id,
+        paste0(
+          "Recovered unreadable job config from ",
+          if (is.list(backup)) "resume backup" else "GEO worker checkpoint",
+          if (isTRUE(preserved)) paste0("; corrupt file preserved as ", basename(corrupt_path)) else ""
+        ),
+        jobs_dir
+      )
+      recovered
+    }
+  )
+  if (!file.exists(config_backup_path)) {
+    ugplot_write_rds_atomic(config, config_backup_path)
+  }
   config$job_dir <- job_dir
   config$model_log_dir <- file.path(job_dir, "model-logs")
   partial_path <- status$partial_result_path %||% ugplot_result_path(job_id, jobs_dir, partial = TRUE)
@@ -282,10 +399,13 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
         nzchar(as.character(resume_result$target_column %||% ""))) {
       config$target_column <- as.character(resume_result$target_column)
     }
-    if (is.list(resume_result) && identical(resume_result$kind %||% "", "geo_pipeline")) {
-      config$resume_result <- resume_result
-    }
-    if (is.list(resume_result) && is.data.frame(resume_result$results_table)) {
+    # GEO checkpoints can be hundreds of megabytes. The runner resumes them
+    # from resume_result_path and the on-disk GEO cache; embedding the complete
+    # checkpoint in config.rds duplicates the data and makes interrupted config
+    # writes both slow and vulnerable to truncation.
+    if (is.list(resume_result) &&
+        !identical(resume_result$kind %||% "", "geo_pipeline") &&
+        is.data.frame(resume_result$results_table)) {
       config$resume_result <- ugplot_job_result_preview(resume_result)
     }
     resume_keys <- unique(c(
@@ -322,7 +442,7 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
       )
     }
   }
-  saveRDS(config, config_path)
+  ugplot_write_rds_atomic(config, config_path)
   pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
   if ((status$state %||% "") %in% c("queued", "running", "draining") && !is.na(pid) && ugplot_process_alive(pid)) {
     stop("Job is already running.", call. = FALSE)
