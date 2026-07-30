@@ -224,6 +224,13 @@ ugplot_collaboration_required_models <- function(config) {
   declared <- unique(as.character(config$collaboration_required_models %||% character(0)))
   declared <- declared[nzchar(declared)]
   if (length(declared) > 0L) return(declared)
+  resume_screen <- config$distributed_resume_screen %||% NULL
+  if (is.list(resume_screen) && is.data.frame(resume_screen$summary) &&
+      nrow(resume_screen$summary) > 0L && "BestModel" %in% names(resume_screen$summary)) {
+    best_model <- unique(as.character(resume_screen$summary$BestModel))
+    best_model <- best_model[nzchar(best_model) & best_model != "-"]
+    if (length(best_model) > 0L) return(best_model)
+  }
   models <- unique(as.character(config$models %||% character(0)))
   models <- models[nzchar(models)]
   if (isTRUE(config$geo_ml_quick_models) &&

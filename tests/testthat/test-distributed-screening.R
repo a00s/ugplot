@@ -377,6 +377,141 @@ test_that("worker screening runner returns a portable group result", {
   expect_length(result$stability_artifacts, 1L)
 })
 
+test_that("complete group worker reuses a saved screening checkpoint", {
+  screening_calls <- 0L
+  progress_phases <- character(0)
+  resumed_stability <- NULL
+  saved_screen <- list(best_model_name = "lm", results_table = data.frame(Model = "lm"))
+  saved_summary <- data.frame(
+    GroupID = "TG1", BestModel = "lm", Phase = "screening",
+    DatasetPath = "/coordinator/TG1.csv",
+    stringsAsFactors = FALSE
+  )
+  saved_stability <- data.frame(
+    GroupID = "TG1", Phase = "stability",
+    StratumColumn = "sex", StratumValue = "F",
+    stringsAsFactors = FALSE
+  )
+
+  ugplot_test_local_namespace_binding("ugplot_geo_screen_group", function(...) {
+    screening_calls <<- screening_calls + 1L
+    stop("screening should not run")
+  })
+  ugplot_test_local_namespace_binding("ugplot_geo_complete_group_stability", function(
+      dataset, screen_summary, source, config, task_dir,
+      progress_callback = NULL, partial_callback = NULL) {
+    resumed_stability <<- config$distributed_resume_stability_summary
+    list(summary = saved_stability, artifacts = list())
+  })
+
+  run_worker <- ugplot_test_internal("ugplot_run_geo_complete_group_job")
+  result <- run_worker(
+    data.frame(target = 1:3, cg1 = 3:1),
+    list(
+      job_dir = tempfile("worker-resume-"),
+      distributed_group = data.frame(GroupID = "TG1", stringsAsFactors = FALSE),
+      matrix_source = "processed",
+      distributed_resume_screen = list(
+        summary = saved_summary,
+        screen_result = saved_screen,
+        importance = data.frame(CpG = "cg1", Overall = 1)
+      ),
+      distributed_resume_stability_summary = saved_stability
+    ),
+    progress_callback = function(...) {
+      args <- list(...)
+      progress_phases <<- c(progress_phases, as.character(args$phase %||% ""))
+    }
+  )
+
+  expect_equal(screening_calls, 0L)
+  expect_equal(result$screen_result, saved_screen)
+  expect_equal(result$summary, saved_summary)
+  expect_equal(resumed_stability, saved_stability)
+  expect_true("screening_reused" %in% progress_phases)
+})
+
+test_that("stability resume skips strata already completed elsewhere", {
+  model_calls <- 0L
+  saved_stability <- data.frame(
+    GroupID = "TG1", BestModel = "lm", Phase = "stability",
+    StratumColumn = "sex", StratumValue = "F",
+    stringsAsFactors = FALSE
+  )
+  screen_summary <- data.frame(
+    GroupID = "TG1", BestModel = "lm", Phase = "screening",
+    DatasetPath = "/unused/when-stratum-is-complete.rds",
+    stringsAsFactors = FALSE
+  )
+  metadata <- data.frame(
+    sample_id = c("S1", "S2"), sex = c("F", "F"),
+    stringsAsFactors = FALSE
+  )
+  ugplot_test_local_namespace_binding("ugplot_run_ml_job", function(...) {
+    model_calls <<- model_calls + 1L
+    stop("completed stability stratum should not run")
+  })
+  ugplot_test_local_namespace_binding(
+    "ugplot_geo_enrich_ml_summary_remote",
+    function(summary, ...) summary
+  )
+  ugplot_test_local_namespace_binding(
+    "ugplot_geo_ml_rank_summary",
+    function(summary, ...) summary
+  )
+
+  run_stability <- ugplot_test_internal("ugplot_geo_run_transcript_stability_remote")
+  result <- run_stability(
+    screen_summary,
+    cache_dir = tempfile("stability-resume-"),
+    config = list(
+      geo_ml_stability_group_column = "sex",
+      distributed_resume_stability_summary = saved_stability
+    ),
+    metadata = metadata
+  )
+
+  expect_equal(model_calls, 0L)
+  expect_equal(result$GroupID, "TG1")
+  expect_equal(result$StratumValue, "F")
+})
+
+test_that("distributed resume config carries coordinator checkpoints", {
+  root <- tempfile("distributed-resume-config-")
+  dir.create(root)
+  screen_path <- file.path(root, "screen.rds")
+  importance_path <- file.path(root, "importance.csv")
+  screen_result <- list(best_model_name = "lm")
+  saveRDS(screen_result, screen_path)
+  utils::write.csv(
+    data.frame(CpG = "cg1", Overall = 1),
+    importance_path,
+    row.names = FALSE
+  )
+  summaries <- data.frame(
+    GroupID = c("TG1", "TG2"),
+    BestModel = c("lm", "rpart"),
+    ScreenResultPath = c(screen_path, ""),
+    ImportancePath = c(importance_path, ""),
+    stringsAsFactors = FALSE
+  )
+  stability <- data.frame(
+    GroupID = c("TG1", "TG2"),
+    StratumColumn = c("sex", "sex"),
+    StratumValue = c("F", "M"),
+    stringsAsFactors = FALSE
+  )
+
+  build_resume <- ugplot_test_internal("ugplot_geo_distributed_resume_config")
+  config <- build_resume(list(models = "lm"), "TG1", summaries, stability)
+
+  expect_equal(config$distributed_resume_screen$screen_result, screen_result)
+  expect_equal(config$distributed_resume_screen$summary$GroupID, "TG1")
+  expect_equal(config$distributed_resume_screen$importance$CpG, "cg1")
+  expect_equal(config$distributed_resume_stability_summary$GroupID, "TG1")
+  expect_equal(config$distributed_resume_stability_summary$StratumValue, "F")
+})
+
 test_that("distributed scheduler checkpoints worker results in coordinator cache", {
   root <- tempfile("distributed-screen-")
   dir.create(root)

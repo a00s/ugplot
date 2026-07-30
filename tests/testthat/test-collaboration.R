@@ -269,6 +269,10 @@ test_that("pending collaboration missions refresh their real requirements", {
   expect_equal(refreshed$requirements$models, "lm")
   expect_equal(readRDS(refreshed$payload_path)$version, 2)
   expect_equal(required_models(list(models = c("lm", "rpart"))), c("lm", "rpart"))
+  expect_equal(required_models(list(
+    models = c("lm", "rpart", "ranger"),
+    distributed_resume_screen = list(summary = data.frame(BestModel = "rpart"))
+  )), "rpart")
 })
 
 test_that("public compatibility explains missing mission models", {

@@ -1526,26 +1526,50 @@ ugplot_run_geo_complete_group_job <- function(dataset, config = list(),
   }
   task_dir <- as.character(config$job_dir %||% tempdir())
   group_id <- as.character(group$GroupID[[1]])
-  result <- ugplot_geo_screen_group(
-    dataset = dataset,
-    group = group,
-    source = as.character(config$matrix_source %||% "processed"),
-    config = config,
-    screen_path = file.path(task_dir, "worker-screen-result.rds"),
-    importance_path = file.path(task_dir, "worker-screen-importance.csv"),
-    progress_callback = function(...) {
-      args <- list(...)
-      screen_progress <- suppressWarnings(as.numeric(args$progress %||% 0))
-      if (!is.finite(screen_progress)) screen_progress <- 0
-      progress_callback(
-        progress = 0.55 * max(0, min(1, screen_progress)),
-        message = paste0("Screening ", group_id, ": ", args$message %||% ""),
-        current_run = args$current_run %||% list(),
-        phase = "screening"
-      )
-    },
-    partial_callback = partial_callback
-  )
+  resume_screen <- config$distributed_resume_screen %||% NULL
+  can_resume_screen <- is.list(resume_screen) &&
+    is.data.frame(resume_screen$summary) &&
+    nrow(resume_screen$summary) == 1L &&
+    "GroupID" %in% names(resume_screen$summary) &&
+    identical(as.character(resume_screen$summary$GroupID[[1]]), group_id) &&
+    !is.null(resume_screen$screen_result)
+  result <- if (isTRUE(can_resume_screen)) {
+    progress_callback(
+      progress = 0.55,
+      message = paste0("Reusing saved screening for ", group_id),
+      phase = "screening_reused"
+    )
+    list(
+      summary = resume_screen$summary,
+      screen_result = resume_screen$screen_result,
+      importance = if (is.data.frame(resume_screen$importance)) {
+        resume_screen$importance
+      } else {
+        data.frame()
+      }
+    )
+  } else {
+    ugplot_geo_screen_group(
+      dataset = dataset,
+      group = group,
+      source = as.character(config$matrix_source %||% "processed"),
+      config = config,
+      screen_path = file.path(task_dir, "worker-screen-result.rds"),
+      importance_path = file.path(task_dir, "worker-screen-importance.csv"),
+      progress_callback = function(...) {
+        args <- list(...)
+        screen_progress <- suppressWarnings(as.numeric(args$progress %||% 0))
+        if (!is.finite(screen_progress)) screen_progress <- 0
+        progress_callback(
+          progress = 0.55 * max(0, min(1, screen_progress)),
+          message = paste0("Screening ", group_id, ": ", args$message %||% ""),
+          current_run = args$current_run %||% list(),
+          phase = "screening"
+        )
+      },
+      partial_callback = partial_callback
+    )
+  }
   stability <- ugplot_geo_complete_group_stability(
     dataset = dataset,
     screen_summary = result$summary,
@@ -1703,6 +1727,67 @@ ugplot_geo_distributed_active_tasks <- function(manifest) {
   })
 }
 
+ugplot_geo_distributed_resume_config <- function(config, group_id, summaries,
+                                                  stability_summaries) {
+  config$distributed_resume_screen <- NULL
+  config$distributed_resume_stability_summary <- NULL
+  group_id <- as.character(group_id %||% "")
+  if (!nzchar(group_id)) return(config)
+
+  screen_rows <- if (is.data.frame(summaries) && "GroupID" %in% names(summaries)) {
+    summaries[as.character(summaries$GroupID) == group_id, , drop = FALSE]
+  } else {
+    data.frame()
+  }
+  if (nrow(screen_rows) > 0L) {
+    screen_row <- screen_rows[1, , drop = FALSE]
+    screen_path <- if ("ScreenResultPath" %in% names(screen_row)) {
+      as.character(screen_row$ScreenResultPath[[1]] %||% "")
+    } else {
+      ""
+    }
+    screen_result <- if (!is.na(screen_path) && nzchar(screen_path) && file.exists(screen_path)) {
+      tryCatch(readRDS(screen_path), error = function(e) NULL)
+    } else {
+      NULL
+    }
+    if (!is.null(screen_result)) {
+      importance_path <- if ("ImportancePath" %in% names(screen_row)) {
+        as.character(screen_row$ImportancePath[[1]] %||% "")
+      } else {
+        ""
+      }
+      importance <- if (!is.na(importance_path) && nzchar(importance_path) &&
+                        file.exists(importance_path)) {
+        tryCatch(
+          utils::read.csv(importance_path, stringsAsFactors = FALSE, check.names = FALSE),
+          error = function(e) data.frame()
+        )
+      } else {
+        data.frame()
+      }
+      config$distributed_resume_screen <- list(
+        summary = screen_row,
+        screen_result = screen_result,
+        importance = importance
+      )
+    }
+  }
+
+  if (is.data.frame(stability_summaries) && nrow(stability_summaries) > 0L &&
+      "GroupID" %in% names(stability_summaries)) {
+    rows <- stability_summaries[
+      as.character(stability_summaries$GroupID) == group_id,
+      ,
+      drop = FALSE
+    ]
+    if (nrow(rows) > 0L) {
+      config$distributed_resume_stability_summary <- rows
+    }
+  }
+  config
+}
+
 ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summary_path,
                                                      pipeline_dir, cache_dir, source,
                                                      run_key, config, workers,
@@ -1818,13 +1903,15 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
     screen_path <- file.path(group_dir, "screen_result.rds")
     importance_path <- file.path(group_dir, "screen_importance.csv")
     ugplot_ensure_dir(group_dir)
-    saveRDS(remote_result$screen_result, screen_path)
+    if (!is.null(remote_result$screen_result)) {
+      saveRDS(remote_result$screen_result, screen_path)
+    }
     if (is.data.frame(remote_result$importance) && nrow(remote_result$importance) > 0) {
       utils::write.csv(remote_result$importance, importance_path, row.names = FALSE)
     }
     summary_row <- remote_result$summary
     summary_row$DatasetPath <- dataset_info$dataset_path
-    summary_row$ScreenResultPath <- screen_path
+    summary_row$ScreenResultPath <- if (file.exists(screen_path)) screen_path else ""
     summary_row$ImportancePath <- if (file.exists(importance_path)) importance_path else ""
     summaries <<- ugplot_geo_bind_rows(list(
       summaries[as.character(summaries$GroupID) != group_id, , drop = FALSE],
@@ -1999,6 +2086,12 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         task_config$matrix_source <- source
         task_config$coordinator_dataset_path <- dataset_info$dataset_path
         task_config$cpu_limit <- 1L
+        task_config <- ugplot_geo_distributed_resume_config(
+          task_config,
+          manifest$GroupID[[row_index]],
+          summaries,
+          stability_summaries
+        )
         task_config$collaboration_enabled <- FALSE
         task_config$request_id <- collaboration_task_id(manifest$GroupID[[row_index]])
         task_config$collaboration_required_models <- ugplot_collaboration_required_models(task_config)
@@ -2190,6 +2283,12 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         task_config$matrix_source <- source
         task_config$coordinator_dataset_path <- dataset_info$dataset_path
         task_config$cpu_limit <- max(1L, suppressWarnings(as.integer(worker$cpu_limit %||% 1L)))
+        task_config <- ugplot_geo_distributed_resume_config(
+          task_config,
+          manifest$GroupID[[row_index]],
+          summaries,
+          stability_summaries
+        )
         task_config$request_id <- paste(parent_job_id, "analyze", manifest$GroupID[[row_index]], sep = ":")
         manifest$Worker[[row_index]] <- as.character(worker$name)
         manifest$State[[row_index]] <- "dispatching"
@@ -2452,6 +2551,27 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
     tryCatch(utils::read.csv(summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
   } else {
     data.frame()
+  }
+  resume_summaries <- config$distributed_resume_stability_summary %||% data.frame()
+  if (is.data.frame(resume_summaries) && nrow(resume_summaries) > 0L) {
+    summaries <- ugplot_geo_bind_rows(list(resume_summaries, summaries))
+    existing_col <- if ("StratumColumn" %in% names(summaries)) {
+      summaries$StratumColumn
+    } else {
+      rep("", nrow(summaries))
+    }
+    existing_value <- if ("StratumValue" %in% names(summaries)) {
+      summaries$StratumValue
+    } else {
+      rep("", nrow(summaries))
+    }
+    resume_keys <- ugplot_geo_ml_stability_task_key(
+      summaries$GroupID,
+      existing_col,
+      existing_value
+    )
+    summaries <- summaries[!duplicated(resume_keys, fromLast = TRUE), , drop = FALSE]
+    utils::write.csv(summaries, summary_path, row.names = FALSE)
   }
   processed <- if (is.data.frame(summaries) && "GroupID" %in% names(summaries)) {
     existing_col <- if ("StratumColumn" %in% names(summaries)) summaries$StratumColumn else rep("", nrow(summaries))
