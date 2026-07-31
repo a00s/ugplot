@@ -930,6 +930,71 @@ ugplot_config_summary <- function(config) {
   )
 }
 
+ugplot_normalize_distributed_workers <- function(workers) {
+  if (is.data.frame(workers)) {
+    workers <- lapply(seq_len(nrow(workers)), function(i) as.list(workers[i, , drop = FALSE]))
+  }
+  if (!is.list(workers) || length(workers) == 0L) {
+    stop("Provide at least one distributed worker.", call. = FALSE)
+  }
+  normalized <- lapply(workers, function(worker) {
+    if (!is.list(worker)) stop("Each distributed worker must be an object.", call. = FALSE)
+    name <- trimws(as.character(worker$name %||% ""))
+    url <- sub("/+$", "", trimws(as.character(worker$url %||% "")))
+    token <- as.character(worker$token %||% "")
+    cpu_limit <- suppressWarnings(as.integer(worker$cpu_limit %||% 1L))
+    cpu_max <- suppressWarnings(as.integer(worker$cpu_max %||% cpu_limit))
+    if (length(name) != 1L || !nzchar(name)) stop("Every distributed worker needs a name.", call. = FALSE)
+    if (length(url) != 1L || !grepl("^https?://", url, ignore.case = TRUE)) {
+      stop("Every distributed worker needs an HTTP(S) URL.", call. = FALSE)
+    }
+    if (length(token) != 1L) stop("Every distributed worker token must be a scalar.", call. = FALSE)
+    if (length(cpu_limit) != 1L || is.na(cpu_limit) || cpu_limit < 1L) cpu_limit <- 1L
+    if (length(cpu_max) != 1L || is.na(cpu_max) || cpu_max < cpu_limit) cpu_max <- cpu_limit
+    list(name = name, url = url, token = token, cpu_limit = cpu_limit, cpu_max = cpu_max)
+  })
+  names <- vapply(normalized, `[[`, character(1), "name")
+  if (anyDuplicated(names)) stop("Distributed worker names must be unique.", call. = FALSE)
+  normalized
+}
+
+ugplot_replace_job_distributed_workers <- function(job_id, workers,
+                                                    jobs_dir = ugplot_default_jobs_dir()) {
+  job_id <- ugplot_validate_job_id(job_id)
+  status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+  if (is.null(status)) stop("Job not found: ", job_id, call. = FALSE)
+  if (!identical(as.character(status$type %||% ""), "geo")) {
+    stop("Distributed workers can only be replaced for GEO coordinator jobs.", call. = FALSE)
+  }
+  state <- as.character(status$state %||% "")
+  if (!(state %in% c("failed", "stopped"))) {
+    stop("Drain or stop the GEO job before replacing its distributed workers.", call. = FALSE)
+  }
+  config_path <- file.path(ugplot_job_dir(job_id, jobs_dir), "config.rds")
+  config <- ugplot_read_rds_or_null(config_path)
+  if (!is.list(config)) stop("Job config is missing or unreadable: ", job_id, call. = FALSE)
+  workers <- ugplot_normalize_distributed_workers(workers)
+  backup_path <- file.path(ugplot_job_dir(job_id, jobs_dir), "config-before-worker-repair.rds")
+  if (!file.exists(backup_path)) ugplot_write_rds_atomic(config, backup_path)
+  config$distributed_workers <- workers
+  ugplot_write_rds_atomic(config, config_path)
+  worker_names <- vapply(workers, `[[`, character(1), "name")
+  ugplot_append_job_log(
+    job_id,
+    paste0("Repaired distributed worker configuration: ", paste(worker_names, collapse = ", ")),
+    jobs_dir
+  )
+  list(
+    id = job_id,
+    state = state,
+    workers = lapply(workers, function(worker) {
+      worker$token <- NULL
+      worker
+    }),
+    backup = basename(backup_path)
+  )
+}
+
 ugplot_write_job_status <- function(job_id, status, jobs_dir = ugplot_default_jobs_dir()) {
   status$id <- job_id
   status$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")

@@ -374,6 +374,20 @@ ugplot_remote_drain_job <- function(server_url, job_id, token = "") {
   ugplot_remote_parse(response)
 }
 
+ugplot_remote_replace_job_workers <- function(server_url, job_id, workers, token = "",
+                                              timeout_seconds = 60) {
+  request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/workers"), token)
+  response <- httr::POST(
+    request$url,
+    request$headers,
+    httr::timeout(timeout_seconds),
+    httr::content_type_json(),
+    body = jsonlite::toJSON(list(workers = workers), auto_unbox = TRUE, null = "null"),
+    encode = "raw"
+  )
+  ugplot_remote_parse(response)
+}
+
 ugplot_remote_resume_job <- function(server_url, job_id, token = "", timeout_seconds = 30) {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/resume"), token)
   response <- httr::POST(request$url, request$headers, httr::timeout(timeout_seconds))

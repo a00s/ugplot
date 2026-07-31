@@ -851,6 +851,32 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
     })
   })
 
+  pr$handle("POST", "/jobs/<job_id>/workers", function(job_id, req, res) {
+    tryCatch({
+      body <- ugplot_request_json_body(req)
+      workers <- ugplot_normalize_distributed_workers(body$workers %||% list())
+      for (worker in workers) {
+        tryCatch(
+          ugplot_remote_health(
+            worker$url,
+            worker$token,
+            timeout_seconds = 10,
+            include_resources = FALSE
+          ),
+          error = function(e) stop(
+            "Worker ", worker$name, " failed authentication/health validation: ",
+            conditionMessage(e),
+            call. = FALSE
+          )
+        )
+      }
+      ugplot_replace_job_distributed_workers(job_id, workers, jobs_dir)
+    }, error = function(e) {
+      res$status <- 400
+      list(error = conditionMessage(e))
+    })
+  })
+
   pr$handle("POST", "/jobs/<job_id>/resume", function(job_id, res) {
     tryCatch({
       started <- ugplot_resume_background_job(job_id, jobs_dir)

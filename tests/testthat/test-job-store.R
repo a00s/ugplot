@@ -16,6 +16,63 @@ test_that("job store creates and lists jobs", {
   expect_equal(listed$id, status$id)
 })
 
+test_that("stopped GEO jobs can repair distributed workers atomically", {
+  jobs_dir <- tempfile("ugplot-worker-repair-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  write_status <- ugplot_test_internal("ugplot_write_job_status")
+  replace_workers <- ugplot_test_internal("ugplot_replace_job_distributed_workers")
+  status <- create_job(
+    data.frame(request = 1),
+    config = list(
+      runner = "ugplot_run_geo_pipeline_job",
+      type = "geo",
+      distributed_workers = list(list(
+        name = "Local 8080", url = "http://127.0.0.1:8080", token = "old",
+        cpu_limit = 6L, cpu_max = 8L
+      ))
+    ),
+    jobs_dir = jobs_dir,
+    type = "geo"
+  )
+  status$state <- "stopped"
+  write_status(status$id, status, jobs_dir)
+
+  repaired <- replace_workers(status$id, list(
+    list(name = "Fy2", url = "http://fy2:8080", token = "shared", cpu_limit = 6L, cpu_max = 8L),
+    list(name = "Fy3", url = "http://fy3:8080", token = "shared", cpu_limit = 5L, cpu_max = 6L)
+  ), jobs_dir)
+  config <- readRDS(file.path(jobs_dir, status$id, "config.rds"))
+  backup <- readRDS(file.path(jobs_dir, status$id, "config-before-worker-repair.rds"))
+
+  expect_equal(vapply(config$distributed_workers, `[[`, character(1), "name"), c("Fy2", "Fy3"))
+  expect_equal(backup$distributed_workers[[1]]$name, "Local 8080")
+  expect_false("token" %in% names(repaired$workers[[1]]))
+  expect_error(
+    replace_workers(status$id, list(
+      list(name = "Fy2", url = "not-a-url", token = "shared")
+    ), jobs_dir),
+    "HTTP"
+  )
+})
+
+test_that("active jobs reject distributed worker replacement", {
+  jobs_dir <- tempfile("ugplot-active-worker-repair-")
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  replace_workers <- ugplot_test_internal("ugplot_replace_job_distributed_workers")
+  status <- create_job(
+    data.frame(request = 1),
+    config = list(runner = "ugplot_run_geo_pipeline_job", type = "geo"),
+    jobs_dir = jobs_dir,
+    type = "geo"
+  )
+  expect_error(
+    replace_workers(status$id, list(
+      list(name = "Fy2", url = "http://fy2:8080", token = "shared")
+    ), jobs_dir),
+    "Drain or stop"
+  )
+})
+
 test_that("focused job monitor returns a compact single-job snapshot", {
   jobs_dir <- tempfile("ugplot-monitor-")
   create_job <- ugplot_test_internal("ugplot_create_job")
