@@ -248,6 +248,24 @@ test_that("public job servers require authentication", {
   )
 })
 
+test_that("protected server token is inherited by background work", {
+  skip_if_not_installed("plumber")
+  skip_if_not_installed("callr")
+  server <- ugplot_test_internal("ugPlotServer")
+  observed_token <- NULL
+  ugplot_test_local_namespace_binding("ugplot_assert_server_system_deps", function() {
+    observed_token <<- Sys.getenv("UGPLOT_SERVER_TOKEN", unset = "")
+    stop("stop after environment check", call. = FALSE)
+  })
+  withr::local_envvar(UGPLOT_SERVER_TOKEN = NA)
+
+  expect_error(
+    server(host = "0.0.0.0", port = 18080, token = "inherited-token", register = FALSE),
+    "stop after environment check"
+  )
+  expect_equal(observed_token, "inherited-token")
+})
+
 test_that("distributed worker config is normalized safely", {
   normalize <- ugplot_test_internal("ugplot_geo_distributed_workers")
   workers <- normalize(list(distributed_workers = list(

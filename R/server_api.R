@@ -473,6 +473,14 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
   if (!(host %in% local_hosts) && !nzchar(token)) {
     stop("A bearer token is required when ugPlotServer listens on a non-local interface.", call. = FALSE)
   }
+  # The token may be supplied as an R argument instead of an environment
+  # variable. Background job and auto-resume processes inherit the environment,
+  # so make the authoritative server token available to them as well. This is
+  # required when a resumed distributed coordinator dispatches work back to the
+  # same protected server.
+  if (nzchar(token)) {
+    Sys.setenv(UGPLOT_SERVER_TOKEN = token)
+  }
   ugplot_assert_server_system_deps()
   if (!requireNamespace("plumber", quietly = TRUE)) {
     stop("Package 'plumber' is required to start ugPlotServer(). Run ugPlotInstallServerDeps().", call. = FALSE)
