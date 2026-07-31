@@ -856,6 +856,16 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
       body <- ugplot_request_json_body(req)
       workers <- ugplot_normalize_distributed_workers(body$workers %||% list())
       for (worker in workers) {
+        loopback_worker <- grepl(
+          "^https?://(localhost|127(?:[.][0-9]+){3}|\\[?::1\\]?)(:|/|$)",
+          worker$url,
+          ignore.case = TRUE
+        )
+        # Plumber handles this request in the same process that serves the
+        # loopback health endpoint. Calling it synchronously would deadlock
+        # until timeout; loopback authentication is enforced again when the
+        # coordinator dispatches the worker job.
+        if (isTRUE(loopback_worker)) next
         tryCatch(
           ugplot_remote_health(
             worker$url,
