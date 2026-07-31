@@ -279,6 +279,29 @@ test_that("distributed worker config is normalized safely", {
   expect_equal(vapply(workers, `[[`, integer(1), "cpu_limit"), c(8L, 1L))
 })
 
+test_that("loopback distributed worker uses the running server token", {
+  normalize <- ugplot_test_internal("ugplot_geo_distributed_workers")
+  withr::local_envvar(UGPLOT_SERVER_TOKEN = "current-server-token")
+
+  workers <- normalize(list(distributed_workers = list(
+    list(
+      name = "Local 8080",
+      url = "http://127.0.0.1:8080",
+      token = "stale-token",
+      cpu_limit = 6L
+    ),
+    list(
+      name = "Fy3",
+      url = "http://fy3.a00s.com:8080",
+      token = "remote-token",
+      cpu_limit = 5L
+    )
+  )))
+
+  expect_equal(workers[[1]]$token, "current-server-token")
+  expect_equal(workers[[2]]$token, "remote-token")
+})
+
 test_that("distributed retry waits for a different busy worker", {
   compatible <- ugplot_test_internal("ugplot_geo_retry_has_compatible_worker")
 

@@ -626,7 +626,8 @@ ugplot_monitor_active_jobs <- function(jobs_dir = ugplot_default_jobs_dir(), sta
 ugplot_start_auto_resume_monitor <- function(jobs_dir = ugplot_default_jobs_dir(),
                                              interval = 30,
                                              source_dir = NULL,
-                                             lib_paths = .libPaths()) {
+                                             lib_paths = .libPaths(),
+                                             server_token = Sys.getenv("UGPLOT_SERVER_TOKEN", unset = "")) {
   interval <- suppressWarnings(as.numeric(interval %||% 30))
   if (is.na(interval) || interval <= 0) {
     return(NULL)
@@ -636,11 +637,14 @@ ugplot_start_auto_resume_monitor <- function(jobs_dir = ugplot_default_jobs_dir(
   }
   ugplot_ensure_dir(jobs_dir)
   callr::r_bg(
-    func = function(jobs_dir, interval, source_dir, lib_paths) {
+    func = function(jobs_dir, interval, source_dir, lib_paths, server_token) {
       `%||%` <- function(lhs, rhs) {
         if (is.null(lhs) || length(lhs) == 0) rhs else lhs
       }
       assign("%||%", `%||%`, envir = .GlobalEnv)
+      if (nzchar(server_token)) {
+        Sys.setenv(UGPLOT_SERVER_TOKEN = server_token)
+      }
       .libPaths(lib_paths)
       if (!is.null(source_dir) && file.exists(file.path(source_dir, "R", "job_process.R"))) {
         source(file.path(source_dir, "R", "00_version.R"), local = .GlobalEnv)
@@ -662,7 +666,8 @@ ugplot_start_auto_resume_monitor <- function(jobs_dir = ugplot_default_jobs_dir(
       jobs_dir = jobs_dir,
       interval = max(1, interval),
       source_dir = source_dir,
-      lib_paths = lib_paths
+      lib_paths = lib_paths,
+      server_token = as.character(server_token %||% "")
     ),
     supervise = TRUE,
     stdout = file.path(jobs_dir, "auto-resume-monitor.stdout.log"),

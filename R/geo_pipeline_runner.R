@@ -1609,6 +1609,7 @@ ugplot_run_geo_screen_group_job <- function(dataset, config = list(),
 
 ugplot_geo_distributed_workers <- function(config) {
   workers <- config$distributed_workers %||% list()
+  server_token <- as.character(Sys.getenv("UGPLOT_SERVER_TOKEN", unset = ""))
   if (is.data.frame(workers)) {
     workers <- lapply(seq_len(nrow(workers)), function(i) as.list(workers[i, , drop = FALSE]))
   }
@@ -1618,6 +1619,18 @@ ugplot_geo_distributed_workers <- function(config) {
       nzchar(as.character(worker$url %||% ""))
   }, workers)
   lapply(workers, function(worker) {
+    worker_url <- trimws(as.character(worker$url %||% ""))
+    loopback_worker <- grepl(
+      "^https?://(localhost|127(?:[.][0-9]+){3}|\\[?::1\\]?)(:|/|$)",
+      worker_url,
+      ignore.case = TRUE
+    )
+    # Recovered coordinator configs can contain an empty or stale token for the
+    # server's own loopback worker. The running server token is authoritative
+    # and is available to the runner through its inherited environment.
+    if (isTRUE(loopback_worker) && nzchar(server_token)) {
+      worker$token <- server_token
+    }
     cpu_limit <- suppressWarnings(as.integer(worker$cpu_limit %||% 1L))
     if (is.na(cpu_limit) || cpu_limit < 1L) {
       cpu_limit <- 1L

@@ -498,7 +498,8 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
     jobs_dir = jobs_dir,
     interval = auto_resume_interval,
     source_dir = source_dir,
-    lib_paths = .libPaths()
+    lib_paths = .libPaths(),
+    server_token = token
   )
   if (!is.null(auto_resume_process)) {
     on.exit({
