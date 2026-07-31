@@ -43,7 +43,7 @@ test_that("incremental discovery report upgrades screened groups with stability"
   stability$SeedsRun <- 90
   stability$Stable <- TRUE
   utils::write.csv(screening, paths$screening, row.names = FALSE)
-  utils::write.csv(stability, paths$stability, row.names = FALSE)
+  utils::write.csv(rbind(stability, stability), paths$stability, row.names = FALSE)
   group_candidates <- screening
   group_candidates$Phase <- NULL
   group_candidates$BestModel <- NULL

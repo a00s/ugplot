@@ -279,6 +279,12 @@ test_that("distributed worker config is normalized safely", {
   expect_equal(vapply(workers, `[[`, integer(1), "cpu_limit"), c(8L, 1L))
 })
 
+test_that("stability task keys normalize CSV missing values", {
+  task_key <- ugplot_test_internal("ugplot_geo_ml_stability_task_key")
+
+  expect_equal(task_key("TG1", NA_character_, NA_character_), task_key("TG1", "", ""))
+})
+
 test_that("loopback distributed worker uses the running server token", {
   normalize <- ugplot_test_internal("ugplot_geo_distributed_workers")
   withr::local_envvar(UGPLOT_SERVER_TOKEN = "current-server-token")

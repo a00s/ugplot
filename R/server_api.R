@@ -246,6 +246,11 @@ ugplot_job_discovery_report <- function(job_id,
   } else {
     character(0)
   }
+  if (length(stable_keys) > 0L && anyDuplicated(stable_keys)) {
+    keep <- !duplicated(stable_keys, fromLast = TRUE)
+    stability <- stability[keep, , drop = FALSE]
+    stable_keys <- stable_keys[keep]
+  }
   screened_keys <- if (is.data.frame(screening) && nrow(screening) > 0L) {
     vapply(seq_len(nrow(screening)), function(i) row_key(screening[i, , drop = FALSE]), character(1))
   } else {

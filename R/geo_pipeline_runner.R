@@ -1266,7 +1266,17 @@ ugplot_geo_ml_stability_strata <- function(metadata, column) {
 }
 
 ugplot_geo_ml_stability_task_key <- function(group_id, stratum_column = "", stratum_value = "") {
-  paste(as.character(group_id), as.character(stratum_column %||% ""), as.character(stratum_value %||% ""), sep = "\f")
+  normalize_key_part <- function(value) {
+    value <- as.character(value %||% "")
+    value[is.na(value)] <- ""
+    value
+  }
+  paste(
+    normalize_key_part(group_id),
+    normalize_key_part(stratum_column),
+    normalize_key_part(stratum_value),
+    sep = "\f"
+  )
 }
 
 ugplot_geo_stability_complete_groups <- function(screen_summary, stability_summary,
