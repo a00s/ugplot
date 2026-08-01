@@ -158,7 +158,9 @@ ugplot_run_job_from_dir <- function(job_id, jobs_dir = ugplot_default_jobs_dir()
   })
 }
 
-ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+ugplot_launch_background_job <- function(job_id,
+                                         jobs_dir = ugplot_default_jobs_dir(),
+                                         startup_wait_seconds = 60) {
   if (!requireNamespace("callr", quietly = TRUE)) {
     stop("Package 'callr' is required to start background jobs.", call. = FALSE)
   }
@@ -220,27 +222,40 @@ ugplot_launch_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
     pid = process$get_pid(),
     message = "Started background process"
   )
-  startup_deadline <- Sys.time() + 60
-  repeat {
-    startup_status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
-    if (is.list(startup_status) && identical(startup_status$state %||% "", "running")) {
-      break
+  startup_wait_seconds <- suppressWarnings(as.numeric(startup_wait_seconds %||% 60))
+  if (is.na(startup_wait_seconds) || startup_wait_seconds < 0) {
+    startup_wait_seconds <- 60
+  }
+  if (startup_wait_seconds > 0) {
+    startup_deadline <- Sys.time() + startup_wait_seconds
+    repeat {
+      startup_status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+      if (is.list(startup_status) && identical(startup_status$state %||% "", "running")) {
+        break
+      }
+      if (!process$is_alive() || Sys.time() >= startup_deadline) {
+        break
+      }
+      Sys.sleep(0.1)
     }
-    if (!process$is_alive() || Sys.time() >= startup_deadline) {
-      break
-    }
-    Sys.sleep(0.1)
   }
   list(job = ugplot_read_job_status(job_id, jobs_dir), process = process)
 }
 
-ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugplot_default_jobs_dir()) {
+ugplot_start_background_job <- function(dataset,
+                                        config = list(),
+                                        jobs_dir = ugplot_default_jobs_dir(),
+                                        startup_wait_seconds = 60) {
   request_id <- as.character(config$request_id %||% "")
   if (nzchar(request_id)) {
     existing <- ugplot_find_job_by_request_id(request_id, jobs_dir)
     if (is.list(existing)) {
       if ((existing$state %||% "") %in% c("failed", "stopped")) {
-        resumed <- ugplot_resume_background_job(existing$id, jobs_dir)
+        resumed <- ugplot_resume_background_job(
+          existing$id,
+          jobs_dir,
+          startup_wait_seconds = startup_wait_seconds
+        )
         resumed$reused <- TRUE
         resumed$restarted <- TRUE
         return(resumed)
@@ -249,7 +264,11 @@ ugplot_start_background_job <- function(dataset, config = list(), jobs_dir = ugp
     }
   }
   status <- ugplot_create_job(dataset = dataset, config = config, jobs_dir = jobs_dir, type = config$type %||% "ml")
-  ugplot_launch_background_job(status$id, jobs_dir)
+  ugplot_launch_background_job(
+    status$id,
+    jobs_dir,
+    startup_wait_seconds = startup_wait_seconds
+  )
 }
 
 ugplot_geo_child_worker_configs <- function(job_id,
@@ -385,7 +404,9 @@ ugplot_recover_geo_coordinator_config <- function(job_id, status,
   config
 }
 
-ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+ugplot_resume_background_job <- function(job_id,
+                                         jobs_dir = ugplot_default_jobs_dir(),
+                                         startup_wait_seconds = 60) {
   status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
   if (is.null(status)) {
     stop("Job not found: ", job_id, call. = FALSE)
@@ -519,7 +540,11 @@ ugplot_resume_background_job <- function(job_id, jobs_dir = ugplot_default_jobs_
   status$pid <- NA_integer_
   status$resumable <- FALSE
   ugplot_write_job_status(job_id, status, jobs_dir)
-  ugplot_launch_background_job(job_id, jobs_dir)
+  ugplot_launch_background_job(
+    job_id,
+    jobs_dir,
+    startup_wait_seconds = startup_wait_seconds
+  )
 }
 
 ugplot_auto_resume_crashed_jobs <- function(jobs_dir = ugplot_default_jobs_dir()) {

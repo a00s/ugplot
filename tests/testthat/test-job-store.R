@@ -216,7 +216,7 @@ test_that("idempotent worker requests restart an existing failed task", {
   write_job_status(internal$id, internal, jobs_dir)
 
   launched <- character(0)
-  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
+  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir, ...) {
     launched <<- c(launched, job_id)
     list(job = read_job_status(job_id, jobs_dir), process = NULL)
   })
@@ -232,6 +232,32 @@ test_that("idempotent worker requests restart an existing failed task", {
   expect_true(restarted$reused)
   expect_true(restarted$restarted)
   expect_equal(readRDS(file.path(jobs_dir, internal$id, "status.rds"))$state, "queued")
+})
+
+test_that("background job creation can acknowledge before worker startup", {
+  jobs_dir <- tempfile("ugplot-async-start-jobs-")
+  dir.create(jobs_dir)
+  start_job <- ugplot_test_internal("ugplot_start_background_job")
+  read_job_status <- ugplot_test_internal("ugplot_read_job_status")
+
+  received_wait <- NULL
+  ugplot_test_local_namespace_binding(
+    "ugplot_launch_background_job",
+    function(job_id, jobs_dir, startup_wait_seconds) {
+      received_wait <<- startup_wait_seconds
+      list(job = read_job_status(job_id, jobs_dir), process = NULL)
+    }
+  )
+
+  started <- start_job(
+    data.frame(x = 1),
+    config = list(target = "x"),
+    jobs_dir = jobs_dir,
+    startup_wait_seconds = 0
+  )
+
+  expect_identical(received_wait, 0)
+  expect_identical(started$job$state, "queued")
 })
 
 test_that("public job listing does not refresh internal worker jobs", {
@@ -716,7 +742,7 @@ test_that("job status keeps resume metadata and job bundle", {
 
 test_that("resume migrates old ML jobs to isolated model timeouts", {
   read_job_status <- ugplot_test_internal("ugplot_read_job_status")
-  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
+  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir, ...) {
     list(job = read_job_status(job_id, jobs_dir), process = NULL)
   })
 
@@ -758,7 +784,7 @@ test_that("resume migrates old ML jobs to isolated model timeouts", {
 
 test_that("GEO resume keeps large checkpoints out of the job config", {
   read_job_status <- ugplot_test_internal("ugplot_read_job_status")
-  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
+  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir, ...) {
     list(job = read_job_status(job_id, jobs_dir), process = NULL)
   })
 
@@ -805,7 +831,7 @@ test_that("GEO resume keeps large checkpoints out of the job config", {
 
 test_that("GEO resume recovers an old corrupt config from a child worker", {
   read_job_status <- ugplot_test_internal("ugplot_read_job_status")
-  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
+  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir, ...) {
     list(job = read_job_status(job_id, jobs_dir), process = NULL)
   })
   ugplot_test_local_namespace_binding("ugplot_read_remote_servers", function() {
@@ -892,7 +918,7 @@ test_that("GEO resume recovers an old corrupt config from a child worker", {
 
 test_that("crashed ML jobs auto-resume with an attempt limit", {
   read_job_status <- ugplot_test_internal("ugplot_read_job_status")
-  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
+  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir, ...) {
     list(job = read_job_status(job_id, jobs_dir), process = NULL)
   })
 
@@ -942,7 +968,7 @@ test_that("crashed ML jobs auto-resume with an attempt limit", {
 
 test_that("only GEO coordinators auto-resume after a server restart", {
   read_job_status <- ugplot_test_internal("ugplot_read_job_status")
-  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir) {
+  ugplot_test_local_namespace_binding("ugplot_launch_background_job", function(job_id, jobs_dir, ...) {
     list(job = read_job_status(job_id, jobs_dir), process = NULL)
   })
 

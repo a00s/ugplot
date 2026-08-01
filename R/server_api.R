@@ -953,7 +953,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
 
   pr$handle("POST", "/jobs/<job_id>/resume", function(job_id, res) {
     tryCatch({
-      started <- ugplot_resume_background_job(job_id, jobs_dir)
+      started <- ugplot_resume_background_job(job_id, jobs_dir, startup_wait_seconds = 0)
       res$status <- 202
       started$job
     }, error = function(e) {
@@ -978,7 +978,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
       dataset <- ugplot_request_dataset(req)
       config <- ugplot_request_config(req)
       config <- ugplot_validate_remote_job_config(config)
-      started <- ugplot_start_background_job(dataset, config, jobs_dir)
+      started <- ugplot_start_background_job(dataset, config, jobs_dir, startup_wait_seconds = 0)
       res$status <- 202
       started$job
     }, error = function(e) {
