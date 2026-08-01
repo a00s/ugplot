@@ -364,6 +364,20 @@ test_that("incomplete legacy worker results get a new idempotency revision", {
   )
 })
 
+test_that("completed collaboration cannot replace a fixed worker assignment", {
+  has_fixed <- ugplot_test_internal("ugplot_geo_has_fixed_worker_assignment")
+  manifest <- data.frame(
+    GroupID = c("TG10", "TG11", "TG12"),
+    State = c("running", "submitted", "pending"),
+    JobID = c("worker-10", "", "worker-12"),
+    stringsAsFactors = FALSE
+  )
+
+  expect_true(has_fixed(manifest, 1L))
+  expect_false(has_fixed(manifest, 2L))
+  expect_false(has_fixed(manifest, 3L))
+})
+
 test_that("failed worker tasks resume the same checkpoint while attempts remain", {
   can_resume <- ugplot_test_internal("ugplot_geo_can_resume_worker_task")
   status <- list(state = "failed", resumable = TRUE, message = "Any worker failure")

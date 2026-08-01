@@ -1816,6 +1816,17 @@ ugplot_geo_distributed_active_tasks <- function(manifest) {
   })
 }
 
+ugplot_geo_has_fixed_worker_assignment <- function(manifest, row_index) {
+  if (!is.data.frame(manifest) || length(row_index) != 1L || is.na(row_index) ||
+      row_index < 1L || row_index > nrow(manifest) ||
+      !all(c("State", "JobID") %in% names(manifest))) {
+    return(FALSE)
+  }
+  state <- as.character(manifest$State[[row_index]] %||% "")
+  job_id <- trimws(as.character(manifest$JobID[[row_index]] %||% ""))
+  state %in% c("dispatching", "submitted", "running") && nzchar(job_id)
+}
+
 ugplot_geo_distributed_resume_config <- function(config, group_id, summaries,
                                                   stability_summaries) {
   config$distributed_resume_screen <- NULL
@@ -2162,6 +2173,11 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         group_id <- collaboration_group_id(task_id)
         row_index <- match(group_id, as.character(manifest$GroupID))
         if (is.na(row_index) || manifest$State[[row_index]] == "completed") next
+        # Completed collaboration tasks remain in the collaboration index. If
+        # this group has since been assigned to a fixed server, repeatedly
+        # importing that older contribution would overwrite the live remote
+        # job and bounce the group between workers.
+        if (ugplot_geo_has_fixed_worker_assignment(manifest, row_index)) next
         contributed <- tryCatch(
           ugplot_collaboration_take_result(
             task_id,
