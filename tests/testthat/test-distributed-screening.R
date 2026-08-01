@@ -317,6 +317,20 @@ test_that("distributed retry waits for a different busy worker", {
   expect_true(compatible("", "Fy3", 2L))
 })
 
+test_that("collaboration offers only fill unused queue slots", {
+  offer_rows <- ugplot_test_internal("ugplot_geo_collaboration_offer_rows")
+  manifest <- data.frame(
+    GroupID = paste0("TG", 1:6),
+    State = c("pending", "pending", "pending", "running", "pending", "completed"),
+    stringsAsFactors = FALSE
+  )
+
+  expect_equal(offer_rows(manifest, c("TG1", "TG2"), queue_depth = 3L), 3L)
+  expect_length(offer_rows(manifest, c("TG1", "TG2", "TG3"), queue_depth = 3L), 0L)
+  expect_equal(offer_rows(manifest, character(0), queue_depth = 2L), c(1L, 2L))
+  expect_length(offer_rows(manifest, queue_depth = 3L, draining = TRUE), 0L)
+})
+
 test_that("incomplete legacy worker results get a new idempotency revision", {
   request_id <- ugplot_test_internal("ugplot_geo_distributed_request_id")
 

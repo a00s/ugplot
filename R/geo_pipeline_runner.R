@@ -1724,6 +1724,25 @@ ugplot_geo_retry_has_compatible_worker <- function(previous_worker, available_wo
     any(available_worker_names != previous_worker)
 }
 
+ugplot_geo_collaboration_offer_rows <- function(manifest, offered_group_ids = character(0),
+                                                 queue_depth = 8L, draining = FALSE) {
+  if (isTRUE(draining) || !is.data.frame(manifest) || nrow(manifest) == 0L ||
+      !all(c("State", "GroupID") %in% names(manifest))) {
+    return(integer(0))
+  }
+  queue_depth <- suppressWarnings(as.integer(queue_depth))
+  if (is.na(queue_depth) || queue_depth < 1L) queue_depth <- 8L
+  offered_group_ids <- unique(trimws(as.character(offered_group_ids)))
+  offered_group_ids <- offered_group_ids[nzchar(offered_group_ids)]
+  capacity <- max(0L, queue_depth - length(offered_group_ids))
+  if (capacity == 0L) return(integer(0))
+  candidates <- which(
+    as.character(manifest$State) == "pending" &
+      !as.character(manifest$GroupID) %in% offered_group_ids
+  )
+  utils::head(candidates, capacity)
+}
+
 ugplot_geo_drain_ready <- function(busy_workers, collaboration_leased = logical(0)) {
   length(busy_workers) == 0L && !any(as.logical(collaboration_leased))
 }
@@ -2096,7 +2115,18 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         }
       }
 
-      offer_rows <- if (isTRUE(draining)) integer(0) else utils::head(which(manifest$State == "pending"), collaboration_queue_depth)
+      offered_task_ids <- collaboration_index_ids(c("pending", "leased"))
+      offered_task_ids <- offered_task_ids[startsWith(
+        offered_task_ids,
+        paste0(parent_job_id, ":analyze:")
+      )]
+      offered_group_ids <- vapply(offered_task_ids, collaboration_group_id, character(1))
+      offer_rows <- ugplot_geo_collaboration_offer_rows(
+        manifest,
+        offered_group_ids = offered_group_ids,
+        queue_depth = collaboration_queue_depth,
+        draining = draining
+      )
       for (row_index in offer_rows) {
         try(ugplot_collaboration_cancel_task(
           legacy_collaboration_task_id(manifest$GroupID[[row_index]]),
