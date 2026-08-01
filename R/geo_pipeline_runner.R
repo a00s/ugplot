@@ -1743,6 +1743,49 @@ ugplot_geo_collaboration_offer_rows <- function(manifest, offered_group_ids = ch
   utils::head(candidates, capacity)
 }
 
+ugplot_geo_superseded_worker_job_ids <- function(jobs, parent_job_id, group_id,
+                                                  keep_job_ids = character(0)) {
+  if (!is.data.frame(jobs) || nrow(jobs) == 0L || !"id" %in% names(jobs)) {
+    return(character(0))
+  }
+  field <- function(name, default = "") {
+    if (name %in% names(jobs)) as.character(jobs[[name]]) else rep(default, nrow(jobs))
+  }
+  state <- field("state")
+  internal <- tolower(field("internal_worker_task", "false")) %in% c("true", "1", "yes")
+  same_parent <- field("parent_job_id") == as.character(parent_job_id)
+  saved_group <- field("group_id")
+  legacy_name <- field("name") == paste0("Worker ", group_id, " for ", parent_job_id)
+  same_group <- saved_group == as.character(group_id) | (!nzchar(saved_group) & legacy_name)
+  ids <- field("id")
+  keep_job_ids <- as.character(keep_job_ids)
+  unique(ids[
+    internal & same_parent & same_group &
+      state %in% c("queued", "running", "draining") &
+      !ids %in% keep_job_ids
+  ])
+}
+
+ugplot_geo_stop_superseded_worker_tasks <- function(workers, parent_job_id, group_id,
+                                                     keep_job_ids = character(0)) {
+  for (worker in workers) {
+    jobs <- tryCatch(
+      ugplot_remote_list_jobs(
+        worker$url, worker$token %||% "", include_internal = TRUE,
+        timeout_seconds = 15
+      ),
+      error = function(e) data.frame()
+    )
+    stale_ids <- ugplot_geo_superseded_worker_job_ids(
+      jobs, parent_job_id, group_id, keep_job_ids
+    )
+    for (job_id in stale_ids) {
+      try(ugplot_remote_stop_job(worker$url, job_id, worker$token %||% ""), silent = TRUE)
+    }
+  }
+  invisible(TRUE)
+}
+
 ugplot_geo_drain_ready <- function(busy_workers, collaboration_leased = logical(0)) {
   length(busy_workers) == 0L && !any(as.logical(collaboration_leased))
 }
@@ -2327,6 +2370,15 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         pending_rows <- pending_rows[-pending_index]
         available_workers <- available_workers[-worker_index]
         group <- group_by_id(manifest$GroupID[[row_index]])
+        try(
+          ugplot_geo_stop_superseded_worker_tasks(
+            workers,
+            parent_job_id,
+            manifest$GroupID[[row_index]],
+            keep_job_ids = manifest$JobID[[row_index]]
+          ),
+          silent = TRUE
+        )
         dataset_info <- ugplot_geo_ml_group_dataset(group)
         task_config <- config
         task_config$distributed_workers <- NULL

@@ -331,6 +331,29 @@ test_that("collaboration offers only fill unused queue slots", {
   expect_length(offer_rows(manifest, queue_depth = 3L, draining = TRUE), 0L)
 })
 
+test_that("superseded internal jobs are selected before redispatch", {
+  superseded <- ugplot_test_internal("ugplot_geo_superseded_worker_job_ids")
+  jobs <- data.frame(
+    id = c("old-running", "keep-running", "other-group", "top-level", "old-finished"),
+    name = c(
+      "Worker TG10 for parent", "Worker TG10 for parent",
+      "Worker TG11 for parent", "Coordinator", "Worker TG10 for parent"
+    ),
+    state = c("running", "running", "running", "running", "finished"),
+    internal_worker_task = c(TRUE, TRUE, TRUE, FALSE, TRUE),
+    parent_job_id = c("parent", "parent", "parent", "", "parent"),
+    group_id = c("TG10", "TG10", "TG11", "", "TG10"),
+    stringsAsFactors = FALSE
+  )
+
+  expect_equal(
+    superseded(jobs, "parent", "TG10", keep_job_ids = "keep-running"),
+    "old-running"
+  )
+  jobs$group_id[[1]] <- ""
+  expect_equal(superseded(jobs, "parent", "TG10"), c("old-running", "keep-running"))
+})
+
 test_that("incomplete legacy worker results get a new idempotency revision", {
   request_id <- ugplot_test_internal("ugplot_geo_distributed_request_id")
 

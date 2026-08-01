@@ -136,9 +136,11 @@ ugplot_remote_collaboration_complete <- function(server_url, task_id, lease_id, 
   )
 }
 
-ugplot_remote_list_jobs <- function(server_url, token = "") {
-  request <- ugplot_remote_request(server_url, "jobs", token)
-  response <- httr::GET(request$url, request$headers)
+ugplot_remote_list_jobs <- function(server_url, token = "", include_internal = FALSE,
+                                    timeout_seconds = 15) {
+  path <- if (isTRUE(include_internal)) "jobs?include_internal=true" else "jobs"
+  request <- ugplot_remote_request(server_url, path, token)
+  response <- httr::GET(request$url, request$headers, httr::timeout(timeout_seconds))
   parsed <- ugplot_remote_parse(response)
   if (is.data.frame(parsed)) {
     return(parsed)

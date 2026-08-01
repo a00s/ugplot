@@ -140,7 +140,7 @@ ugplot_linux_process_table <- function() {
 
 ugplot_linux_process_tree_metrics <- function(pid, process_table = ugplot_linux_process_table()) {
   pid <- suppressWarnings(as.integer(pid))
-  empty <- list(alive = FALSE, process_count = 0L, rss_mb = NA_real_, swap_mb = NA_real_,
+  empty <- list(alive = FALSE, process_count = 0L, pids = integer(0), rss_mb = NA_real_, swap_mb = NA_real_,
                 peak_mb = NA_real_, threads = NA_integer_, cpu_ticks = NA_real_)
   if (is.na(pid) || pid <= 0 || !is.data.frame(process_table) || nrow(process_table) == 0 ||
       !(pid %in% process_table$pid)) {
@@ -166,6 +166,7 @@ ugplot_linux_process_tree_metrics <- function(pid, process_table = ugplot_linux_
   list(
     alive = TRUE,
     process_count = length(tree_pids),
+    pids = tree_pids,
     rss_mb = sum_status("VmRSS"),
     swap_mb = sum_status("VmSwap"),
     peak_mb = sum_status("VmPeak"),
@@ -736,10 +737,26 @@ ugplot_terminate_process <- function(pid) {
     system2("taskkill", c("/PID", as.character(as.integer(pid)), "/T", "/F"), stdout = FALSE, stderr = FALSE)
     return(invisible(TRUE))
   }
-  tools::pskill(as.integer(pid), signal = tools::SIGTERM)
+  pid <- as.integer(pid)
+  process_table <- ugplot_linux_process_table()
+  tree_pids <- pid
+  repeat {
+    children <- process_table$pid[process_table$ppid %in% tree_pids]
+    expanded <- unique(c(tree_pids, children))
+    if (length(expanded) == length(tree_pids)) break
+    tree_pids <- expanded
+  }
+  # Capture and terminate descendants before the root can exit and reparent
+  # isolated trainers, otherwise they survive Stop as untracked processes.
+  termination_order <- c(setdiff(rev(tree_pids), pid), pid)
+  for (process_pid in termination_order) {
+    try(tools::pskill(process_pid, signal = tools::SIGTERM), silent = TRUE)
+  }
   Sys.sleep(0.5)
-  if (ugplot_process_alive(pid)) {
-    tools::pskill(as.integer(pid), signal = tools::SIGKILL)
+  for (process_pid in termination_order) {
+    if (ugplot_process_alive(process_pid)) {
+      try(tools::pskill(process_pid, signal = tools::SIGKILL), silent = TRUE)
+    }
   }
   invisible(TRUE)
 }
@@ -848,6 +865,8 @@ ugplot_create_job <- function(dataset, config = list(), jobs_dir = ugplot_defaul
   status$parent_job_id <- as.character(config$parent_job_id %||% "")
   status$worker_name <- as.character(config$worker_name %||% "")
   status$request_id <- as.character(config$request_id %||% "")
+  group_id <- as.character(config$distributed_group$GroupID %||% "")
+  status$group_id <- if (length(group_id) > 0L) group_id[[1]] else ""
   ugplot_write_job_status(job_id, status, jobs_dir)
   status
 }
@@ -1207,6 +1226,11 @@ ugplot_list_jobs <- function(jobs_dir = ugplot_default_jobs_dir(), include_inter
         ""
       },
       resumable = isTRUE(status$resumable %||% ugplot_job_resumable(status, jobs_dir)),
+      internal_worker_task = isTRUE(status$internal_worker_task),
+      parent_job_id = as.character(status$parent_job_id %||% ""),
+      worker_name = as.character(status$worker_name %||% ""),
+      request_id = as.character(status$request_id %||% ""),
+      group_id = as.character(status$group_id %||% ""),
       stringsAsFactors = FALSE
     )
   })

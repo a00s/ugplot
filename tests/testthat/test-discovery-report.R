@@ -162,3 +162,31 @@ test_that("discovery report snapshot is a reusable static JSON artifact", {
   expect_equal(snapshot$collaboration$active, 0L)
   expect_identical(snapshot$discoveries, list())
 })
+
+test_that("live report overlay clears stale workers after stop", {
+  jobs_dir <- tempfile("ugplot-report-live-")
+  dir.create(jobs_dir, recursive = TRUE)
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  update_status <- ugplot_test_internal("ugplot_update_job_status")
+  overlay <- ugplot_test_internal("ugplot_discovery_snapshot_live_status")
+  status <- create_job(data.frame(x = 1), jobs_dir = jobs_dir, type = "geo")
+  update_status(
+    status$id, jobs_dir, state = "stopped", message = "Stopped safely",
+    distributed_state = list(active = 0L, active_tasks = list())
+  )
+  stale <- jsonlite::toJSON(list(
+    job = list(id = status$id, state = "running", message = "Running"),
+    progress = list(total = 2L, screened = 1L, stabilized = 1L),
+    collaboration = list(
+      active = 1L,
+      contributors = list(list(scientist = "Fy2", kind = "ugPlot server", group = "TG1"))
+    ),
+    discoveries = list()
+  ), auto_unbox = TRUE)
+
+  live <- jsonlite::fromJSON(overlay(stale, status$id, jobs_dir), simplifyVector = FALSE)
+  expect_equal(live$job$state, "stopped")
+  expect_equal(live$job$message, "Stopped safely")
+  expect_equal(live$collaboration$active, 0L)
+  expect_identical(live$collaboration$contributors, list())
+})

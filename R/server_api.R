@@ -427,6 +427,61 @@ ugplot_refresh_job_discovery_snapshot <- function(job_id,
   invisible(file.exists(path))
 }
 
+ugplot_discovery_snapshot_live_status <- function(snapshot_json, job_id,
+                                                   jobs_dir = ugplot_default_jobs_dir()) {
+  if (!requireNamespace("jsonlite", quietly = TRUE)) return(snapshot_json)
+  report <- tryCatch(
+    jsonlite::fromJSON(snapshot_json, simplifyVector = FALSE),
+    error = function(e) NULL
+  )
+  status <- tryCatch(
+    ugplot_read_job_status_lightweight(job_id, jobs_dir),
+    error = function(e) NULL
+  )
+  if (!is.list(report) || !is.list(status)) return(snapshot_json)
+  report$job <- report$job %||% list()
+  report$job$state <- as.character(status$state %||% "unknown")
+  report$job$message <- as.character(status$message %||% "")
+  report$job$updated_at <- as.character(status$updated_at %||% "")
+
+  active_state <- as.character(status$state %||% "") %in% c("queued", "running", "draining")
+  tasks <- status$distributed_state$active_tasks %||% list()
+  if (is.data.frame(tasks)) {
+    tasks <- lapply(seq_len(nrow(tasks)), function(i) as.list(tasks[i, , drop = FALSE]))
+  } else if (is.list(tasks) && length(tasks) > 0L && any(
+    c("worker", "group", "state", "progress", "message") %in% names(tasks)
+  )) {
+    tasks <- list(tasks)
+  }
+  scalar <- function(value, default = "") {
+    if (is.null(value) || length(value) == 0L || is.na(value[[1]])) default else value[[1]]
+  }
+  server_contributors <- if (isTRUE(active_state) && is.list(tasks)) {
+    Filter(Negate(is.null), lapply(tasks, function(task) {
+      if (!is.list(task)) return(NULL)
+      task_state <- as.character(scalar(task$state))
+      if (!task_state %in% c("dispatching", "submitted", "running")) return(NULL)
+      progress <- suppressWarnings(as.numeric(scalar(task$progress, 0)))
+      if (!is.finite(progress)) progress <- 0
+      list(
+        scientist = ugplot_public_report_text(scalar(task$worker, "ugPlot server"), 80L),
+        kind = "ugPlot server",
+        group = ugplot_public_report_text(scalar(task$group), 60L),
+        progress = max(0, min(1, progress)),
+        activity = ugplot_public_report_text(scalar(task$message, "Processing scientific task"), 180L),
+        candidate = ""
+      )
+    }))
+  } else list()
+  existing <- report$collaboration$contributors %||% list()
+  public_contributors <- if (isTRUE(active_state) && is.list(existing)) {
+    Filter(function(item) is.list(item) && identical(as.character(scalar(item$kind)), "public scientist"), existing)
+  } else list()
+  contributors <- c(public_contributors, server_contributors)
+  report$collaboration <- list(active = length(contributors), contributors = contributors)
+  jsonlite::toJSON(report, auto_unbox = TRUE, na = "null", pretty = FALSE)
+}
+
 ugplot_discovery_report_html <- function(job_id = "") {
   encoded_job <- if (requireNamespace("jsonlite", quietly = TRUE)) {
     jsonlite::toJSON(as.character(job_id %||% ""), auto_unbox = TRUE)
@@ -658,10 +713,13 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
     )
   })
 
-  pr$handle("GET", "/jobs", function() {
+  pr$handle("GET", "/jobs", function(req) {
     # The overview is intentionally metadata-only. Full status/configuration
     # inspection remains available through the individual job endpoints.
-    ugplot_list_jobs(jobs_dir, lightweight = TRUE)
+    query <- req$argsQuery %||% list()
+    include_internal <- tolower(as.character(query$include_internal %||% "false")) %in%
+      c("1", "true", "yes")
+    ugplot_list_jobs(jobs_dir, include_internal = include_internal, lightweight = TRUE)
   })
 
   pr$handle(
@@ -705,7 +763,8 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         if (!file.exists(snapshot_path)) {
           ugplot_refresh_job_discovery_snapshot(job_id, jobs_dir)
         }
-        paste(readLines(snapshot_path, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
+        snapshot <- paste(readLines(snapshot_path, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
+        ugplot_discovery_snapshot_live_status(snapshot, job_id, jobs_dir)
       }, error = function(e) {
         res$status <- 404
         jsonlite::toJSON(list(error = conditionMessage(e)), auto_unbox = TRUE)

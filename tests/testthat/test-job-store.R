@@ -434,6 +434,28 @@ test_that("background jobs survive launcher process object collection", {
   expect_equal(stop_job(job_id, jobs_dir)$state, "stopped")
 })
 
+test_that("process termination includes isolated descendants", {
+  skip_on_os("windows")
+  skip_if_not_installed("processx")
+  terminate_process <- ugplot_test_internal("ugplot_terminate_process")
+  process_alive <- ugplot_test_internal("ugplot_process_alive")
+  process_tree <- ugplot_test_internal("ugplot_linux_process_tree_metrics")
+  process <- processx::process$new(
+    "/bin/sh", c("-c", "sleep 60 & wait"),
+    cleanup = FALSE, cleanup_tree = FALSE
+  )
+  on.exit(try(process$kill_tree(), silent = TRUE), add = TRUE)
+  Sys.sleep(0.2)
+  metrics <- process_tree(process$get_pid())
+  expect_gte(metrics$process_count, 2L)
+  descendants <- setdiff(metrics$pids, process$get_pid())
+
+  terminate_process(process$get_pid())
+
+  expect_false(process_alive(process$get_pid()))
+  expect_false(any(vapply(descendants, process_alive, logical(1))))
+})
+
 test_that("job listing marks dead background processes as failed", {
   jobs_dir <- tempfile("ugplot-jobs-")
   dataset <- data.frame(x = 1:3)
