@@ -317,6 +317,16 @@ test_that("distributed retry waits for a different busy worker", {
   expect_true(compatible("", "Fy3", 2L))
 })
 
+test_that("incomplete legacy worker results get a new idempotency revision", {
+  request_id <- ugplot_test_internal("ugplot_geo_distributed_request_id")
+
+  expect_equal(request_id("parent", "TG10"), "parent:analyze:TG10")
+  expect_equal(
+    request_id("parent", "TG10", "revision-2"),
+    "parent:analyze:TG10:retry:revision-2"
+  )
+})
+
 test_that("failed worker tasks resume the same checkpoint while attempts remain", {
   can_resume <- ugplot_test_internal("ugplot_geo_can_resume_worker_task")
   status <- list(state = "failed", resumable = TRUE, message = "Any worker failure")

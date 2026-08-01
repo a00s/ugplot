@@ -1654,6 +1654,12 @@ ugplot_geo_distributed_manifest_path <- function(pipeline_dir) {
   file.path(pipeline_dir, "distributed-screening.rds")
 }
 
+ugplot_geo_distributed_request_id <- function(parent_job_id, group_id, nonce = "") {
+  base <- paste(parent_job_id, "analyze", group_id, sep = ":")
+  nonce <- as.character(nonce %||% "")
+  if (length(nonce) == 1L && nzchar(nonce)) paste(base, nonce, sep = ":retry:") else base
+}
+
 ugplot_geo_write_distributed_manifest <- function(manifest, path) {
   if (exists("ugplot_write_rds_atomic", mode = "function", inherits = TRUE)) {
     ugplot_write_rds_atomic(manifest, path)
@@ -1853,7 +1859,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
   }
   required <- c(
     "GroupID", "Worker", "JobID", "State", "Progress", "Message", "UpdatedAt",
-    "Attempts", "PollFailures", "Error"
+    "Attempts", "PollFailures", "Error", "RequestNonce"
   )
   if (!is.data.frame(manifest)) {
     manifest <- data.frame()
@@ -1886,6 +1892,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         Attempts = 0L,
         PollFailures = 0L,
         Error = "",
+        RequestNonce = "",
         stringsAsFactors = FALSE
       )
     )
@@ -1982,6 +1989,9 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
       manifest$Message[[row_index]] <<- "Screening recovered; complete stability still required"
       manifest$UpdatedAt[[row_index]] <<- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
       manifest$Attempts[[row_index]] <<- 0L
+      manifest$RequestNonce[[row_index]] <<- paste(
+        format(Sys.time(), "%Y%m%d%H%M%OS6"), Sys.getpid(), sep = "-"
+      )
       ugplot_geo_write_distributed_manifest(manifest, manifest_path)
       return(invisible(FALSE))
     }
@@ -2312,7 +2322,11 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
           summaries,
           stability_summaries
         )
-        task_config$request_id <- paste(parent_job_id, "analyze", manifest$GroupID[[row_index]], sep = ":")
+        task_config$request_id <- ugplot_geo_distributed_request_id(
+          parent_job_id,
+          manifest$GroupID[[row_index]],
+          manifest$RequestNonce[[row_index]]
+        )
         manifest$Worker[[row_index]] <- as.character(worker$name)
         manifest$State[[row_index]] <- "dispatching"
         manifest$Progress[[row_index]] <- 0
