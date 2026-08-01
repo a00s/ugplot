@@ -369,7 +369,7 @@ test_that("failed worker tasks resume the same checkpoint while attempts remain"
   status <- list(state = "failed", resumable = TRUE, message = "Any worker failure")
 
   expect_true(can_resume(status, attempts = 1L, max_attempts = 3L))
-  expect_false(can_resume(status, attempts = 3L, max_attempts = 3L))
+  expect_true(can_resume(status, attempts = 3L, max_attempts = 3L))
   expect_false(can_resume(status, attempts = 1L, max_attempts = 3L, draining = TRUE))
   expect_false(can_resume(list(state = "failed", resumable = FALSE), 1L, 3L))
 })
@@ -778,7 +778,11 @@ test_that("incomplete worker result resumes the same remote job", {
   ugplot_test_local_namespace_binding("ugplot_remote_create_job", function(...) list(id = "worker-job-1"))
   ugplot_test_local_namespace_binding("ugplot_remote_job_status", function(...) {
     status_checks <<- status_checks + 1L
-    list(state = "finished", resumable = TRUE, progress = 1)
+    if (status_checks == 1L) {
+      list(state = "stopped", resumable = TRUE, progress = 0.55)
+    } else {
+      list(state = "finished", resumable = TRUE, progress = 1)
+    }
   })
   ugplot_test_local_namespace_binding("ugplot_remote_get_result", function(...) {
     result_checks <<- result_checks + 1L
@@ -794,6 +798,9 @@ test_that("incomplete worker result resumes the same remote job", {
   })
   ugplot_test_local_namespace_binding("ugplot_remote_resume_job", function(server_url, job_id, ...) {
     resumed_ids <<- c(resumed_ids, job_id)
+    if (length(resumed_ids) == 1L) {
+      stop("Temporary resume confirmation failure")
+    }
     list(id = job_id, state = "queued")
   })
   ugplot_test_local_namespace_binding("ugplot_remote_delete_job", function(server_url, job_id, ...) {
@@ -820,9 +827,9 @@ test_that("incomplete worker result resumes the same remote job", {
   )
 
   expect_equal(result$GroupID, "TG1")
-  expect_equal(resumed_ids, "worker-job-1")
+  expect_equal(resumed_ids, rep("worker-job-1", 2L))
   expect_equal(deleted_ids, "worker-job-1")
-  expect_gte(status_checks, 2L)
+  expect_gte(status_checks, 3L)
   manifest <- readRDS(file.path(pipeline_dir, "distributed-screening.rds"))
   expect_equal(manifest$State, "completed")
   expect_equal(manifest$Attempts, 1L)

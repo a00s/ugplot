@@ -1688,11 +1688,9 @@ ugplot_geo_write_checkpoint <- function(value, path) {
 }
 
 ugplot_geo_can_resume_worker_task <- function(status, attempts, max_attempts, draining = FALSE) {
-  attempts <- suppressWarnings(as.integer(attempts %||% 0L))
-  max_attempts <- suppressWarnings(as.integer(max_attempts %||% 1L))
-  if (is.na(attempts)) attempts <- 0L
-  if (is.na(max_attempts) || max_attempts < 1L) max_attempts <- 1L
-  !isTRUE(draining) && is.list(status) && isTRUE(status$resumable) && attempts < max_attempts
+  # Retrying the same remote id continues an existing checkpoint; it is not a
+  # new dispatch attempt. The attempt limit only protects creation of new jobs.
+  !isTRUE(draining) && is.list(status) && isTRUE(status$resumable)
 }
 
 ugplot_geo_transcript_group_cache_complete <- function(candidates, group_paths) {
@@ -2329,7 +2327,6 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
             error = function(e) NULL
           )
           if (!is.null(resumed)) {
-            manifest$Attempts[[row_index]] <- manifest$Attempts[[row_index]] + 1L
             manifest$State[[row_index]] <- "running"
             manifest$Message[[row_index]] <- paste0(
               "Resuming ", manifest$GroupID[[row_index]], " from its saved model/seed checkpoint"
@@ -2338,6 +2335,21 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
             manifest$UpdatedAt[[row_index]] <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
             next
           }
+          # A transient status response can say stopped while the worker is
+          # still running, in which case Resume commonly reports "already
+          # running". Keep the same assignment and retry its status instead of
+          # creating a duplicate on another server.
+          manifest$PollFailures[[row_index]] <- manifest$PollFailures[[row_index]] + 1L
+          manifest$State[[row_index]] <- "running"
+          manifest$Message[[row_index]] <- paste0(
+            "Keeping ", manifest$GroupID[[row_index]],
+            " assigned; resume/status confirmation is temporarily unavailable"
+          )
+          manifest$Error[[row_index]] <- as.character(
+            status$error %||% status$message %||% "Worker resume confirmation failed."
+          )
+          manifest$UpdatedAt[[row_index]] <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+          next
         }
         manifest$State[[row_index]] <- "pending"
         manifest$JobID[[row_index]] <- ""
