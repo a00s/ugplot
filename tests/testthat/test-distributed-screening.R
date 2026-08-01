@@ -693,7 +693,7 @@ test_that("distributed scheduler checkpoints worker results in coordinator cache
       GroupID = "TG1",
       Worker = "Fy3",
       JobID = "",
-      State = "pending",
+      State = "running",
       Attempts = 2L,
       PollFailures = 0L,
       Error = "Connection timeout",

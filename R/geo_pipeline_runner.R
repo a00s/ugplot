@@ -1937,6 +1937,11 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
   }
   manifest <- manifest[, required, drop = FALSE]
   manifest$State[manifest$State == "dispatching"] <- "pending"
+  missing_job_rows <- manifest$State %in% c("submitted", "running") &
+    !nzchar(trimws(as.character(manifest$JobID)))
+  manifest$State[missing_job_rows] <- "pending"
+  manifest$Message[missing_job_rows] <- "Recovered assignment without a remote job; waiting for worker"
+  manifest$Error[missing_job_rows] <- ""
   eligible_ids <- as.character(eligible$GroupID)
   manifest <- manifest[as.character(manifest$GroupID) %in% eligible_ids, , drop = FALSE]
   missing_ids <- setdiff(eligible_ids, as.character(manifest$GroupID))
@@ -1980,7 +1985,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
   group_by_id <- function(group_id) {
     eligible[as.character(eligible$GroupID) == as.character(group_id), , drop = FALSE][1, , drop = FALSE]
   }
-  save_completed <- function(row_index, remote_result) {
+  save_completed <- function(row_index, remote_result, keep_remote_job = FALSE) {
     group_id <- as.character(manifest$GroupID[[row_index]])
     if (!is.list(remote_result) ||
         !(as.character(remote_result$kind %||% "") %in% c("geo_screen_group", "geo_complete_group")) ||
@@ -2045,13 +2050,27 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
       utils::write.csv(stability_summaries, stability_summary_path, row.names = FALSE)
     }
     if (!stability_group_complete(group_id)) {
-      # A worker can expose a valid checkpoint before the complete stability
-      # run has finished. Keep that exact remote job assigned so it can resume
-      # from its saved model/seed state; creating a revised request here would
-      # stop useful work and bounce the same group between servers.
-      manifest$State[[row_index]] <<- "running"
-      manifest$Progress[[row_index]] <<- max(0.55, manifest$Progress[[row_index]])
-      manifest$Message[[row_index]] <<- "Partial result collected; complete stability still required"
+      keep_remote_job <- isTRUE(keep_remote_job) &&
+        nzchar(as.character(manifest$JobID[[row_index]] %||% ""))
+      if (isTRUE(keep_remote_job)) {
+        # A fixed worker can expose a valid checkpoint before the complete
+        # stability run has finished. Keep that exact job assigned so it can
+        # resume from its saved model/seed state without changing servers.
+        manifest$State[[row_index]] <<- "running"
+        manifest$Progress[[row_index]] <<- max(0.55, manifest$Progress[[row_index]])
+        manifest$Message[[row_index]] <<- "Partial result collected; complete stability still required"
+      } else {
+        # Collaboration results do not have a fixed remote job id to resume.
+        # Return the group to the queue with the recovered screening data.
+        manifest$State[[row_index]] <<- "pending"
+        manifest$JobID[[row_index]] <<- ""
+        manifest$Progress[[row_index]] <<- 0.55
+        manifest$Message[[row_index]] <<- "Screening recovered; complete stability still required"
+        manifest$Attempts[[row_index]] <<- 0L
+        manifest$RequestNonce[[row_index]] <<- paste(
+          format(Sys.time(), "%Y%m%d%H%M%OS6"), Sys.getpid(), sep = "-"
+        )
+      }
       manifest$UpdatedAt[[row_index]] <<- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
       ugplot_geo_write_distributed_manifest(manifest, manifest_path)
       return(invisible(FALSE))
@@ -2268,7 +2287,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
           manifest$JobID[[row_index]],
           worker$token %||% ""
         )
-        completed <- save_completed(row_index, remote_result)
+        completed <- save_completed(row_index, remote_result, keep_remote_job = TRUE)
         if (isTRUE(completed)) {
           try(ugplot_remote_delete_job(
             worker$url,
