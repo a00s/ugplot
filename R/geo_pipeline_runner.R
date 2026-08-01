@@ -2045,15 +2045,14 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
       utils::write.csv(stability_summaries, stability_summary_path, row.names = FALSE)
     }
     if (!stability_group_complete(group_id)) {
-      manifest$State[[row_index]] <<- "pending"
-      manifest$JobID[[row_index]] <<- ""
-      manifest$Progress[[row_index]] <<- 0.55
-      manifest$Message[[row_index]] <<- "Screening recovered; complete stability still required"
+      # A worker can expose a valid checkpoint before the complete stability
+      # run has finished. Keep that exact remote job assigned so it can resume
+      # from its saved model/seed state; creating a revised request here would
+      # stop useful work and bounce the same group between servers.
+      manifest$State[[row_index]] <<- "running"
+      manifest$Progress[[row_index]] <<- max(0.55, manifest$Progress[[row_index]])
+      manifest$Message[[row_index]] <<- "Partial result collected; complete stability still required"
       manifest$UpdatedAt[[row_index]] <<- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
-      manifest$Attempts[[row_index]] <<- 0L
-      manifest$RequestNonce[[row_index]] <<- paste(
-        format(Sys.time(), "%Y%m%d%H%M%OS6"), Sys.getpid(), sep = "-"
-      )
       ugplot_geo_write_distributed_manifest(manifest, manifest_path)
       return(invisible(FALSE))
     }
@@ -2269,12 +2268,39 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
           manifest$JobID[[row_index]],
           worker$token %||% ""
         )
-        save_completed(row_index, remote_result)
-        try(ugplot_remote_delete_job(
-          worker$url,
-          manifest$JobID[[row_index]],
-          worker$token %||% ""
-        ), silent = TRUE)
+        completed <- save_completed(row_index, remote_result)
+        if (isTRUE(completed)) {
+          try(ugplot_remote_delete_job(
+            worker$url,
+            manifest$JobID[[row_index]],
+            worker$token %||% ""
+          ), silent = TRUE)
+        } else {
+          resume_error <- NULL
+          resumed <- tryCatch(
+            ugplot_remote_resume_job(
+              worker$url,
+              manifest$JobID[[row_index]],
+              worker$token %||% ""
+            ),
+            error = function(e) {
+              resume_error <<- e
+              NULL
+            }
+          )
+          manifest$State[[row_index]] <- "running"
+          manifest$Message[[row_index]] <- if (!is.null(resumed)) {
+            paste0("Resuming ", manifest$GroupID[[row_index]], " from its saved model/seed checkpoint")
+          } else {
+            paste0("Keeping ", manifest$GroupID[[row_index]], " assigned while its partial checkpoint advances")
+          }
+          manifest$Error[[row_index]] <- if (inherits(resume_error, "error")) {
+            conditionMessage(resume_error)
+          } else {
+            ""
+          }
+          manifest$UpdatedAt[[row_index]] <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+        }
       } else if (remote_state %in% c("failed", "stopped")) {
         if (ugplot_geo_can_resume_worker_task(
           status, manifest$Attempts[[row_index]], max_attempts, draining

@@ -733,3 +733,97 @@ test_that("distributed scheduler checkpoints worker results in coordinator cache
   expect_equal(manifest$State, "completed")
   expect_equal(manifest$Attempts, 1L)
 })
+
+test_that("incomplete worker result resumes the same remote job", {
+  root <- tempfile("distributed-partial-worker-")
+  dir.create(root)
+  pipeline_dir <- file.path(root, "pipeline")
+  dir.create(pipeline_dir)
+  dataset_path <- file.path(root, "TG1.csv")
+  utils::write.csv(
+    data.frame(sample_id = c("S1", "S2"), target = c(1, 2), cg1 = c(0.2, 0.8)),
+    dataset_path,
+    row.names = FALSE
+  )
+  eligible <- data.frame(
+    GroupID = "TG1", PrincipalTranscript = "ENST000001", Gene = "GENE1",
+    Columns = 2L, Samples = 2L, TranscriptCount = 1L,
+    ExtraTranscripts = "", CpGs = "cg1", TriggerMaxAbsRho = 0.8,
+    TriggerBestCpG = "cg1", TriggerBestRho = 0.8,
+    DatasetPath = dataset_path, stringsAsFactors = FALSE
+  )
+  worker_summary <- data.frame(
+    Source = "raw_sesame", Phase = "screening", GroupID = "TG1",
+    PrincipalTranscript = "ENST000001", Gene = "GENE1", Columns = 2L,
+    Samples = 2L, TranscriptCount = 1L, ExtraTranscripts = "", CpGs = "cg1",
+    TriggerMaxAbsRho = 0.8, TriggerBestCpG = "cg1", TriggerBestRho = 0.8,
+    BestModel = "lm", MetricName = "R2", BestMetric = 0.7,
+    MedianMetric = 0.7, MeanMetric = 0.7, SeedsRun = 3L,
+    ModelsRun = 1L, ModelsOK = 1L, DatasetPath = "/worker/TG1.csv",
+    ScreenResultPath = "/worker/result.rds", ImportancePath = "",
+    stringsAsFactors = FALSE
+  )
+  stability_summary <- worker_summary
+  stability_summary$Phase <- "stability"
+  stability_summary$StratumColumn <- ""
+  stability_summary$StratumValue <- ""
+  stability_summary$Stable <- TRUE
+  stability_summary$StabilityResultPath <- "/worker/stability.rds"
+
+  status_checks <- 0L
+  result_checks <- 0L
+  resumed_ids <- character(0)
+  deleted_ids <- character(0)
+  ugplot_test_local_namespace_binding("ugplot_remote_list_jobs", function(...) data.frame())
+  ugplot_test_local_namespace_binding("ugplot_remote_create_job", function(...) list(id = "worker-job-1"))
+  ugplot_test_local_namespace_binding("ugplot_remote_job_status", function(...) {
+    status_checks <<- status_checks + 1L
+    list(state = "finished", resumable = TRUE, progress = 1)
+  })
+  ugplot_test_local_namespace_binding("ugplot_remote_get_result", function(...) {
+    result_checks <<- result_checks + 1L
+    list(
+      kind = "geo_complete_group", group_id = "TG1", summary = worker_summary,
+      screen_result = list(best_model_name = "lm"), importance = data.frame(),
+      stability_artifacts = if (result_checks == 1L) list() else list(list(
+        summary = stability_summary,
+        result = list(best_model_name = "lm"),
+        importance = data.frame()
+      ))
+    )
+  })
+  ugplot_test_local_namespace_binding("ugplot_remote_resume_job", function(server_url, job_id, ...) {
+    resumed_ids <<- c(resumed_ids, job_id)
+    list(id = job_id, state = "queued")
+  })
+  ugplot_test_local_namespace_binding("ugplot_remote_delete_job", function(server_url, job_id, ...) {
+    deleted_ids <<- c(deleted_ids, job_id)
+    list(deleted = TRUE)
+  })
+
+  result <- ugplot_test_internal("ugplot_geo_run_transcript_ml_distributed")(
+    eligible = eligible,
+    summaries = data.frame(),
+    summary_path = file.path(pipeline_dir, "screening_summary.csv"),
+    pipeline_dir = pipeline_dir,
+    cache_dir = root,
+    source = "raw_sesame",
+    run_key = "test",
+    config = list(
+      job_dir = file.path(root, "parent-job"),
+      distributed_poll_seconds = 1,
+      distributed_max_attempts = 2L
+    ),
+    workers = list(list(
+      name = "Fy2", url = "http://fy2:8080", token = "secret", cpu_limit = 1L
+    ))
+  )
+
+  expect_equal(result$GroupID, "TG1")
+  expect_equal(resumed_ids, "worker-job-1")
+  expect_equal(deleted_ids, "worker-job-1")
+  expect_gte(status_checks, 2L)
+  manifest <- readRDS(file.path(pipeline_dir, "distributed-screening.rds"))
+  expect_equal(manifest$State, "completed")
+  expect_equal(manifest$Attempts, 1L)
+})
