@@ -13801,7 +13801,10 @@ server <- function(input, output, session) {
   output$remote_group_dataset_table <- DT::renderDT({
     picker <- remote_group_dataset_picker()
     groups <- picker$groups
-    validate(need(is.data.frame(groups) && nrow(groups) > 0L, "No cached groups are available."))
+    shiny::validate(shiny::need(
+      is.data.frame(groups) && nrow(groups) > 0L,
+      "No cached groups are available."
+    ))
     display_value <- function(name, fallback = "") {
       value <- if (name %in% names(groups)) as.character(groups[[name]]) else rep(fallback, nrow(groups))
       value[is.na(value) | !nzchar(value)] <- fallback
