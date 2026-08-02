@@ -59,6 +59,67 @@ ugplot_drain_request_path <- function(job_id, jobs_dir = ugplot_default_jobs_dir
   file.path(ugplot_job_dir(job_id, jobs_dir), "drain-request.rds")
 }
 
+ugplot_model_policy_path <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  file.path(ugplot_job_dir(job_id, jobs_dir), "model-policy.rds")
+}
+
+ugplot_job_configured_models <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  config_path <- file.path(ugplot_job_dir(job_id, jobs_dir), "config.rds")
+  config <- if (file.exists(config_path)) tryCatch(readRDS(config_path), error = function(e) list()) else list()
+  models <- unique(trimws(as.character(config$models %||% config$model_names %||% character(0))))
+  models[nzchar(models)]
+}
+
+ugplot_read_job_model_policy <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  configured <- ugplot_job_configured_models(job_id, jobs_dir)
+  stored <- ugplot_read_rds_or_null(ugplot_model_policy_path(job_id, jobs_dir))
+  disabled <- unique(trimws(as.character(stored$disabled_models %||% character(0))))
+  disabled <- intersect(disabled[nzchar(disabled)], configured)
+  list(
+    job_id = as.character(job_id),
+    configured_models = configured,
+    enabled_models = setdiff(configured, disabled),
+    disabled_models = disabled,
+    updated_at = as.character(stored$updated_at %||% "")
+  )
+}
+
+ugplot_set_job_model_enabled <- function(job_id, model, enabled,
+                                         jobs_dir = ugplot_default_jobs_dir()) {
+  model <- trimws(as.character(model %||% ""))
+  if (length(model) != 1L || !nzchar(model)) stop("A model name is required.", call. = FALSE)
+  policy <- ugplot_read_job_model_policy(job_id, jobs_dir)
+  if (!model %in% policy$configured_models) {
+    stop("Model is not configured for this job: ", model, call. = FALSE)
+  }
+  disabled <- policy$disabled_models
+  if (isTRUE(enabled)) {
+    disabled <- setdiff(disabled, model)
+  } else {
+    disabled <- union(disabled, model)
+  }
+  remaining <- setdiff(policy$configured_models, disabled)
+  if (length(remaining) == 0L) {
+    stop("At least one model must remain enabled for future tasks.", call. = FALSE)
+  }
+  ugplot_write_rds_atomic(
+    list(disabled_models = disabled, updated_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")),
+    ugplot_model_policy_path(job_id, jobs_dir)
+  )
+  ugplot_read_job_model_policy(job_id, jobs_dir)
+}
+
+ugplot_effective_models_for_job_dir <- function(models, job_dir) {
+  models <- unique(trimws(as.character(models %||% character(0))))
+  models <- models[nzchar(models)]
+  job_dir <- as.character(job_dir %||% "")
+  if (length(models) == 0L || !nzchar(job_dir) || !dir.exists(job_dir)) return(models)
+  stored <- ugplot_read_rds_or_null(file.path(job_dir, "model-policy.rds"))
+  disabled <- unique(trimws(as.character(stored$disabled_models %||% character(0))))
+  effective <- setdiff(models, disabled[nzchar(disabled)])
+  if (length(effective) > 0L) effective else models
+}
+
 ugplot_job_drain_requested <- function(job_dir) {
   file.exists(file.path(as.character(job_dir %||% ""), "drain-request.rds"))
 }
@@ -574,6 +635,36 @@ ugplot_model_timing_summary <- function(results) {
   summary[order(severity, -summary$`Total minutes`, summary$Model, na.last = TRUE), , drop = FALSE]
 }
 
+ugplot_model_attempt_details <- function(results, model = "") {
+  if (is.data.frame(results)) results <- list(results)
+  if (!is.list(results) || length(results) == 0L) return(data.frame())
+  rows <- Filter(Negate(is.null), lapply(seq_along(results), function(i) {
+    item <- results[[i]]
+    if (!is.data.frame(item) || nrow(item) == 0L || !"Model" %in% names(item)) return(NULL)
+    if (!"Analysis" %in% names(item)) item$Analysis <- paste0("analysis-", i)
+    if (nzchar(model)) item <- item[as.character(item$Model) == model, , drop = FALSE]
+    if (nrow(item) == 0L) return(NULL)
+    keep <- intersect(
+      c("Model", "Analysis", "dataset_seed", "training_seed", "Status", "elapsed_seconds", "R2", "Accuracy", "MAE", "RMSE", "Error"),
+      names(item)
+    )
+    item[, keep, drop = FALSE]
+  }))
+  if (length(rows) == 0L) return(data.frame())
+  all_names <- unique(unlist(lapply(rows, names), use.names = FALSE))
+  rows <- lapply(rows, function(row) {
+    for (name in setdiff(all_names, names(row))) row[[name]] <- NA
+    row[, all_names, drop = FALSE]
+  })
+  details <- do.call(rbind, rows)
+  if ("Status" %in% names(details)) {
+    severity <- match(toupper(as.character(details$Status)), c("TIMEOUT", "ERROR", "FAILED", "SKIPPED_TIMEOUT", "OK"))
+    details <- details[order(severity, details$Analysis, na.last = TRUE), , drop = FALSE]
+  }
+  rownames(details) <- NULL
+  details
+}
+
 ugplot_idle_distributed_state <- function(state) {
   if (!is.list(state)) {
     state <- list()
@@ -634,6 +725,38 @@ ugplot_read_job_model_timing <- function(job_id, jobs_dir = ugplot_default_jobs_
     }
   }
   ugplot_model_timing_summary(rows)
+}
+
+ugplot_read_job_model_diagnostics <- function(job_id, model,
+                                              jobs_dir = ugplot_default_jobs_dir()) {
+  model <- trimws(as.character(model %||% ""))
+  if (length(model) != 1L || !nzchar(model)) stop("A model name is required.", call. = FALSE)
+  status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
+  if (is.null(status)) stop("Job not found: ", job_id, call. = FALSE)
+  config_path <- file.path(ugplot_job_dir(job_id, jobs_dir), "config.rds")
+  config <- if (file.exists(config_path)) tryCatch(readRDS(config_path), error = function(e) list()) else list()
+  is_geo <- identical(as.character(status$type %||% config$type %||% ""), "geo") ||
+    identical(as.character(config$runner %||% ""), "ugplot_run_geo_pipeline_job")
+  attempts <- if (isTRUE(is_geo) && exists("ugplot_geo_collect_model_attempts", mode = "function", inherits = TRUE)) {
+    preview <- tryCatch(ugplot_read_job_preview_result(job_id, jobs_dir), error = function(e) NULL)
+    transcript_ml_dir <- as.character(preview$paths$transcript_ml_dir %||% "")
+    if (!nzchar(transcript_ml_dir)) {
+      transcript_ml_dir <- tryCatch(
+        ugplot_job_discovery_report_paths(job_id, jobs_dir)$pipeline_dir,
+        error = function(e) ""
+      )
+    }
+    ugplot_geo_collect_model_attempts(transcript_ml_dir, model)
+  } else {
+    result <- tryCatch(ugplot_read_job_result(job_id, jobs_dir), error = function(e) NULL)
+    ugplot_model_attempt_details(result$results_table %||% data.frame(), model)
+  }
+  list(
+    job_id = as.character(job_id),
+    model = model,
+    policy = ugplot_read_job_model_policy(job_id, jobs_dir),
+    attempts = attempts
+  )
 }
 
 ugplot_job_partial_result <- function(result) {

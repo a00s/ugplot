@@ -592,6 +592,53 @@ test_that("job previews retain elapsed time and summarize model timeout behavior
   expect_equal(summary$Signal[summary$Model == "fast"], "Healthy")
 })
 
+test_that("job model policy toggles only future effective models", {
+  jobs_dir <- tempfile("ugplot-model-policy-")
+  dir.create(jobs_dir, recursive = TRUE)
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  read_policy <- ugplot_test_internal("ugplot_read_job_model_policy")
+  set_enabled <- ugplot_test_internal("ugplot_set_job_model_enabled")
+  effective <- ugplot_test_internal("ugplot_effective_models_for_job_dir")
+  job_dir <- ugplot_test_internal("ugplot_job_dir")
+
+  status <- create_job(
+    data.frame(x = 1:3, y = 4:6),
+    config = list(models = c("lm", "rpart", "glmnet")),
+    jobs_dir = jobs_dir
+  )
+  expect_equal(read_policy(status$id, jobs_dir)$enabled_models, c("lm", "rpart", "glmnet"))
+
+  disabled <- set_enabled(status$id, "rpart", FALSE, jobs_dir)
+  expect_equal(disabled$disabled_models, "rpart")
+  expect_equal(
+    effective(c("lm", "rpart", "glmnet"), job_dir(status$id, jobs_dir)),
+    c("lm", "glmnet")
+  )
+
+  reenabled <- set_enabled(status$id, "rpart", TRUE, jobs_dir)
+  expect_length(reenabled$disabled_models, 0L)
+  expect_error(set_enabled(status$id, "unknown", FALSE, jobs_dir), "not configured")
+  set_enabled(status$id, "rpart", FALSE, jobs_dir)
+  set_enabled(status$id, "glmnet", FALSE, jobs_dir)
+  expect_error(set_enabled(status$id, "lm", FALSE, jobs_dir), "At least one model")
+})
+
+test_that("model attempt diagnostics retain full error context", {
+  details <- ugplot_test_internal("ugplot_model_attempt_details")(list(
+    data.frame(
+      Model = c("slow", "slow", "ok"), Analysis = "TG10/screen_result.rds",
+      dataset_seed = 1L, training_seed = c(1L, 2L, 1L),
+      Status = c("TIMEOUT", "ERROR", "OK"), elapsed_seconds = c(1200, 3, 1),
+      Error = c("Timed out after 1200 seconds", "package dependency failed: details", ""),
+      stringsAsFactors = FALSE
+    )
+  ), model = "slow")
+  expect_equal(nrow(details), 2L)
+  expect_equal(unique(details$Model), "slow")
+  expect_true(all(c("Analysis", "Status", "Error", "elapsed_seconds") %in% names(details)))
+  expect_match(details$Error[[2]], "dependency failed", fixed = TRUE)
+})
+
 test_that("local GEO stages clear stale active workers without losing progress", {
   idle <- ugplot_test_internal("ugplot_idle_distributed_state")
   active_groups <- ugplot_test_internal("ugplot_active_distributed_group_ids")

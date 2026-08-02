@@ -268,6 +268,9 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_read_job_result",
     "ugplot_read_job_preview_result",
     "ugplot_read_job_bundle",
+    "ugplot_read_job_model_policy",
+    "ugplot_set_job_model_enabled",
+    "ugplot_read_job_model_diagnostics",
     "ugplot_job_monitor_snapshot",
     "ugplot_launch_background_job",
     "ugplot_resume_background_job",
@@ -308,6 +311,9 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_job_group_datasets",
     "ugplot_remote_get_job_group_dataset",
     "ugplot_remote_get_job_model_timing",
+    "ugplot_remote_get_job_model_policy",
+    "ugplot_remote_set_job_model_enabled",
+    "ugplot_remote_get_job_model_diagnostics",
     "ugplot_remote_get_job_bundle",
     "ugplot_remote_servers_path",
     "ugplot_default_remote_servers",
@@ -2598,6 +2604,8 @@ server <- function(input, output, session) {
   remote_job_preview_status <- reactiveVal(NULL)
   remote_job_preview_result <- reactiveVal(NULL)
   remote_job_timing_data <- reactiveVal(data.frame())
+  remote_job_model_policy <- reactiveVal(list())
+  remote_model_diagnostic_data <- reactiveVal(list())
   remote_job_progress_estimates <- reactiveVal(list())
   remote_job_loading <- reactiveVal(FALSE)
   remote_job_monitor_state <- reactiveVal(list(checked_at = "", error = ""))
@@ -13545,6 +13553,8 @@ server <- function(input, output, session) {
       remote_job_preview_status(cached_status)
       remote_job_preview_result(NULL)
       remote_job_timing_data(data.frame())
+      remote_job_model_policy(list())
+      remote_model_diagnostic_data(list())
       remote_job_resources_data(data.frame())
       remote_job_groups_data(list(job_id = as.character(job_id), groups = data.frame()))
       remote_job_monitor_state(list(
@@ -13567,6 +13577,15 @@ server <- function(input, output, session) {
         if (is.data.frame(timing)) {
           remote_job_timing_data(timing)
         }
+      }
+      if (remote_server_supports("job_model_policy", server_name)) {
+        policy <- tryCatch({
+          server <- remote_server_by_name(server_name)
+          ugplot_remote_get_job_model_policy(
+            server_url = server$url, job_id = job_id, token = server$token %||% ""
+          )
+        }, error = function(e) list())
+        if (is.list(policy)) remote_job_model_policy(policy)
       }
     }
   })
@@ -14636,7 +14655,12 @@ server <- function(input, output, session) {
     } else {
       data.frame()
     }
-    if (is.data.frame(timing) && nrow(timing) > 0L) timing else remote_job_timing_data()
+    timing <- if (is.data.frame(timing) && nrow(timing) > 0L) timing else remote_job_timing_data()
+    if (!is.data.frame(timing) || nrow(timing) == 0L) return(data.frame())
+    policy <- remote_job_model_policy()
+    disabled <- as.character(unlist(policy$disabled_models %||% character(0), use.names = FALSE))
+    timing$Enabled <- ifelse(as.character(timing$Model) %in% disabled, "No", "Yes")
+    timing[, c("Model", "Enabled", setdiff(names(timing), c("Model", "Enabled"))), drop = FALSE]
   })
 
   output$remote_job_model_timing_panel <- renderUI({
@@ -14650,7 +14674,7 @@ server <- function(input, output, session) {
         class = "model-timing-header",
         tags$div(
           tags$strong("Model runtime and timeout summary"),
-          tags$p("Use repeated timeout signals and typical runtime to decide which models are worth keeping in future analyses.")
+          tags$p("Click a model to inspect its attempts and enable or disable it for tasks that have not been dispatched yet.")
         ),
         tags$span(paste0(nrow(timing), " model", if (nrow(timing) == 1L) "" else "s"))
       ),
@@ -14665,13 +14689,13 @@ server <- function(input, output, session) {
       timing,
       rownames = FALSE,
       escape = TRUE,
-      selection = "none",
+      selection = "single",
       class = "compact stripe hover",
       options = list(
         pageLength = 15,
         lengthChange = FALSE,
         scrollX = TRUE,
-        order = list(list(4, "desc"), list(11, "desc"))
+        order = list()
       )
     )
     if ("Signal" %in% names(timing)) {
@@ -14689,7 +14713,119 @@ server <- function(input, output, session) {
         )
       )
     }
+    if ("Enabled" %in% names(timing)) {
+      table <- DT::formatStyle(
+        table, "Enabled", fontWeight = "700",
+        color = DT::styleEqual(c("Yes", "No"), c("#18794e", "#a5302d")),
+        backgroundColor = DT::styleEqual(c("Yes", "No"), c("#eaf8f0", "#fff1f0"))
+      )
+    }
     table
+  })
+
+  output$remote_model_diagnostic_attempts <- DT::renderDT({
+    diagnostic <- remote_model_diagnostic_data()
+    attempts <- diagnostic$attempts %||% data.frame()
+    if (!is.data.frame(attempts) || nrow(attempts) == 0L) {
+      return(DT::datatable(
+        data.frame(Details = "No saved attempts were found for this model.", check.names = FALSE),
+        rownames = FALSE, options = list(dom = "t", paging = FALSE, ordering = FALSE)
+      ))
+    }
+    DT::datatable(
+      attempts, rownames = FALSE, selection = "none", class = "compact stripe hover",
+      options = list(pageLength = 12, lengthChange = FALSE, scrollX = TRUE, autoWidth = FALSE)
+    )
+  })
+
+  observeEvent(input$remote_job_model_timing_rows_selected, {
+    selected <- input$remote_job_model_timing_rows_selected
+    timing <- remote_job_model_timing_data()
+    req(length(selected) == 1L, is.data.frame(timing), nrow(timing) >= selected[[1]])
+    model <- as.character(timing$Model[[selected[[1]]]])
+    job_id <- as.character(input$remote_job_id %||% "")
+    server_name <- remote_server_name_for_job(job_id)
+    req(nzchar(model), nzchar(job_id), nzchar(server_name))
+    diagnostic <- tryCatch({
+      if (!remote_server_supports("job_model_diagnostics", server_name)) {
+        stop("Update the remote server to inspect individual model errors.", call. = FALSE)
+      }
+      server <- remote_server_by_name(server_name)
+      ugplot_remote_get_job_model_diagnostics(
+        server_url = server$url, job_id = job_id, model = model,
+        token = server$token %||% ""
+      )
+    }, error = function(e) list(error = conditionMessage(e), model = model, attempts = data.frame()))
+    remote_model_diagnostic_data(diagnostic)
+    policy <- diagnostic$policy %||% remote_job_model_policy()
+    if (is.list(policy)) remote_job_model_policy(policy)
+    disabled <- as.character(unlist(policy$disabled_models %||% character(0), use.names = FALSE))
+    enabled <- !model %in% disabled
+    errors <- if (is.data.frame(diagnostic$attempts) && "Error" %in% names(diagnostic$attempts)) {
+      unique(trimws(as.character(diagnostic$attempts$Error)))
+    } else character(0)
+    errors <- errors[nzchar(errors) & !is.na(errors)]
+    error_view <- if (nzchar(as.character(diagnostic$error %||% ""))) {
+      tags$pre(class = "model-diagnostic-error", diagnostic$error)
+    } else if (length(errors) > 0L) {
+      tags$div(
+        tags$strong("Captured error messages"),
+        tags$pre(class = "model-diagnostic-error", paste(errors, collapse = "\n\n"))
+      )
+    } else {
+      tags$p("No error text was captured; the attempts table still shows status, seeds and elapsed time.")
+    }
+    toggle_button <- if (remote_server_supports("job_model_policy", server_name) &&
+                         model %in% as.character(unlist(policy$configured_models %||% character(0), use.names = FALSE))) {
+      actionButton(
+        "remote_toggle_diagnostic_model",
+        if (enabled) "Disable for future tasks" else "Re-enable for future tasks",
+        class = if (enabled) "btn-warning" else "btn-success"
+      )
+    } else NULL
+    showModal(modalDialog(
+      title = paste("Model diagnostics:", model),
+      tags$p(
+        tags$strong(if (enabled) "Currently enabled. " else "Currently disabled. "),
+        "Changing this affects only tasks that have not yet been dispatched; active FY/public-scientist work is unchanged."
+      ),
+      error_view,
+      DT::DTOutput("remote_model_diagnostic_attempts"),
+      size = "l", easyClose = TRUE,
+      footer = tagList(modalButton("Close"), toggle_button)
+    ))
+    session$onFlushed(function() {
+      try(DT::selectRows(DT::dataTableProxy("remote_job_model_timing"), NULL), silent = TRUE)
+    }, once = TRUE)
+  })
+
+  observeEvent(input$remote_toggle_diagnostic_model, {
+    diagnostic <- remote_model_diagnostic_data()
+    model <- as.character(diagnostic$model %||% "")
+    job_id <- as.character(input$remote_job_id %||% "")
+    server_name <- remote_server_name_for_job(job_id)
+    req(nzchar(model), nzchar(job_id), nzchar(server_name))
+    tryCatch({
+      policy <- remote_job_model_policy()
+      disabled <- as.character(unlist(policy$disabled_models %||% character(0), use.names = FALSE))
+      enable <- model %in% disabled
+      server <- remote_server_by_name(server_name)
+      updated <- ugplot_remote_set_job_model_enabled(
+        server_url = server$url, job_id = job_id, model = model, enabled = enable,
+        token = server$token %||% ""
+      )
+      remote_job_model_policy(updated)
+      current_selection <- as.character(input$ml_checkbox_group %||% character(0))
+      next_selection <- if (enable) union(current_selection, model) else setdiff(current_selection, model)
+      updateCheckboxGroupInput(session, "ml_checkbox_group", selected = next_selection)
+      removeModal()
+      showNotification(
+        paste0(model, if (enable) " re-enabled" else " disabled", " for tasks not yet dispatched."),
+        type = "message", duration = 6
+      )
+    }, error = function(e) {
+      showNotification(conditionMessage(e), type = "error", duration = 8)
+    })
   })
 
   output$remote_job_resources <- renderUI({

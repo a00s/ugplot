@@ -848,6 +848,8 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
         job_bundle = TRUE,
         job_preview = TRUE,
         job_model_timing = TRUE,
+        job_model_diagnostics = TRUE,
+        job_model_policy = TRUE,
         job_config_summary = TRUE,
         job_resource_monitor = !is.null(auto_resume_process),
         job_monitor_snapshot = TRUE,
@@ -1129,6 +1131,43 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
     })
   })
 
+  pr$handle("GET", "/jobs/<job_id>/model-policy", function(job_id, res) {
+    tryCatch(
+      ugplot_read_job_model_policy(job_id, jobs_dir),
+      error = function(e) {
+        res$status <- 404
+        list(error = conditionMessage(e))
+      }
+    )
+  })
+
+  pr$handle("POST", "/jobs/<job_id>/model-policy", function(job_id, req, res) {
+    tryCatch({
+      body <- ugplot_request_json_body(req)
+      policy <- ugplot_set_job_model_enabled(
+        job_id, body$model %||% "", isTRUE(body$enabled), jobs_dir
+      )
+      # Pending public-collaboration offers may already contain the old model
+      # list. Close only unclaimed offers; leased/running work is untouched.
+      if (exists("ugplot_collaboration_task_ids", mode = "function", inherits = TRUE) &&
+          exists("ugplot_collaboration_close_pending_task", mode = "function", inherits = TRUE)) {
+        pending <- tryCatch(
+          ugplot_collaboration_task_ids(jobs_dir, states = "pending", parent_job_id = job_id),
+          error = function(e) character(0)
+        )
+        for (task_id in pending) {
+          try(ugplot_collaboration_close_pending_task(
+            task_id, reason = "model_policy_changed", jobs_dir = jobs_dir
+          ), silent = TRUE)
+        }
+      }
+      policy
+    }, error = function(e) {
+      res$status <- 400
+      list(error = conditionMessage(e))
+    })
+  })
+
   pr$handle("POST", "/jobs/<job_id>/resume", function(job_id, res) {
     tryCatch({
       started <- ugplot_resume_background_job(job_id, jobs_dir, startup_wait_seconds = 0)
@@ -1217,6 +1256,25 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
       list(
         filename = paste0("ugplot-job-", job_id, "-model-timing.rds"),
         content_base64 = base64enc::base64encode(timing_path)
+      )
+    }, error = function(e) {
+      res$status <- 404
+      list(error = conditionMessage(e))
+    })
+  })
+
+  pr$handle("GET", "/jobs/<job_id>/model-diagnostics-rds", function(job_id, req, res) {
+    tryCatch({
+      query <- req$argsQuery %||% list()
+      diagnostics <- ugplot_read_job_model_diagnostics(
+        job_id, as.character(query$model %||% ""), jobs_dir
+      )
+      diagnostics_path <- tempfile(fileext = ".rds")
+      on.exit(unlink(diagnostics_path), add = TRUE)
+      saveRDS(diagnostics, diagnostics_path)
+      list(
+        filename = paste0("ugplot-job-", job_id, "-model-diagnostics.rds"),
+        content_base64 = base64enc::base64encode(diagnostics_path)
       )
     }, error = function(e) {
       res$status <- 404

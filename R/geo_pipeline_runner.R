@@ -900,6 +900,25 @@ ugplot_geo_collect_model_timing <- function(transcript_ml_dir) {
   ugplot_model_timing_summary(Filter(Negate(is.null), rows))
 }
 
+ugplot_geo_collect_model_attempts <- function(transcript_ml_dir, model = "") {
+  if (!nzchar(transcript_ml_dir %||% "") || !dir.exists(transcript_ml_dir)) return(data.frame())
+  paths <- list.files(
+    transcript_ml_dir, pattern = "^(screen_result|stability_result)\\.rds$",
+    recursive = TRUE, full.names = TRUE
+  )
+  root <- normalizePath(transcript_ml_dir, mustWork = FALSE)
+  rows <- Filter(Negate(is.null), lapply(paths, function(path) {
+    result <- tryCatch(readRDS(path), error = function(e) NULL)
+    table <- result$results_table %||% data.frame()
+    if (!is.data.frame(table) || nrow(table) == 0L || !"Model" %in% names(table)) return(NULL)
+    if (nzchar(model)) table <- table[as.character(table$Model) == model, , drop = FALSE]
+    if (nrow(table) == 0L) return(NULL)
+    table$Analysis <- substring(normalizePath(path, mustWork = FALSE), nchar(root) + 2L)
+    table
+  }))
+  ugplot_model_attempt_details(rows, model = model)
+}
+
 ugplot_geo_ml_importance_table <- function(model, group, source, phase) {
   if (is.null(model)) {
     return(data.frame())
@@ -2165,6 +2184,13 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
   collaboration_group_id <- function(task_id) {
     ugplot_geo_collaboration_group_from_task_id(task_id, parent_job_id)
   }
+  apply_current_model_policy <- function(task_config) {
+    effective <- ugplot_effective_models_for_job_dir(
+      config$models %||% character(0), config$job_dir %||% ""
+    )
+    if (length(effective) > 0L) task_config$models <- effective
+    task_config
+  }
 
   repeat {
     draining <- exists("ugplot_job_drain_requested", mode = "function", inherits = TRUE) &&
@@ -2213,6 +2239,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         group <- group_by_id(manifest$GroupID[[row_index]])
         dataset_info <- ugplot_geo_ml_group_dataset(group)
         task_config <- config
+        task_config <- apply_current_model_policy(task_config)
         task_config$distributed_workers <- NULL
         task_config$resume_result <- NULL
         task_config$resume_result_path <- NULL
@@ -2456,6 +2483,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         )
         dataset_info <- ugplot_geo_ml_group_dataset(group)
         task_config <- config
+        task_config <- apply_current_model_policy(task_config)
         task_config$distributed_workers <- NULL
         task_config$resume_result <- NULL
         task_config$resume_result_path <- NULL
