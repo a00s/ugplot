@@ -190,6 +190,56 @@ test_that("internal worker jobs are hidden and request ids are idempotent", {
   expect_equal(find_request("parent:screen:TG1", jobs_dir)$id, internal$id)
 })
 
+test_that("stopping a coordinator immediately stops local and remote worker jobs", {
+  jobs_dir <- tempfile("ugplot-stop-tree-")
+  dir.create(jobs_dir)
+  create_job <- ugplot_test_internal("ugplot_create_job")
+  update_status <- ugplot_test_internal("ugplot_update_job_status")
+  read_status <- ugplot_test_internal("ugplot_read_job_status")
+  stop_job <- ugplot_test_internal("ugplot_stop_job")
+  workers <- list(
+    list(name = "Fy2", url = "http://fy2:8080", token = "local"),
+    list(name = "Fy3", url = "http://fy3:8080", token = "remote")
+  )
+  parent <- create_job(
+    data.frame(x = 1),
+    config = list(runner = "ugplot_run_geo_pipeline_job", type = "geo", distributed_workers = workers),
+    jobs_dir = jobs_dir, type = "geo"
+  )
+  child <- create_job(
+    data.frame(x = 1),
+    config = list(
+      runner = "ugplot_run_geo_complete_group_job", internal_worker_task = TRUE,
+      parent_job_id = parent$id, worker_name = "Fy2",
+      distributed_group = data.frame(GroupID = "TG1")
+    ),
+    jobs_dir = jobs_dir, type = "geo_worker"
+  )
+  update_status(child$id, jobs_dir, state = "running", message = "Working")
+  update_status(
+    parent$id, jobs_dir, state = "running", message = "Distributed work",
+    distributed_state = list(active = 2L, active_groups = c("Fy2:TG1", "Fy3:TG2"))
+  )
+  remote_stopped <- character(0)
+  ugplot_test_local_namespace_binding("ugplot_remote_list_jobs", function(...) {
+    data.frame(
+      id = "remote-TG2", parent_job_id = parent$id, state = "running",
+      stringsAsFactors = FALSE
+    )
+  })
+  ugplot_test_local_namespace_binding("ugplot_remote_stop_job", function(server_url, job_id, ...) {
+    remote_stopped <<- c(remote_stopped, job_id)
+    list(id = job_id, state = "stopped")
+  })
+  withr::local_envvar(UGPLOT_SERVER_NAME = "Fy2")
+
+  stopped <- stop_job(parent$id, jobs_dir)
+  expect_equal(stopped$state, "stopped")
+  expect_equal(read_status(child$id, jobs_dir)$state, "stopped")
+  expect_equal(remote_stopped, "remote-TG2")
+  expect_match(stopped$message, "stopped 2 active worker task", ignore.case = TRUE)
+})
+
 test_that("idempotent worker requests restart an existing failed task", {
   jobs_dir <- tempfile("ugplot-retry-worker-jobs-")
   dir.create(jobs_dir)

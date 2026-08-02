@@ -692,6 +692,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
   if (nzchar(token)) {
     Sys.setenv(UGPLOT_SERVER_TOKEN = token)
   }
+  Sys.setenv(UGPLOT_SERVER_NAME = as.character(name))
   ugplot_assert_server_system_deps()
   if (!requireNamespace("plumber", quietly = TRUE)) {
     stop("Package 'plumber' is required to start ugPlotServer(). Run ugPlotInstallServerDeps().", call. = FALSE)

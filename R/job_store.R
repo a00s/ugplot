@@ -1202,6 +1202,92 @@ ugplot_write_job_partial_result <- function(job_id, result, jobs_dir = ugplot_de
   invisible(partial_path)
 }
 
+ugplot_stop_job_distributed_children <- function(job_id, status,
+                                                 jobs_dir = ugplot_default_jobs_dir()) {
+  stopped_ids <- character(0)
+  errors <- character(0)
+  active_states <- c("queued", "running", "draining")
+  local_jobs <- tryCatch(
+    ugplot_list_jobs(jobs_dir, include_internal = TRUE, lightweight = TRUE),
+    error = function(e) data.frame()
+  )
+  local_children <- if (is.data.frame(local_jobs) && nrow(local_jobs) > 0L &&
+                        all(c("id", "parent_job_id", "state") %in% names(local_jobs))) {
+    local_jobs[
+      as.character(local_jobs$parent_job_id) == as.character(job_id) &
+        as.character(local_jobs$state) %in% active_states,
+      , drop = FALSE
+    ]
+  } else data.frame()
+  local_worker_names <- if (nrow(local_children) > 0L && "worker_name" %in% names(local_children)) {
+    unique(as.character(local_children$worker_name))
+  } else character(0)
+  if (nrow(local_children) > 0L) {
+    for (child_id in unique(as.character(local_children$id))) {
+      result <- tryCatch(ugplot_stop_job(child_id, jobs_dir), error = identity)
+      if (inherits(result, "error")) errors <- c(errors, conditionMessage(result)) else stopped_ids <- c(stopped_ids, child_id)
+    }
+  }
+
+  config_path <- file.path(ugplot_job_dir(job_id, jobs_dir), "config.rds")
+  config <- if (file.exists(config_path)) tryCatch(readRDS(config_path), error = function(e) list()) else list()
+  workers <- config$distributed_workers %||% list()
+  if (is.data.frame(workers)) workers <- lapply(seq_len(nrow(workers)), function(i) as.list(workers[i, , drop = FALSE]))
+  if (is.list(workers) && length(workers) > 0L) {
+    current_server_name <- Sys.getenv("UGPLOT_SERVER_NAME", unset = "")
+    for (worker in workers) {
+      worker_name <- as.character(worker$name %||% "")
+      if (nzchar(worker_name) && (worker_name %in% local_worker_names || identical(worker_name, current_server_name))) next
+      url <- as.character(worker$url %||% "")
+      token <- as.character(worker$token %||% "")
+      if (!nzchar(url)) next
+      remote_jobs <- tryCatch(
+        ugplot_remote_list_jobs(url, token, include_internal = TRUE, timeout_seconds = 15),
+        error = identity
+      )
+      if (inherits(remote_jobs, "error")) {
+        errors <- c(errors, paste0(worker_name, ": ", conditionMessage(remote_jobs)))
+        next
+      }
+      if (!is.data.frame(remote_jobs) || nrow(remote_jobs) == 0L ||
+          !all(c("id", "parent_job_id", "state") %in% names(remote_jobs))) next
+      remote_ids <- unique(as.character(remote_jobs$id[
+        as.character(remote_jobs$parent_job_id) == as.character(job_id) &
+          as.character(remote_jobs$state) %in% active_states
+      ]))
+      for (child_id in remote_ids) {
+        result <- tryCatch(ugplot_remote_stop_job(url, child_id, token), error = identity)
+        if (inherits(result, "error")) {
+          errors <- c(errors, paste0(worker_name, "/", child_id, ": ", conditionMessage(result)))
+        } else stopped_ids <- c(stopped_ids, child_id)
+      }
+    }
+  }
+
+  cancelled_tasks <- character(0)
+  if (exists("ugplot_collaboration_task_ids", mode = "function", inherits = TRUE) &&
+      exists("ugplot_collaboration_cancel_task", mode = "function", inherits = TRUE)) {
+    task_ids <- tryCatch(
+      ugplot_collaboration_task_ids(
+        jobs_dir, states = c("pending", "leased"), parent_job_id = job_id
+      ),
+      error = function(e) character(0)
+    )
+    for (task_id in task_ids) {
+      cancelled <- tryCatch(
+        ugplot_collaboration_cancel_task(task_id, reason = "coordinator_stopped", jobs_dir = jobs_dir),
+        error = function(e) FALSE
+      )
+      if (isTRUE(cancelled)) cancelled_tasks <- c(cancelled_tasks, task_id)
+    }
+  }
+  list(
+    stopped_job_ids = unique(stopped_ids),
+    cancelled_task_ids = unique(cancelled_tasks),
+    errors = unique(errors[nzchar(errors)])
+  )
+}
+
 ugplot_stop_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
   status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
   if (is.null(status)) {
@@ -1210,7 +1296,7 @@ ugplot_stop_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
   state <- status$state %||% ""
   pid <- suppressWarnings(as.integer(status$pid %||% NA_integer_))
 
-  if (state %in% c("finished", "failed", "stopped")) {
+  if (state %in% c("finished", "failed")) {
     return(status)
   }
 
@@ -1220,10 +1306,16 @@ ugplot_stop_job <- function(job_id, jobs_dir = ugplot_default_jobs_dir()) {
 
   partial_path <- status$partial_result_path %||% ugplot_result_path(job_id, jobs_dir, partial = TRUE)
   has_partial <- !is.null(partial_path) && file.exists(partial_path)
-  distributed_active <- is.list(status$distributed_state) &&
-    suppressWarnings(as.integer(status$distributed_state$active %||% 0L)) > 0L
-  stop_message <- if (isTRUE(distributed_active)) {
-    "Coordinator stopped; active worker tasks may finish and will be collected on Resume"
+  children <- ugplot_stop_job_distributed_children(job_id, status, jobs_dir)
+  stopped_count <- length(children$stopped_job_ids)
+  cancelled_count <- length(children$cancelled_task_ids)
+  stop_message <- if (stopped_count > 0L || cancelled_count > 0L) {
+    paste0(
+      "Stopped immediately; stopped ", stopped_count, " active worker task(s)",
+      if (cancelled_count > 0L) paste0(" and cancelled ", cancelled_count, " public task(s)") else ""
+    )
+  } else if (length(children$errors) > 0L) {
+    paste0("Coordinator stopped, but some worker stop requests failed: ", paste(children$errors, collapse = "; "))
   } else if (has_partial) {
     "Stopped; partial result is available"
   } else {
