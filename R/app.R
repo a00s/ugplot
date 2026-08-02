@@ -4768,6 +4768,8 @@ server <- function(input, output, session) {
       BestMetric = suppressWarnings(as.numeric(screen_result$final_summary$metric_value %||% NA_real_)),
       MedianMetric = if (length(metric_values) > 0) stats::median(metric_values) else NA_real_,
       MeanMetric = if (length(metric_values) > 0) mean(metric_values) else NA_real_,
+      MinMetric = if (length(metric_values) > 0) min(metric_values) else NA_real_,
+      MaxMetric = if (length(metric_values) > 0) max(metric_values) else NA_real_,
       SeedsRun = length(metric_values),
       ModelsRun = model_counts[["ModelsRun"]],
       ModelsOK = model_counts[["ModelsOK"]],
@@ -4907,6 +4909,8 @@ server <- function(input, output, session) {
       BestMetric = suppressWarnings(as.numeric(stability_result$final_summary$metric_value %||% NA_real_)),
       MedianMetric = if (length(metric_values) > 0) stats::median(metric_values) else NA_real_,
       MeanMetric = if (length(metric_values) > 0) mean(metric_values) else NA_real_,
+      MinMetric = if (length(metric_values) > 0) min(metric_values) else NA_real_,
+      MaxMetric = if (length(metric_values) > 0) max(metric_values) else NA_real_,
       MetricSE = if (length(metric_values) > 1) stats::sd(metric_values) / sqrt(length(metric_values)) else NA_real_,
       SeedsRun = length(metric_values),
       Stable = isTRUE(stable_state$stable),
@@ -13470,7 +13474,10 @@ server <- function(input, output, session) {
       }, character(1))
       jobs$Actions <- actions
     }
-    hidden_detail_columns <- intersect(c("id", "pid"), names(jobs))
+    hidden_detail_columns <- intersect(
+      c("id", "pid", "internal_worker_task", "parent_job_id", "worker_name", "request_id", "group_id"),
+      names(jobs)
+    )
     if (length(hidden_detail_columns) > 0) {
       jobs <- jobs[, setdiff(names(jobs), hidden_detail_columns), drop = FALSE]
     }

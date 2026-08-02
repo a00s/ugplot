@@ -189,6 +189,35 @@ ugplot_read_discovery_csv <- function(path) {
   )
 }
 
+.ugplot_discovery_metric_range_cache <- new.env(parent = emptyenv())
+
+ugplot_discovery_result_metric_range <- function(path) {
+  empty <- c(min = NA_real_, max = NA_real_)
+  path <- as.character(path %||% "")
+  if (length(path) != 1L || !nzchar(path) || !file.exists(path)) return(empty)
+  info <- file.info(path)
+  signature <- paste(info$size[[1]], as.numeric(info$mtime[[1]]), sep = ":")
+  cache_key <- normalizePath(path, winslash = "/", mustWork = FALSE)
+  cached <- .ugplot_discovery_metric_range_cache[[cache_key]]
+  if (is.list(cached) && identical(cached$signature, signature)) return(cached$value)
+  result <- tryCatch(readRDS(path), error = function(e) NULL)
+  values <- tryCatch(ugplot_geo_ml_metric_values(result), error = function(e) numeric(0))
+  values <- suppressWarnings(as.numeric(values))
+  values <- values[is.finite(values)]
+  value <- if (length(values) > 0L) {
+    c(min = min(values), max = max(values))
+  } else {
+    summary <- result$final_summary %||% list()
+    c(
+      min = suppressWarnings(as.numeric(summary$best_model_min %||% NA_real_)),
+      max = suppressWarnings(as.numeric(summary$best_model_max %||% NA_real_))
+    )
+  }
+  value[!is.finite(value)] <- NA_real_
+  .ugplot_discovery_metric_range_cache[[cache_key]] <- list(signature = signature, value = value)
+  value
+}
+
 ugplot_public_report_text <- function(value, max_chars = 240L) {
   value <- paste(as.character(value %||% ""), collapse = " ")
   value <- gsub("[[:cntrl:]]", " ", value)
@@ -288,6 +317,15 @@ ugplot_job_discovery_report <- function(job_id,
     } else {
       "CpG centered"
     }
+    min_r2 <- number_value(row, c("MinR2", "MinMetric"))
+    max_r2 <- number_value(row, c("MaxR2", "MaxMetric"))
+    if (!is.finite(min_r2) || !is.finite(max_r2)) {
+      result_path <- text_value(row, c("StabilityResultPath", "ScreenResultPath", "ResultPath"))
+      metric_range <- ugplot_discovery_result_metric_range(result_path)
+      if (!is.finite(min_r2)) min_r2 <- metric_range[["min"]]
+      if (!is.finite(max_r2)) max_r2 <- metric_range[["max"]]
+    }
+    if (!is.finite(max_r2)) max_r2 <- number_value(row, "BestMetric")
     data.frame(
       status = if (identical(phase, "awaiting_analysis")) {
         "awaiting analysis"
@@ -307,8 +345,8 @@ ugplot_job_discovery_report <- function(job_id,
       samples = number_value(row, c("StratumSamples", "Samples", "N")),
       model = text_value(row, "BestModel"),
       median_r2 = model_r2,
-      min_r2 = number_value(row, c("MinR2", "MinMetric")),
-      max_r2 = number_value(row, c("MaxR2", "MaxMetric", "BestMetric")),
+      min_r2 = min_r2,
+      max_r2 = max_r2,
       metric_se = number_value(row, "MetricSE"),
       seeds = number_value(row, "SeedsRun"),
       stratum = paste0(text_value(row, "StratumColumn"), if (nzchar(text_value(row, "StratumValue"))) "=" else "", text_value(row, "StratumValue")),

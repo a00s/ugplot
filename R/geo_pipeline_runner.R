@@ -1477,6 +1477,8 @@ ugplot_geo_screen_group <- function(dataset, group, source, config, screen_path,
     BestMetric = suppressWarnings(as.numeric(screen_result$final_summary$metric_value %||% NA_real_)),
     MedianMetric = if (length(metric_values) > 0) stats::median(metric_values) else NA_real_,
     MeanMetric = if (length(metric_values) > 0) mean(metric_values) else NA_real_,
+    MinMetric = if (length(metric_values) > 0) min(metric_values) else NA_real_,
+    MaxMetric = if (length(metric_values) > 0) max(metric_values) else NA_real_,
     SeedsRun = length(metric_values),
     ModelsRun = model_counts[["ModelsRun"]],
     ModelsOK = model_counts[["ModelsOK"]],
@@ -2885,6 +2887,8 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
       summary_row$BestMetric <- suppressWarnings(as.numeric(stability_result$final_summary$metric_value %||% NA_real_))
       summary_row$MedianMetric <- if (length(metric_values) > 0) stats::median(metric_values) else NA_real_
       summary_row$MeanMetric <- if (length(metric_values) > 0) mean(metric_values) else NA_real_
+      summary_row$MinMetric <- if (length(metric_values) > 0) min(metric_values) else NA_real_
+      summary_row$MaxMetric <- if (length(metric_values) > 0) max(metric_values) else NA_real_
       summary_row$MetricSE <- if (length(metric_values) > 1) stats::sd(metric_values) / sqrt(length(metric_values)) else NA_real_
       summary_row$SeedsRun <- length(metric_values)
       summary_row$Stable <- isTRUE(stable_state$stable)

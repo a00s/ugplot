@@ -462,6 +462,7 @@ test_that("background jobs survive launcher process object collection", {
 
 test_that("process termination includes isolated descendants", {
   skip_on_os("windows")
+  skip_if_not(dir.exists("/proc"))
   skip_if_not_installed("processx")
   terminate_process <- ugplot_test_internal("ugplot_terminate_process")
   process_alive <- ugplot_test_internal("ugplot_process_alive")

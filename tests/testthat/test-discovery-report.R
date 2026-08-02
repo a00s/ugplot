@@ -42,6 +42,12 @@ test_that("incremental discovery report upgrades screened groups with stability"
   stability$MetricSE <- 0.004
   stability$SeedsRun <- 90
   stability$Stable <- TRUE
+  stability_result_path <- file.path(paths$pipeline_dir, "TG1-stability-result.rds")
+  saveRDS(
+    list(results_table = data.frame(R2 = c(0.71, 0.82, 0.91), Status = "OK")),
+    stability_result_path
+  )
+  stability$StabilityResultPath <- stability_result_path
   utils::write.csv(screening, paths$screening, row.names = FALSE)
   utils::write.csv(rbind(stability, stability), paths$stability, row.names = FALSE)
   group_candidates <- screening
@@ -89,6 +95,8 @@ test_that("incremental discovery report upgrades screened groups with stability"
   expect_equal(report$discoveries[[1]]$transcript_count, 2)
   expect_equal(report$discoveries[[1]]$cpgs, 12)
   expect_equal(report$discoveries[[1]]$median_r2, 0.82)
+  expect_equal(report$discoveries[[1]]$min_r2, 0.71)
+  expect_equal(report$discoveries[[1]]$max_r2, 0.91)
   expect_equal(report$discoveries[[2]]$status, "preliminary")
   expect_equal(report$discoveries[[3]]$status, "awaiting analysis")
   expect_equal(report$discoveries[[3]]$best_cpg, "cg3")

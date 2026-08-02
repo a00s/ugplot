@@ -728,6 +728,17 @@ ugplot_process_alive <- function(pid) {
     )
     return(any(grepl(paste0("\\b", pid, "\\b"), output)))
   }
+  proc_stat <- file.path("/proc", pid, "stat")
+  if (file.exists(proc_stat)) {
+    stat_line <- tryCatch(readLines(proc_stat, warn = FALSE, n = 1L), error = function(e) character(0))
+    if (length(stat_line) > 0L) {
+      suffix <- sub("^.*\\) ", "", stat_line[[1]])
+      state <- strsplit(suffix, " ", fixed = TRUE)[[1]][[1]] %||% ""
+      if (identical(state, "Z")) {
+        return(FALSE)
+      }
+    }
+  }
   result <- tryCatch(tools::pskill(pid, signal = 0), error = function(e) FALSE)
   isTRUE(result)
 }
