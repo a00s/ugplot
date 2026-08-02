@@ -305,6 +305,8 @@ ugplot_cleanup_global_session_objects <- function() {
     "ugplot_remote_delete_job",
     "ugplot_remote_get_result",
     "ugplot_remote_get_job_preview",
+    "ugplot_remote_job_group_datasets",
+    "ugplot_remote_get_job_group_dataset",
     "ugplot_remote_get_job_model_timing",
     "ugplot_remote_get_job_bundle",
     "ugplot_remote_servers_path",
@@ -13385,6 +13387,9 @@ server <- function(input, output, session) {
       can_drain <- states %in% c("queued", "running") &
         vapply(server_names, function(server_name) remote_server_supports("drain_job", server_name), logical(1))
       can_load <- !can_stop
+      can_load_group <- vapply(server_names, function(server_name) {
+        remote_server_supports("job_group_dataset", server_name)
+      }, logical(1)) & tolower(as.character(raw_jobs$type %||% "")) == "geo"
       load_labels <- ifelse(states == "finished", "Load", "Load partial")
       can_delete <- vapply(server_names, function(server_name) remote_server_supports("delete_job", server_name), logical(1)) & !states %in% c("queued", "running", "draining")
       can_resume <- if ("resumable" %in% names(raw_jobs)) {
@@ -13444,6 +13449,13 @@ server <- function(input, output, session) {
           }
           buttons <- c(buttons, icon_button(
             "remote-job-action-load", "download-alt", load_title, "remote_load_result_row"
+          ))
+        }
+        if (isTRUE(can_load_group[[i]])) {
+          buttons <- c(buttons, icon_button(
+            "remote-job-action-group-dataset", "list-alt",
+            "Choose one transcript-group dataset to load into TABLE",
+            "remote_choose_group_dataset_row"
           ))
         }
         if (isTRUE(can_stop[[i]])) {
@@ -13723,6 +13735,103 @@ server <- function(input, output, session) {
     }, error = function(e) {
       remote_job_loading(FALSE)
       remote_job_status_text(paste("Remote result load failed:", conditionMessage(e)))
+    })
+  })
+
+  observeEvent(input$remote_choose_group_dataset_row, {
+    tryCatch({
+      action <- parse_remote_job_action_key(input$remote_choose_group_dataset_row)
+      server <- remote_server_by_name(action$server)
+      groups <- ugplot_remote_job_group_datasets(
+        server_url = server$url,
+        job_id = action$job_id,
+        token = server$token %||% ""
+      )
+      if (!is.data.frame(groups) || nrow(groups) == 0L) {
+        stop("No transcript-group dataset is available for this job yet.", call. = FALSE)
+      }
+      label_value <- function(value, fallback = "") {
+        value <- as.character(value %||% fallback)
+        value[is.na(value)] <- fallback
+        value
+      }
+      labels <- paste0(
+        label_value(groups$group_id), " | ",
+        label_value(groups$gene, "unknown gene"), " | ",
+        label_value(groups$transcript, "unknown transcript"), " | ",
+        label_value(groups$samples, "?"), " samples | ",
+        label_value(groups$cpgs, "?"), " CpGs"
+      )
+      choices <- stats::setNames(label_value(groups$group_id), labels)
+      showModal(modalDialog(
+        title = "Load one transcript-group dataset",
+        tags$p(
+          "This reads only the selected cached group and loads it into TABLE like a CSV. ",
+          "The remote job keeps running."
+        ),
+        selectizeInput(
+          "remote_group_dataset_id", "Transcript group", choices = choices,
+          selected = unname(choices[[1]])
+        ),
+        easyClose = TRUE,
+        footer = tagList(
+          modalButton("Cancel"),
+          actionButton("remote_load_group_dataset_confirm", "Load dataset", class = "btn-primary")
+        )
+      ))
+    }, error = function(e) {
+      remote_job_status_text(paste("Remote group list failed:", conditionMessage(e)))
+      showNotification(conditionMessage(e), type = "warning", duration = 6)
+    })
+  })
+
+  observeEvent(input$remote_load_group_dataset_confirm, {
+    tryCatch({
+      action <- parse_remote_job_action_key(input$remote_choose_group_dataset_row)
+      group_id <- as.character(input$remote_group_dataset_id %||% "")
+      req(nzchar(group_id))
+      server <- remote_server_by_name(action$server)
+      payload <- ugplot_remote_get_job_group_dataset(
+        server_url = server$url,
+        job_id = action$job_id,
+        group_id = group_id,
+        token = server$token %||% ""
+      )
+      dataset <- payload$dataset
+      if (!is.data.frame(dataset) || nrow(dataset) == 0L) {
+        stop("The selected transcript-group dataset is empty or invalid.", call. = FALSE)
+      }
+      dff <<- as.data.frame(dataset, stringsAsFactors = FALSE, check.names = FALSE)
+      df_pre <<- dff
+      changed_table <<- dff
+      dataset_name <- paste(
+        payload$accession %||% "GEO", payload$group_id %||% group_id, "group_dataset",
+        sep = "_"
+      )
+      original_dataset_filename(paste0(dataset_name, ".csv"))
+      reset_missing_strategy_ui()
+      scrambled_columns(character(0))
+      scramble_original_columns(list())
+      heatmap_recorded_plot(NULL)
+      hide("downloadHeatmapPlotTiff")
+      updateTextAreaInput(session, "textarea_columns", value = paste(names(dff), collapse = "\n"))
+      updateTextAreaInput(session, "textarea_rows", value = paste(rownames(dff), collapse = "\n"))
+      load_dataset_into_table(session)
+      refresh_counter(refresh_counter() + 1)
+      update_scramble_selector()
+      removeModal()
+      updateTabsetPanel(session, "tabs", selected = "TABLE")
+      remote_job_status_text(paste0(
+        "Loaded ", payload$group_id %||% group_id, " from ", action$server,
+        " into TABLE: ", nrow(dff), " rows x ", ncol(dff), " columns. The remote job is still running."
+      ))
+      showNotification(
+        paste0(payload$group_id %||% group_id, " loaded into TABLE; remote job unchanged."),
+        type = "message", duration = 5
+      )
+    }, error = function(e) {
+      remote_job_status_text(paste("Remote group dataset load failed:", conditionMessage(e)))
+      showNotification(conditionMessage(e), type = "error", duration = 7)
     })
   })
 

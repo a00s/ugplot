@@ -67,7 +67,7 @@ test_that("incremental discovery report upgrades screened groups with stability"
   utils::write.csv(group_candidates, paths$groups, row.names = FALSE)
   write_atomic(data.frame(
     GroupID = c("TG1", "TG2", "TG3"),
-    Worker = c("", "Fy2", ""),
+    Worker = c("Fy3", "Fy2", ""),
     State = c("completed", "running", "pending"),
     Progress = c(1, 0.37, 0),
     Message = c("Completed", "Comparing candidate models", "Waiting"),
@@ -83,6 +83,13 @@ test_that("incremental discovery report upgrades screened groups with stability"
       active_groups = "Fy2:TG2"
     )
   )
+  write_task <- ugplot_test_internal("ugplot_collaboration_write_task")
+  task_id <- paste(status$id, "analyze", "TG1", sep = ":")
+  write_task(list(
+    task_id = task_id, parent_job_id = status$id, state = "completed",
+    scientist_name = "Adyl", client_id = "public-client",
+    updated_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+  ), jobs_dir = jobs_dir)
 
   report <- report_job(status$id, jobs_dir)
   expect_equal(report$progress$total, 3L)
@@ -97,6 +104,7 @@ test_that("incremental discovery report upgrades screened groups with stability"
   expect_equal(report$discoveries[[1]]$median_r2, 0.82)
   expect_equal(report$discoveries[[1]]$min_r2, 0.71)
   expect_equal(report$discoveries[[1]]$max_r2, 0.91)
+  expect_equal(report$discoveries[[1]]$resolved_by, "Adyl")
   expect_equal(report$discoveries[[2]]$status, "preliminary")
   expect_equal(report$discoveries[[3]]$status, "awaiting analysis")
   expect_equal(report$discoveries[[3]]$best_cpg, "cg3")
@@ -120,6 +128,8 @@ test_that("discovery report HTML accepts a direct job link", {
   expect_match(report_html, "/reports/assets/ugplot.png", fixed = TRUE)
   expect_match(report_html, "Best CpG correlation", fixed = TRUE)
   expect_match(report_html, "<th>CpGs</th>", fixed = TRUE)
+  expect_match(report_html, "<th>Resolved by</th>", fixed = TRUE)
+  expect_match(report_html, "resolverBadge(r.resolved_by)", fixed = TRUE)
   expect_match(report_html, "fmt(r.cpgs)", fixed = TRUE)
   expect_match(report_html, "Best overall performance", fixed = TRUE)
   expect_match(report_html, "computational group may contain multiple biological transcripts", fixed = TRUE)
@@ -197,4 +207,57 @@ test_that("live report overlay clears stale workers after stop", {
   expect_equal(live$job$message, "Stopped safely")
   expect_equal(live$collaboration$active, 0L)
   expect_identical(live$collaboration$contributors, list())
+})
+
+test_that("one cached GEO group dataset can be listed and read while its job is active", {
+  jobs_dir <- tempfile("ugplot-group-dataset-jobs-")
+  cache_dir <- tempfile("ugplot-group-dataset-cache-")
+  dir.create(jobs_dir, recursive = TRUE)
+  dir.create(cache_dir, recursive = TRUE)
+  ugplot_test_local_namespace_binding("ugplot_geo_cache_dir", function(accession) cache_dir)
+
+  status <- ugplot_test_internal("ugplot_create_job")(
+    data.frame(x = 1),
+    config = list(
+      runner = "ugplot_run_geo_pipeline_job", accession = "GSE87571",
+      matrix_source = "processed", target_column = "age",
+      transcript_absrho_threshold = 0.8, transcript_min_samples = 80
+    ),
+    jobs_dir = jobs_dir, type = "geo"
+  )
+  ugplot_test_internal("ugplot_update_job_status")(
+    status$id, jobs_dir, state = "running", message = "Distributed analysis is running"
+  )
+  paths <- ugplot_test_internal("ugplot_job_discovery_report_paths")(status$id, jobs_dir)
+  dir.create(dirname(paths$groups), recursive = TRUE, showWarnings = FALSE)
+  tg1_path <- file.path(cache_dir, "TG1.csv")
+  tg2_path <- file.path(cache_dir, "TG2.csv")
+  expected <- data.frame(sample_id = c("S1", "S2"), age = c(40, 60), cg1 = c(0.2, 0.8))
+  utils::write.csv(expected, tg1_path, row.names = FALSE)
+  utils::write.csv(data.frame(sample_id = "S3", age = 50, cg2 = 0.5), tg2_path, row.names = FALSE)
+  utils::write.csv(data.frame(
+    GroupID = c("TG2", "TG1", "TG3"),
+    PrincipalTranscript = c("ENST2", "ENST1", "ENST3"),
+    Gene = c("GENE2", "GENE1", "GENE3"),
+    TranscriptMembers = c("ENST2", "ENST1;ENST1_ALT", "ENST3"),
+    Columns = c(1L, 1L, 1L), Samples = c(1L, 2L, 1L),
+    DatasetPath = c(tg2_path, tg1_path, file.path(cache_dir, "missing.csv")),
+    stringsAsFactors = FALSE
+  ), paths$groups, row.names = FALSE)
+
+  catalog <- ugplot_test_internal("ugplot_job_geo_group_datasets")(status$id, jobs_dir)
+  expect_equal(catalog$group_id, c("TG1", "TG2"))
+  expect_equal(catalog$gene, c("GENE1", "GENE2"))
+  expect_false("DatasetPath" %in% names(catalog))
+
+  payload <- ugplot_test_internal("ugplot_read_job_geo_group_dataset")(status$id, "tg1", jobs_dir)
+  expect_equal(payload$group_id, "TG1")
+  expect_equal(payload$accession, "GSE87571")
+  expect_equal(payload$target, "age")
+  expect_equal(payload$dataset, expected)
+  expect_equal(ugplot_test_internal("ugplot_read_job_status")(status$id, jobs_dir)$state, "running")
+  expect_error(
+    ugplot_test_internal("ugplot_read_job_geo_group_dataset")(status$id, "../TG1", jobs_dir),
+    "Invalid transcript group id"
+  )
 })

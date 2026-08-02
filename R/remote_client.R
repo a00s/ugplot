@@ -441,6 +441,37 @@ ugplot_remote_get_job_preview <- function(server_url, job_id, token = "", timeou
   readRDS(preview_file)
 }
 
+ugplot_remote_job_group_datasets <- function(server_url, job_id, token = "", timeout_seconds = 30) {
+  request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/group-datasets"), token)
+  response <- httr::GET(request$url, request$headers, httr::timeout(timeout_seconds))
+  parsed <- ugplot_remote_parse(response)
+  groups <- parsed$groups %||% data.frame()
+  if (is.list(groups) && !is.data.frame(groups) && length(groups) > 0L) {
+    groups <- tryCatch(as.data.frame(groups, stringsAsFactors = FALSE), error = function(e) data.frame())
+  }
+  if (is.data.frame(groups)) groups else data.frame()
+}
+
+ugplot_remote_get_job_group_dataset <- function(server_url, job_id, group_id, token = "",
+                                                timeout_seconds = 120) {
+  request <- ugplot_remote_request(
+    server_url,
+    paste0("jobs/", job_id, "/group-datasets/", utils::URLencode(group_id, reserved = TRUE), "/rds"),
+    token
+  )
+  response <- httr::GET(request$url, request$headers, httr::timeout(timeout_seconds))
+  parsed <- ugplot_remote_parse(response)
+  content_base64 <- as.character(unlist(parsed$content_base64, use.names = FALSE))
+  content_base64 <- content_base64[nzchar(content_base64)]
+  if (length(content_base64) == 0L) {
+    stop("Remote group dataset response did not include RDS content.", call. = FALSE)
+  }
+  payload_path <- tempfile(fileext = ".rds")
+  writeBin(base64enc::base64decode(content_base64[[1]]), payload_path)
+  on.exit(unlink(payload_path), add = TRUE)
+  readRDS(payload_path)
+}
+
 ugplot_remote_get_job_model_timing <- function(server_url, job_id, token = "", timeout_seconds = 20) {
   request <- ugplot_remote_request(server_url, paste0("jobs/", job_id, "/model-timing-rds"), token)
   response <- httr::GET(request$url, request$headers, httr::timeout(timeout_seconds))
