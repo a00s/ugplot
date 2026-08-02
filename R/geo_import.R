@@ -449,14 +449,38 @@ ugplot_geo_parse_characteristics <- function(metadata) {
   metadata
 }
 
-ugplot_geo_fetch_sample_metadata <- function(accession, cache_dir) {
+ugplot_geo_read_cached_sample_metadata <- function(cache_dir) {
+  rds_path <- ugplot_geo_sample_metadata_path(cache_dir, "rds")
+  csv_path <- ugplot_geo_sample_metadata_path(cache_dir, "csv")
+  metadata <- if (file.exists(rds_path)) {
+    tryCatch(readRDS(rds_path), error = function(e) data.frame())
+  } else {
+    data.frame()
+  }
+  if ((!is.data.frame(metadata) || nrow(metadata) == 0L) && file.exists(csv_path)) {
+    metadata <- tryCatch(
+      utils::read.csv(csv_path, stringsAsFactors = FALSE, check.names = FALSE),
+      error = function(e) data.frame()
+    )
+  }
+  if (!is.data.frame(metadata) || nrow(metadata) == 0L || !"sample_id" %in% names(metadata)) {
+    return(data.frame())
+  }
+  metadata
+}
+
+ugplot_geo_fetch_sample_metadata <- function(accession, cache_dir, refresh = FALSE) {
+  dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+  if (!isTRUE(refresh)) {
+    cached <- ugplot_geo_read_cached_sample_metadata(cache_dir)
+    if (nrow(cached) > 0L) return(cached)
+  }
   if (!requireNamespace("GEOquery", quietly = TRUE)) {
     stop("Package 'GEOquery' is required to fetch sample metadata.")
   }
   if (!requireNamespace("Biobase", quietly = TRUE)) {
     stop("Package 'Biobase' is required to read GEO sample metadata.")
   }
-  dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
   geo_sets <- GEOquery::getGEO(accession, GSEMatrix = TRUE, getGPL = FALSE, destdir = cache_dir)
   if (!is.list(geo_sets)) {
     geo_sets <- list(geo_sets)

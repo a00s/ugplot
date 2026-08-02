@@ -3276,7 +3276,7 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
   ugplot_geo_write_manifest(cache_dir, accession, remote_files)
   result$tables$remote_files <- remote_files
 
-  publish(0.08, "Fetching sample metadata", force = TRUE)
+  publish(0.08, "Loading sample metadata (cache first)", force = TRUE)
   metadata <- ugplot_geo_fetch_sample_metadata(accession, cache_dir)
   metadata_predictor_spec <- ugplot_geo_metadata_predictor_spec(
     metadata,
