@@ -116,6 +116,29 @@ test_that("incremental discovery report upgrades screened groups with stability"
   expect_equal(report$collaboration$contributors[[1]]$progress, 0.37)
 })
 
+test_that("discovery rows are reconciled to the current biological group", {
+  reconcile <- ugplot_test_internal("ugplot_reconcile_discovery_group_ids")
+  groups <- data.frame(
+    GroupID = c("TG10", "TG32", "TG33"),
+    PrincipalTranscript = c("ENST_TRIM59", "ENST_ZYG11A_A", "ENST_ZYG11A_B"),
+    Gene = c("TRIM59", "ZYG11A", "ZYG11A"),
+    Columns = c(17L, 13L, 12L), Samples = c(649L, 699L, 699L),
+    CpGs = c("cg_a;cg_b", "cg16015712;cg_z2", "cg16015712;cg_z3"),
+    GroupKey = c("trim-key", "zyg-a-key", "zyg-b-key"),
+    DatasetPath = c("trim.csv", "zyg-a.csv", "zyg-b.csv"),
+    stringsAsFactors = FALSE
+  )
+  old_result <- data.frame(
+    GroupID = "TG10", PrincipalTranscript = "NM_001004339", Gene = "ZYG11A",
+    Columns = 13L, Samples = 699L, CpGs = "cg16015712;cg_z2",
+    TriggerBestCpG = "cg16015712", stringsAsFactors = FALSE
+  )
+
+  fixed <- reconcile(old_result, groups)
+  expect_equal(fixed$OriginalGroupID, "TG10")
+  expect_equal(fixed$GroupID, "TG32")
+})
+
 test_that("discovery report HTML accepts a direct job link", {
   report_html <- ugplot_test_internal("ugplot_discovery_report_html")("job-123")
   expect_match(report_html, "UGPLOT LIVE DISCOVERY REPORT", fixed = TRUE)

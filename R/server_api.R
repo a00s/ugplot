@@ -175,6 +175,26 @@ ugplot_job_discovery_report_paths <- function(job_id,
     metadata_numeric_predictors = config$geo_metadata_numeric_predictors %||% character(0),
     metadata_categorical_predictors = config$geo_metadata_categorical_predictors %||% character(0)
   )
+  if (!file.exists(group_paths$summary)) {
+    numeric_predictors <- config$geo_metadata_numeric_predictors %||% character(0)
+    categorical_predictors <- config$geo_metadata_categorical_predictors %||% character(0)
+    legacy_version <- if (length(numeric_predictors) == 0L && length(categorical_predictors) == 0L) {
+      "reader_v5_members"
+    } else {
+      paste0(
+        "reader_v6_metadata_",
+        ugplot_geo_metadata_predictor_key(numeric_predictors, categorical_predictors)
+      )
+    }
+    legacy_paths <- ugplot_geo_transcript_group_paths(
+      ugplot_geo_cache_dir(toupper(accession)), target, threshold, min_samples,
+      source = source,
+      metadata_numeric_predictors = numeric_predictors,
+      metadata_categorical_predictors = categorical_predictors,
+      cache_version = legacy_version
+    )
+    if (file.exists(legacy_paths$summary)) group_paths <- legacy_paths
+  }
   list(
     config = config,
     pipeline_dir = pipeline_dir,
@@ -346,6 +366,83 @@ ugplot_public_report_text <- function(value, max_chars = 240L) {
   value
 }
 
+ugplot_reconcile_discovery_group_ids <- function(rows, groups) {
+  if (!is.data.frame(rows) || nrow(rows) == 0L || !"GroupID" %in% names(rows) ||
+      !is.data.frame(groups) || nrow(groups) == 0L || !"GroupID" %in% names(groups)) {
+    return(rows)
+  }
+  text_column <- function(data, name) {
+    value <- if (name %in% names(data)) as.character(data[[name]]) else rep("", nrow(data))
+    value[is.na(value)] <- ""
+    value
+  }
+  tokens <- function(value) {
+    value <- as.character(value %||% "")
+    value <- value[!is.na(value) & nzchar(value)]
+    if (length(value) == 0L) return(character(0))
+    value <- trimws(unlist(strsplit(paste(value, collapse = ";"), "[;,]"), use.names = FALSE))
+    unique(toupper(value[nzchar(value)]))
+  }
+  cpg_key <- function(value) paste(sort(tokens(value)), collapse = "\r")
+  same_number <- function(left, right) {
+    left <- suppressWarnings(as.numeric(left))
+    right <- suppressWarnings(as.numeric(right))
+    is.finite(left) & is.finite(right) & left == right
+  }
+
+  group_keys <- text_column(groups, "GroupKey")
+  group_cpg_keys <- vapply(text_column(groups, "CpGs"), cpg_key, character(1))
+  group_best_cpgs <- text_column(groups, "TriggerBestCpG")
+  group_transcripts <- Map(c, text_column(groups, "PrincipalTranscript"), text_column(groups, "TranscriptMembers"))
+  group_genes <- Map(c, text_column(groups, "Gene"), text_column(groups, "GeneMembers"))
+  group_paths <- text_column(groups, "DatasetPath")
+  group_columns <- text_column(groups, "Columns")
+  group_samples <- text_column(groups, "Samples")
+
+  rows$OriginalGroupID <- text_column(rows, "GroupID")
+  for (i in seq_len(nrow(rows))) {
+    row <- rows[i, , drop = FALSE]
+    row_key <- text_column(row, "GroupKey")[[1]]
+    exact_key <- if (!is.na(row_key) && nzchar(row_key)) which(group_keys == row_key) else integer(0)
+    if (length(exact_key) == 1L) {
+      rows$GroupID[[i]] <- as.character(groups$GroupID[[exact_key]])
+      next
+    }
+
+    score <- numeric(nrow(groups))
+    row_path <- text_column(row, "DatasetPath")[[1]]
+    if (!is.na(row_path) && nzchar(row_path)) score[group_paths == row_path] <- score[group_paths == row_path] + 80
+    row_cpg_key <- cpg_key(text_column(row, "CpGs")[[1]])
+    if (nzchar(row_cpg_key)) score[group_cpg_keys == row_cpg_key] <- score[group_cpg_keys == row_cpg_key] + 100
+    row_best_cpg <- toupper(text_column(row, "TriggerBestCpG")[[1]])
+    if (nzchar(row_best_cpg)) {
+      contains_best <- vapply(text_column(groups, "CpGs"), function(value) row_best_cpg %in% tokens(value), logical(1))
+      score[contains_best] <- score[contains_best] + 30
+      score[toupper(group_best_cpgs) == row_best_cpg] <- score[toupper(group_best_cpgs) == row_best_cpg] + 5
+    }
+    row_transcripts <- tokens(c(text_column(row, "PrincipalTranscript"), text_column(row, "TranscriptMembers"), text_column(row, "Transcript")))
+    if (length(row_transcripts) > 0L) {
+      matches <- vapply(group_transcripts, function(value) length(intersect(row_transcripts, tokens(value))) > 0L, logical(1))
+      score[matches] <- score[matches] + 40
+    }
+    row_genes <- tokens(c(text_column(row, "Gene"), text_column(row, "GeneMembers")))
+    if (length(row_genes) > 0L) {
+      matches <- vapply(group_genes, function(value) length(intersect(row_genes, tokens(value))) > 0L, logical(1))
+      score[matches] <- score[matches] + 15
+    }
+    score[same_number(group_columns, text_column(row, "Columns")[[1]])] <-
+      score[same_number(group_columns, text_column(row, "Columns")[[1]])] + 8
+    score[same_number(group_samples, text_column(row, "Samples")[[1]])] <-
+      score[same_number(group_samples, text_column(row, "Samples")[[1]])] + 8
+
+    best <- which(score == max(score))
+    if (length(best) == 1L && score[[best]] >= 30) {
+      rows$GroupID[[i]] <- as.character(groups$GroupID[[best]])
+    }
+  }
+  rows
+}
+
 ugplot_job_discovery_report <- function(job_id,
                                         jobs_dir = ugplot_default_jobs_dir()) {
   paths <- ugplot_job_discovery_report_paths(job_id, jobs_dir)
@@ -353,6 +450,8 @@ ugplot_job_discovery_report <- function(job_id,
   groups <- ugplot_read_discovery_csv(paths$groups)
   screening <- ugplot_read_discovery_csv(paths$screening)
   stability <- ugplot_read_discovery_csv(paths$stability)
+  screening <- ugplot_reconcile_discovery_group_ids(screening, groups)
+  stability <- ugplot_reconcile_discovery_group_ids(stability, groups)
   manifest <- if (file.exists(paths$manifest)) {
     tryCatch(readRDS(paths$manifest), error = function(e) data.frame())
   } else data.frame()
@@ -446,7 +545,8 @@ ugplot_job_discovery_report <- function(job_id,
       if (!is.finite(max_r2)) max_r2 <- metric_range[["max"]]
     }
     if (!is.finite(max_r2)) max_r2 <- number_value(row, "BestMetric")
-    resolver <- unname(resolver_map[text_value(row, "GroupID")])
+    resolver_group <- text_value(row, c("OriginalGroupID", "GroupID"))
+    resolver <- unname(resolver_map[resolver_group])
     if (length(resolver) == 0L || is.na(resolver[[1]])) resolver <- ""
     data.frame(
       status = if (identical(phase, "awaiting_analysis")) {

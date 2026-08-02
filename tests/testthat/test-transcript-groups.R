@@ -57,6 +57,30 @@ test_that("transcripts with different effective CpGs are separate groups", {
   expect_setequal(groups$summary$TranscriptMembers, c("ENST_A", "ENST_B"))
 })
 
+test_that("existing transcript group ids survive ranking changes", {
+  build_groups <- ugplot_test_internal("ugplot_geo_build_group_tables_remote")
+  progress <- data.frame(
+    Transcript = c("ENST_A", "ENST_B"), Gene = c("GENE_A", "GENE_B"),
+    Status = "compatible", Columns = 1L, Samples = 3L,
+    KeptCpGs = c("cg_a", "cg_b"), CpGKey = c("cg_a", "cg_b"),
+    SampleKey = "S1\rS2\rS3", TriggerMaxAbsRho = c(0.8, 0.7),
+    TriggerBestCpG = c("cg_a", "cg_b"), TriggerBestRho = c(0.8, 0.7),
+    DatasetPath = c("a.csv", "b.csv"), stringsAsFactors = FALSE
+  )
+  initial <- build_groups(progress[1, , drop = FALSE])$summary
+  expect_equal(initial$GroupID, "TG1")
+
+  rebuilt <- build_groups(progress, existing_summary = initial)$summary
+  expect_equal(rebuilt$GroupID[rebuilt$PrincipalTranscript == "ENST_A"], "TG1")
+  expect_equal(rebuilt$GroupID[rebuilt$PrincipalTranscript == "ENST_B"], "TG2")
+
+  reranked <- progress
+  reranked$TriggerMaxAbsRho <- c(0.8, 0.95)
+  reranked <- build_groups(reranked, existing_summary = rebuilt)$summary
+  expect_equal(reranked$GroupID[reranked$PrincipalTranscript == "ENST_A"], "TG1")
+  expect_equal(reranked$GroupID[reranked$PrincipalTranscript == "ENST_B"], "TG2")
+})
+
 test_that("transcript progress rows reuse a preloaded candidate matrix", {
   build_row <- ugplot_test_internal("ugplot_geo_build_transcript_group_progress_row")
   cache_dir <- tempfile("ugplot-transcript-cache-")
@@ -160,11 +184,11 @@ test_that("selected GEO metadata predictors preserve numeric and class roles", {
   expect_false(identical(predictor_key("dose", "stage"), predictor_key("dose", character(0))))
   expect_equal(
     ugplot_test_internal("ugplot_geo_transcript_cache_version")(),
-    "reader_v5_members"
+    "reader_v7_stable_groups"
   )
   expect_match(
     ugplot_test_internal("ugplot_geo_transcript_cache_version")("dose", "stage"),
-    "reader_v6_metadata_metadata_"
+    "reader_v7_metadata_stable_groups_metadata_"
   )
 
   bad_metadata <- metadata

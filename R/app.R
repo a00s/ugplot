@@ -4385,9 +4385,9 @@ server <- function(input, output, session) {
 
   geo_transcript_cache_version <- function() {
     spec <- geo_metadata_predictor_spec()
-    if (length(spec$all) == 0L) return("reader_v5_members")
+    if (length(spec$all) == 0L) return("reader_v7_stable_groups")
     paste0(
-      "reader_v6_metadata_",
+      "reader_v7_metadata_stable_groups_",
       ugplot_geo_metadata_predictor_key(spec$numeric, spec$categorical)
     )
   }
@@ -4484,7 +4484,7 @@ server <- function(input, output, session) {
     limited
   }
 
-  geo_build_group_tables <- function(progress_rows, candidates) {
+  geo_build_group_tables <- function(progress_rows, candidates, existing_summary = data.frame()) {
     compatible <- progress_rows[progress_rows$Status == "compatible", , drop = FALSE]
     if (nrow(compatible) == 0) {
       return(list(summary = data.frame(), details = data.frame()))
@@ -4525,7 +4525,7 @@ server <- function(input, output, session) {
     })
     summary <- do.call(rbind, summary_rows)
     summary <- summary[order(-summary$TriggerMaxAbsRho, -summary$Columns, -summary$Samples, summary$PrincipalTranscript), , drop = FALSE]
-    summary$GroupID <- paste0("TG", seq_len(nrow(summary)))
+    summary <- ugplot_geo_assign_stable_group_ids(summary, existing_summary)
 
     group_lookup <- stats::setNames(summary$GroupID, summary$GroupKey)
     detail_rows <- lapply(seq_len(nrow(compatible)), function(i) {
@@ -7353,6 +7353,12 @@ server <- function(input, output, session) {
     } else {
       data.frame()
     }
+    existing_group_summary <- if (file.exists(paths$summary)) {
+      tryCatch(utils::read.csv(paths$summary, stringsAsFactors = FALSE, check.names = FALSE),
+        error = function(e) data.frame())
+    } else {
+      data.frame()
+    }
     if (is.data.frame(progress_rows) && nrow(progress_rows) > 0 && all(c("Transcript", "Status", "DatasetPath", "RawDatasetPath") %in% names(progress_rows))) {
       for (progress_i in seq_len(nrow(progress_rows))) {
         final_path <- geo_transcript_dataset_cache_path(cache_dir, progress_rows$Transcript[[progress_i]], target_column, source = source)
@@ -7675,7 +7681,10 @@ server <- function(input, output, session) {
         stringsAsFactors = FALSE
       )
       progress_rows <- rbind(progress_rows, progress_row)
-      tables <- geo_build_group_tables(progress_rows, candidates)
+      tables <- geo_build_group_tables(
+        progress_rows, candidates, existing_summary = existing_group_summary
+      )
+      existing_group_summary <- tables$summary
       geo_transcript_groups(tables$summary)
       geo_transcript_group_details(tables$details)
       write_geo_transcript_group_cache(paths, tables, progress_rows)
@@ -7709,7 +7718,9 @@ server <- function(input, output, session) {
       }
     }
 
-    tables <- geo_build_group_tables(progress_rows, candidates)
+    tables <- geo_build_group_tables(
+      progress_rows, candidates, existing_summary = existing_group_summary
+    )
     geo_transcript_groups(tables$summary)
     geo_transcript_group_details(tables$details)
     write_geo_transcript_group_cache(paths, tables, progress_rows)

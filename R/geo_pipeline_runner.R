@@ -33,10 +33,10 @@ ugplot_geo_transcript_cache_version <- function(metadata_numeric_predictors = ch
                                                 metadata_categorical_predictors = character(0)) {
   if (length(metadata_numeric_predictors) == 0L &&
       length(metadata_categorical_predictors) == 0L) {
-    return("reader_v5_members")
+    return("reader_v7_stable_groups")
   }
   paste0(
-    "reader_v6_metadata_",
+    "reader_v7_metadata_stable_groups_",
     ugplot_geo_metadata_predictor_key(
       metadata_numeric_predictors,
       metadata_categorical_predictors
@@ -71,16 +71,17 @@ ugplot_geo_transcript_dataset_path <- function(cache_dir, transcript, target_col
 
 ugplot_geo_transcript_group_paths <- function(cache_dir, target_column, threshold, min_samples_pct, source = "processed",
                                               metadata_numeric_predictors = character(0),
-                                              metadata_categorical_predictors = character(0)) {
+                                              metadata_categorical_predictors = character(0),
+                                              cache_version = NULL) {
   safe_target <- ugplot_geo_safe_token(target_column)
   safe_threshold <- ugplot_geo_safe_token(format(threshold, trim = TRUE, scientific = FALSE))
   safe_min_samples <- ugplot_geo_safe_token(format(min_samples_pct, trim = TRUE, scientific = FALSE))
   safe_missing <- ugplot_geo_safe_token(paste(ugplot_geo_transcript_missing_definition(), collapse = "_"))
   prefix <- file.path(ugplot_geo_analysis_dir(cache_dir, source), paste0(
     "ugplot_geo_transcript_ml_groups_", safe_target,
-    "_", ugplot_geo_transcript_cache_version(
+    "_", as.character(cache_version %||% ugplot_geo_transcript_cache_version(
       metadata_numeric_predictors, metadata_categorical_predictors
-    ),
+    )),
     "_absrho_", safe_threshold,
     "_minsamples_", safe_min_samples,
     "_missing_", safe_missing
@@ -504,7 +505,45 @@ ugplot_geo_bind_rows <- function(rows) {
   result
 }
 
-ugplot_geo_build_group_tables_remote <- function(progress_rows, candidates = NULL) {
+ugplot_geo_assign_stable_group_ids <- function(summary, existing_summary = data.frame()) {
+  if (!is.data.frame(summary) || nrow(summary) == 0L || !"GroupKey" %in% names(summary)) {
+    return(summary)
+  }
+  existing_map <- character(0)
+  used_numbers <- integer(0)
+  if (is.data.frame(existing_summary) && nrow(existing_summary) > 0L &&
+      all(c("GroupID", "GroupKey") %in% names(existing_summary))) {
+    existing_ids <- toupper(trimws(as.character(existing_summary$GroupID)))
+    existing_keys <- as.character(existing_summary$GroupKey)
+    valid <- !is.na(existing_ids) & grepl("^TG[0-9]+$", existing_ids) &
+      !is.na(existing_keys) & nzchar(existing_keys)
+    existing_ids <- existing_ids[valid]
+    existing_keys <- existing_keys[valid]
+    keep <- !duplicated(existing_keys) & !duplicated(existing_ids)
+    existing_map <- stats::setNames(existing_ids[keep], existing_keys[keep])
+    used_numbers <- suppressWarnings(as.integer(sub("^TG", "", existing_ids)))
+    used_numbers <- used_numbers[is.finite(used_numbers)]
+  }
+  next_number <- if (length(used_numbers) > 0L) max(used_numbers) + 1L else 1L
+  ids <- character(nrow(summary))
+  for (i in seq_len(nrow(summary))) {
+    key <- as.character(summary$GroupKey[[i]])
+    known <- unname(existing_map[key])
+    if (length(known) == 1L && !is.na(known) && nzchar(known)) {
+      ids[[i]] <- known
+    } else {
+      while (next_number %in% used_numbers) next_number <- next_number + 1L
+      ids[[i]] <- paste0("TG", next_number)
+      used_numbers <- c(used_numbers, next_number)
+      next_number <- next_number + 1L
+    }
+  }
+  summary$GroupID <- ids
+  summary
+}
+
+ugplot_geo_build_group_tables_remote <- function(progress_rows, candidates = NULL,
+                                                  existing_summary = data.frame()) {
   compatible <- progress_rows[progress_rows$Status == "compatible", , drop = FALSE]
   if (!is.data.frame(compatible) || nrow(compatible) == 0) {
     return(list(summary = data.frame(), details = data.frame()))
@@ -544,7 +583,7 @@ ugplot_geo_build_group_tables_remote <- function(progress_rows, candidates = NUL
   })
   summary <- do.call(rbind, summary_rows)
   summary <- summary[order(-summary$TriggerMaxAbsRho, -summary$Columns, -summary$Samples, summary$PrincipalTranscript), , drop = FALSE]
-  summary$GroupID <- paste0("TG", seq_len(nrow(summary)))
+  summary <- ugplot_geo_assign_stable_group_ids(summary, existing_summary)
   detail_rows <- lapply(seq_len(nrow(compatible)), function(i) {
     row <- compatible[i, , drop = FALSE]
     group_id <- summary$GroupID[match(row$GroupKey[[1]], summary$GroupKey)]
@@ -747,6 +786,12 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
   } else {
     data.frame()
   }
+  existing_summary <- if (file.exists(paths$summary)) {
+    tryCatch(utils::read.csv(paths$summary, stringsAsFactors = FALSE, check.names = FALSE),
+      error = function(e) data.frame())
+  } else {
+    data.frame()
+  }
   processed <- if (is.data.frame(progress_rows) && "Transcript" %in% names(progress_rows)) {
     unique(as.character(progress_rows$Transcript))
   } else {
@@ -887,9 +932,12 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
     checkpoint_tables <- nrow(progress_rows) == length(transcripts) ||
       (nrow(progress_rows) %% max(100L, cpu_limit) < length(progress_batch))
     if (isTRUE(checkpoint_tables)) {
-      tables <- ugplot_geo_build_group_tables_remote(progress_rows, candidates = candidates)
+      tables <- ugplot_geo_build_group_tables_remote(
+        progress_rows, candidates = candidates, existing_summary = existing_summary
+      )
       utils::write.csv(tables$summary, paths$summary, row.names = FALSE)
       utils::write.csv(tables$details, paths$details, row.names = FALSE)
+      existing_summary <- tables$summary
     }
     if (!is.null(progress_callback)) {
       completed <- nrow(progress_rows)
@@ -921,7 +969,9 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
       )
     }
   }
-  tables <- ugplot_geo_build_group_tables_remote(progress_rows, candidates = candidates)
+  tables <- ugplot_geo_build_group_tables_remote(
+    progress_rows, candidates = candidates, existing_summary = existing_summary
+  )
   utils::write.csv(tables$summary, paths$summary, row.names = FALSE)
   utils::write.csv(tables$details, paths$details, row.names = FALSE)
   list(summary = tables$summary, details = tables$details, paths = paths, progress = progress_rows)
@@ -1566,6 +1616,7 @@ ugplot_geo_screen_group <- function(dataset, group, source, config, screen_path,
     Source = source,
     Phase = "screening",
     GroupID = as.character(group$GroupID[[1]]),
+    GroupKey = as.character((group$GroupKey %||% "")[[1]]),
     PrincipalTranscript = group$PrincipalTranscript[[1]],
     Gene = group$Gene[[1]],
     Columns = group$Columns[[1]],
