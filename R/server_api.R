@@ -154,7 +154,11 @@ ugplot_job_discovery_report_paths <- function(job_id,
   min_samples <- suppressWarnings(as.numeric(config$transcript_min_samples %||% 80))
   run_key <- as.character(config$geo_transcript_ml_run_key %||% "")
   if (!nzchar(run_key) && nzchar(target) && is.finite(threshold) && is.finite(min_samples)) {
-    run_key <- ugplot_geo_transcript_ml_run_key(target, threshold, min_samples)
+    run_key <- ugplot_geo_transcript_ml_run_key(
+      target, threshold, min_samples,
+      config$geo_metadata_numeric_predictors %||% character(0),
+      config$geo_metadata_categorical_predictors %||% character(0)
+    )
   }
   pipeline_dir <- ugplot_geo_transcript_ml_dir(
     ugplot_geo_cache_dir(toupper(accession)), source, run_key
@@ -167,7 +171,9 @@ ugplot_job_discovery_report_paths <- function(job_id,
   }
   group_paths <- ugplot_geo_transcript_group_paths(
     ugplot_geo_cache_dir(toupper(accession)), target, threshold, min_samples,
-    source = source
+    source = source,
+    metadata_numeric_predictors = config$geo_metadata_numeric_predictors %||% character(0),
+    metadata_categorical_predictors = config$geo_metadata_categorical_predictors %||% character(0)
   )
   list(
     config = config,

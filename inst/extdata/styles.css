@@ -603,6 +603,25 @@ table.dataTable th.dt-error-column {
   .remote-group-dataset-table-wrap .dataTables_filter input { width: 100%; margin: 7px 0 0; }
 }
 
+.geo-metadata-predictor-panel {
+  margin: 12px 0;
+  border: 1px solid #dce4f2;
+  border-radius: 12px;
+  background: rgba(248, 251, 255, .9);
+}
+.geo-metadata-predictor-panel > summary {
+  padding: 12px 14px;
+  color: #33415f;
+  font-weight: 800;
+  cursor: pointer;
+}
+.geo-metadata-predictor-content {
+  padding: 0 14px 14px;
+  border-top: 1px solid #e4e9f3;
+}
+.geo-metadata-predictor-content .selectize-control { margin-bottom: 8px; }
+.geo-metadata-predictor-content .dataTables_wrapper { margin-top: 14px; }
+
 .remote-selected-monitor {
   margin: 8px 0 14px;
   padding: 18px;

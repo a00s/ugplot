@@ -663,6 +663,8 @@ When 3D rendering is disabled or when reviewing static output, ugPlot shows a 2D
 
 Use **GEO IMPORT** when you want ugPlot to inspect a GEO methylation accession, prepare CpG matrices, find CpGs correlated with a phenotype, build transcript-level candidate datasets, and run transcript ML models.
 
+After loading sample metadata, open **Choose additional sample-metadata predictors** to make covariate use explicit. Columns selected as **Numeric predictors** are validated and included as continuous ML features. Columns selected as **Class predictors** are converted to factors and participate in prediction alongside the transcript CpGs. Unselected metadata columns are excluded from ML, `sample_id` remains an identifier only, and the selected target remains the outcome. Predictor choices are saved with remote jobs and receive separate dataset/model caches so results from different metadata configurations are not mixed.
+
 > **The core question: what changed between two classes?**
 >
 > The main goal of the GEO IMPORT transcript workflow is to compare a **reference class** against a **comparison class** in relation to a defined **predictable target**. The target is the variable the CpGs/transcripts are trying to explain or predict, such as age, disease severity, treatment response, vitamin intake, exposure level, or another measurable phenotype. Once that target exists, the key question becomes: which transcript groups, CpGs, and ML signals changed between the selected classes?

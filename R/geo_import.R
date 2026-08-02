@@ -506,6 +506,73 @@ ugplot_geo_target_candidates <- function(metadata) {
   unique(c(priority, candidates))
 }
 
+ugplot_geo_metadata_predictor_spec <- function(metadata, target_column = "",
+                                               numeric_columns = character(0),
+                                               categorical_columns = character(0)) {
+  available <- if (is.data.frame(metadata)) names(metadata) else character(0)
+  target_column <- trimws(as.character(target_column %||% ""))
+  reserved <- unique(c(
+    "sample_id", "gse_matrix", "title", "geo_accession", "status",
+    "submission_date", "last_update_date", target_column
+  ))
+  clean <- function(columns) {
+    columns <- unique(trimws(as.character(columns %||% character(0))))
+    intersect(columns[nzchar(columns)], setdiff(available, reserved))
+  }
+  categorical <- clean(categorical_columns)
+  numeric <- setdiff(clean(numeric_columns), categorical)
+  list(
+    numeric = numeric,
+    categorical = categorical,
+    all = c(numeric, categorical),
+    excluded = setdiff(available, c(reserved, numeric, categorical)),
+    reserved = intersect(reserved, available)
+  )
+}
+
+ugplot_geo_metadata_predictor_key <- function(numeric_columns = character(0),
+                                              categorical_columns = character(0)) {
+  value <- paste(
+    paste0("numeric:", paste(sort(unique(as.character(numeric_columns))), collapse = "\r")),
+    paste0("class:", paste(sort(unique(as.character(categorical_columns))), collapse = "\r")),
+    sep = "\f"
+  )
+  if (identical(value, "numeric:\fclass:")) return("metadata_none")
+  code_points <- utf8ToInt(enc2utf8(value))
+  weights <- (seq_along(code_points) %% 65521L) + 1L
+  checksum <- sum((as.double(code_points) * weights) %% 2147483629) %% 2147483629
+  paste0("metadata_", sprintf("%08x", as.integer(checksum)))
+}
+
+ugplot_geo_metadata_predictor_values <- function(metadata, target_column = "",
+                                                 numeric_columns = character(0),
+                                                 categorical_columns = character(0)) {
+  spec <- ugplot_geo_metadata_predictor_spec(
+    metadata, target_column, numeric_columns, categorical_columns
+  )
+  if (!is.data.frame(metadata) || length(spec$all) == 0L) {
+    return(list(data = data.frame(row.names = seq_len(if (is.data.frame(metadata)) nrow(metadata) else 0L)), spec = spec))
+  }
+  values <- metadata[, spec$all, drop = FALSE]
+  for (column_name in spec$numeric) {
+    original <- as.character(values[[column_name]])
+    converted <- suppressWarnings(as.numeric(original))
+    invalid <- !is.na(original) & nzchar(trimws(original)) & is.na(converted)
+    if (any(invalid)) {
+      stop(
+        "Metadata predictor '", column_name,
+        "' was declared numeric but contains non-numeric values.",
+        call. = FALSE
+      )
+    }
+    values[[column_name]] <- converted
+  }
+  for (column_name in spec$categorical) {
+    values[[column_name]] <- as.character(values[[column_name]])
+  }
+  list(data = values, spec = spec)
+}
+
 ugplot_geo_detect_platform <- function(metadata) {
   if (!is.data.frame(metadata) || nrow(metadata) == 0 || !"platform_id" %in% names(metadata)) {
     return(NA_character_)
@@ -1430,7 +1497,9 @@ ugplot_geo_spearman_scan <- function(matrix_files, metadata, target_column,
 }
 
 ugplot_geo_transcript_dataset <- function(matrix_files, metadata, target_column, cpgs,
-                                          progress_callback = NULL) {
+                                          progress_callback = NULL,
+                                          metadata_numeric_predictors = character(0),
+                                          metadata_categorical_predictors = character(0)) {
   if (!target_column %in% names(metadata)) {
     stop("Selected target column is not present in sample metadata.")
   }
@@ -1499,9 +1568,25 @@ ugplot_geo_transcript_dataset <- function(matrix_files, metadata, target_column,
     stop("None of the transcript CpGs were found in the extracted GEO matrix files.")
   }
   values <- values[, kept_cpgs, drop = FALSE]
+  metadata_predictors <- ugplot_geo_metadata_predictor_values(
+    metadata,
+    target_column = target_column,
+    numeric_columns = metadata_numeric_predictors,
+    categorical_columns = metadata_categorical_predictors
+  )
+  predictor_values <- metadata_predictors$data
+  duplicate_names <- intersect(names(predictor_values), colnames(values))
+  if (length(duplicate_names) > 0L) {
+    stop(
+      "Metadata predictor names overlap CpG columns: ",
+      paste(duplicate_names, collapse = ", "),
+      call. = FALSE
+    )
+  }
   data <- data.frame(
     sample_id = metadata$sample_id,
     target = metadata[[target_column]],
+    predictor_values,
     values,
     check.names = FALSE,
     stringsAsFactors = FALSE

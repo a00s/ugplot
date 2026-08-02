@@ -29,8 +29,19 @@ ugplot_geo_spearman_paths <- function(cache_dir, target_column, source = "proces
   )
 }
 
-ugplot_geo_transcript_cache_version <- function() {
-  "reader_v5_members"
+ugplot_geo_transcript_cache_version <- function(metadata_numeric_predictors = character(0),
+                                                metadata_categorical_predictors = character(0)) {
+  if (length(metadata_numeric_predictors) == 0L &&
+      length(metadata_categorical_predictors) == 0L) {
+    return("reader_v5_members")
+  }
+  paste0(
+    "reader_v6_metadata_",
+    ugplot_geo_metadata_predictor_key(
+      metadata_numeric_predictors,
+      metadata_categorical_predictors
+    )
+  )
 }
 
 ugplot_geo_transcript_missing_definition <- function() {
@@ -41,12 +52,16 @@ ugplot_geo_group_key <- function(values) {
   paste(sort(unique(as.character(values))), collapse = "\r")
 }
 
-ugplot_geo_transcript_dataset_path <- function(cache_dir, transcript, target_column, source = "processed", raw = FALSE) {
+ugplot_geo_transcript_dataset_path <- function(cache_dir, transcript, target_column, source = "processed", raw = FALSE,
+                                               metadata_numeric_predictors = character(0),
+                                               metadata_categorical_predictors = character(0)) {
   transcript_dir <- file.path(
     ugplot_geo_analysis_dir(cache_dir, source),
     "transcript_datasets",
     ugplot_geo_safe_token(target_column),
-    ugplot_geo_transcript_cache_version(),
+    ugplot_geo_transcript_cache_version(
+      metadata_numeric_predictors, metadata_categorical_predictors
+    ),
     if (isTRUE(raw)) "_raw" else ""
   )
   dir.create(transcript_dir, recursive = TRUE, showWarnings = FALSE)
@@ -54,14 +69,18 @@ ugplot_geo_transcript_dataset_path <- function(cache_dir, transcript, target_col
   file.path(transcript_dir, paste0(ugplot_geo_safe_token(transcript), suffix))
 }
 
-ugplot_geo_transcript_group_paths <- function(cache_dir, target_column, threshold, min_samples_pct, source = "processed") {
+ugplot_geo_transcript_group_paths <- function(cache_dir, target_column, threshold, min_samples_pct, source = "processed",
+                                              metadata_numeric_predictors = character(0),
+                                              metadata_categorical_predictors = character(0)) {
   safe_target <- ugplot_geo_safe_token(target_column)
   safe_threshold <- ugplot_geo_safe_token(format(threshold, trim = TRUE, scientific = FALSE))
   safe_min_samples <- ugplot_geo_safe_token(format(min_samples_pct, trim = TRUE, scientific = FALSE))
   safe_missing <- ugplot_geo_safe_token(paste(ugplot_geo_transcript_missing_definition(), collapse = "_"))
   prefix <- file.path(ugplot_geo_analysis_dir(cache_dir, source), paste0(
     "ugplot_geo_transcript_ml_groups_", safe_target,
-    "_", ugplot_geo_transcript_cache_version(),
+    "_", ugplot_geo_transcript_cache_version(
+      metadata_numeric_predictors, metadata_categorical_predictors
+    ),
     "_absrho_", safe_threshold,
     "_minsamples_", safe_min_samples,
     "_missing_", safe_missing
@@ -73,14 +92,18 @@ ugplot_geo_transcript_group_paths <- function(cache_dir, target_column, threshol
   )
 }
 
-ugplot_geo_transcript_ml_run_key <- function(target_column, threshold, min_samples_pct) {
+ugplot_geo_transcript_ml_run_key <- function(target_column, threshold, min_samples_pct,
+                                             metadata_numeric_predictors = character(0),
+                                             metadata_categorical_predictors = character(0)) {
   safe_target <- ugplot_geo_safe_token(target_column)
   safe_threshold <- ugplot_geo_safe_token(format(threshold, trim = TRUE, scientific = FALSE))
   safe_min_samples <- ugplot_geo_safe_token(format(min_samples_pct, trim = TRUE, scientific = FALSE))
   safe_missing <- ugplot_geo_safe_token(paste(ugplot_geo_transcript_missing_definition(), collapse = "_"))
   paste0(
     "target_", safe_target,
-    "_", ugplot_geo_transcript_cache_version(),
+    "_", ugplot_geo_transcript_cache_version(
+      metadata_numeric_predictors, metadata_categorical_predictors
+    ),
     "_absrho_", safe_threshold,
     "_minsamples_", safe_min_samples,
     "_missing_", safe_missing
@@ -385,7 +408,11 @@ ugplot_geo_cpg_lookup_for_job <- function(job_id, jobs_dir, cpg,
     target_column = target_column,
     threshold = loaded_threshold,
     min_samples_pct = transcript_min_samples,
-    source = source
+    source = source,
+    metadata_numeric_predictors = config$geo_metadata_numeric_predictors %||%
+      result$settings$geo_metadata_numeric_predictors %||% character(0),
+    metadata_categorical_predictors = config$geo_metadata_categorical_predictors %||%
+      result$settings$geo_metadata_categorical_predictors %||% character(0)
   )
   group_progress_path <- if (nzchar(group_details_path) &&
                              grepl("_details\\.csv$", group_details_path)) {
@@ -549,7 +576,8 @@ ugplot_geo_build_group_tables_remote <- function(progress_rows, candidates = NUL
   list(summary = summary, details = details)
 }
 
-ugplot_geo_filter_transcript_dataset <- function(dataset, target_column, min_samples_pct) {
+ugplot_geo_filter_transcript_dataset <- function(dataset, target_column, min_samples_pct,
+                                                 metadata_predictors = character(0)) {
   if (!is.data.frame(dataset) || nrow(dataset) == 0 || !target_column %in% names(dataset)) {
     return(list(status = "dataset_unavailable", dataset = data.frame(), kept_cpgs = character(0), kept_samples = character(0)))
   }
@@ -560,7 +588,21 @@ ugplot_geo_filter_transcript_dataset <- function(dataset, target_column, min_sam
     is.na(dataset[[target_column]]) | !nzchar(as.character(dataset[[target_column]]))
   }
   analysis_dataset <- dataset[!target_missing, , drop = FALSE]
-  predictor_cols <- setdiff(names(analysis_dataset), c("sample_id", target_column))
+  metadata_predictors <- intersect(
+    unique(as.character(metadata_predictors)), names(analysis_dataset)
+  )
+  if (length(metadata_predictors) > 0L) {
+    metadata_complete <- stats::complete.cases(analysis_dataset[, metadata_predictors, drop = FALSE])
+    for (column_name in metadata_predictors) {
+      if (is.character(analysis_dataset[[column_name]])) {
+        metadata_complete <- metadata_complete & nzchar(trimws(analysis_dataset[[column_name]]))
+      }
+    }
+    analysis_dataset <- analysis_dataset[metadata_complete, , drop = FALSE]
+  }
+  predictor_cols <- setdiff(
+    names(analysis_dataset), c("sample_id", target_column, metadata_predictors)
+  )
   if (length(predictor_cols) == 0 || nrow(analysis_dataset) == 0) {
     return(list(status = "no_predictors", dataset = data.frame(), kept_cpgs = character(0), kept_samples = character(0)))
   }
@@ -586,7 +628,11 @@ ugplot_geo_filter_transcript_dataset <- function(dataset, target_column, min_sam
           order = as.character(best$scan_order[[1]])
         )
         filtered_dataset <- cbind(
-          analysis_dataset[filtered$keep_rows, c("sample_id", target_column), drop = FALSE],
+          analysis_dataset[
+            filtered$keep_rows,
+            c("sample_id", target_column, metadata_predictors),
+            drop = FALSE
+          ],
           filtered$filtered_predictors
         )
         return(list(
@@ -604,38 +650,61 @@ ugplot_geo_filter_transcript_dataset <- function(dataset, target_column, min_sam
   if (sum(complete) < min_samples_required) {
     return(list(status = "no_complete_case_at_min_samples", dataset = data.frame(), kept_cpgs = character(0), kept_samples = character(0)))
   }
-  filtered_dataset <- analysis_dataset[complete, c("sample_id", target_column, predictor_cols), drop = FALSE]
+  filtered_dataset <- analysis_dataset[
+    complete,
+    c("sample_id", target_column, metadata_predictors, predictor_cols),
+    drop = FALSE
+  ]
   list(status = "compatible", dataset = filtered_dataset, kept_cpgs = predictor_cols, kept_samples = filtered_dataset$sample_id)
 }
 
 ugplot_geo_build_transcript_group_progress_row <- function(transcript_id, candidates, matrix_files, metadata,
                                                            cache_dir, target_column, min_samples_pct,
-                                                           source = "processed", candidate_dataset = NULL) {
+                                                           source = "processed", candidate_dataset = NULL,
+                                                           metadata_numeric_predictors = character(0),
+                                                           metadata_categorical_predictors = character(0)) {
   transcript_rows <- candidates[as.character(candidates$Transcript) == transcript_id, , drop = FALSE]
   transcript_cpgs <- unique(as.character(stats::na.omit(transcript_rows$CpG)))
   transcript_cpgs <- transcript_cpgs[nzchar(transcript_cpgs)]
-  dataset_path <- ugplot_geo_transcript_dataset_path(cache_dir, transcript_id, target_column, source)
-  raw_dataset_path <- ugplot_geo_transcript_dataset_path(cache_dir, transcript_id, target_column, source, raw = TRUE)
+  metadata_predictors <- c(metadata_numeric_predictors, metadata_categorical_predictors)
+  dataset_path <- ugplot_geo_transcript_dataset_path(
+    cache_dir, transcript_id, target_column, source,
+    metadata_numeric_predictors = metadata_numeric_predictors,
+    metadata_categorical_predictors = metadata_categorical_predictors
+  )
+  raw_dataset_path <- ugplot_geo_transcript_dataset_path(
+    cache_dir, transcript_id, target_column, source, raw = TRUE,
+    metadata_numeric_predictors = metadata_numeric_predictors,
+    metadata_categorical_predictors = metadata_categorical_predictors
+  )
   transcript_dataset <- if (file.exists(raw_dataset_path)) {
     tryCatch(utils::read.csv(raw_dataset_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
   } else if (is.data.frame(candidate_dataset) && nrow(candidate_dataset) > 0L) {
     available_cpgs <- intersect(transcript_cpgs, names(candidate_dataset))
-    required_columns <- intersect(c("sample_id", target_column), names(candidate_dataset))
-    if (length(available_cpgs) > 0L && length(required_columns) == 2L) {
+    required_names <- c("sample_id", target_column, metadata_predictors)
+    required_columns <- intersect(required_names, names(candidate_dataset))
+    if (length(available_cpgs) > 0L && length(required_columns) == length(required_names)) {
       candidate_dataset[, c(required_columns, available_cpgs), drop = FALSE]
     } else {
       data.frame()
     }
   } else {
     tryCatch(
-      ugplot_geo_transcript_dataset(matrix_files, metadata, target_column, transcript_cpgs),
+      ugplot_geo_transcript_dataset(
+        matrix_files, metadata, target_column, transcript_cpgs,
+        metadata_numeric_predictors = metadata_numeric_predictors,
+        metadata_categorical_predictors = metadata_categorical_predictors
+      ),
       error = function(e) data.frame()
     )
   }
   if (is.data.frame(transcript_dataset) && nrow(transcript_dataset) > 0 && !file.exists(raw_dataset_path)) {
     utils::write.csv(transcript_dataset, raw_dataset_path, row.names = FALSE)
   }
-  filtered <- ugplot_geo_filter_transcript_dataset(transcript_dataset, target_column, min_samples_pct)
+  filtered <- ugplot_geo_filter_transcript_dataset(
+    transcript_dataset, target_column, min_samples_pct,
+    metadata_predictors = metadata_predictors
+  )
   if (identical(filtered$status, "compatible")) {
     utils::write.csv(filtered$dataset, dataset_path, row.names = FALSE)
   }
@@ -664,10 +733,15 @@ ugplot_geo_build_transcript_group_progress_row <- function(transcript_id, candid
 ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, metadata, cache_dir, target_column,
                                                       threshold, min_samples_pct, source = "processed",
                                                       progress_callback = NULL, cpu_limit = 1L,
-                                                      parallel_enabled = FALSE) {
+                                                      parallel_enabled = FALSE,
+                                                      metadata_numeric_predictors = character(0),
+                                                      metadata_categorical_predictors = character(0)) {
   transcripts <- unique(as.character(stats::na.omit(candidates$Transcript)))
   transcripts <- transcripts[nzchar(transcripts)]
-  paths <- ugplot_geo_transcript_group_paths(cache_dir, target_column, threshold, min_samples_pct, source)
+  paths <- ugplot_geo_transcript_group_paths(
+    cache_dir, target_column, threshold, min_samples_pct, source,
+    metadata_numeric_predictors, metadata_categorical_predictors
+  )
   progress_rows <- if (file.exists(paths$progress)) {
     tryCatch(readRDS(paths$progress), error = function(e) data.frame())
   } else {
@@ -695,7 +769,11 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
   }
   use_parallel <- isTRUE(parallel_enabled) && cpu_limit > 1L && .Platform$OS.type != "windows" && length(remaining) > 1L
   missing_raw <- remaining[!vapply(remaining, function(transcript_id) {
-    file.exists(ugplot_geo_transcript_dataset_path(cache_dir, transcript_id, target_column, source, raw = TRUE))
+    file.exists(ugplot_geo_transcript_dataset_path(
+      cache_dir, transcript_id, target_column, source, raw = TRUE,
+      metadata_numeric_predictors = metadata_numeric_predictors,
+      metadata_categorical_predictors = metadata_categorical_predictors
+    ))
   }, logical(1))]
   needed_cpgs <- if (length(missing_raw) > 0L) {
     unique(as.character(stats::na.omit(
@@ -729,6 +807,8 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
       metadata = metadata,
       target_column = target_column,
       cpgs = needed_cpgs,
+      metadata_numeric_predictors = metadata_numeric_predictors,
+      metadata_categorical_predictors = metadata_categorical_predictors,
       progress_callback = function(scanned, found, total) {
         if (is.null(progress_callback)) return(invisible(NULL))
         elapsed <- max(0.001, as.numeric(difftime(Sys.time(), matrix_started_at, units = "secs")))
@@ -777,6 +857,8 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
         min_samples_pct = min_samples_pct,
         source = source,
         candidate_dataset = candidate_dataset,
+        metadata_numeric_predictors = metadata_numeric_predictors,
+        metadata_categorical_predictors = metadata_categorical_predictors,
         mc.cores = min(cpu_limit, length(batch)),
         mc.preschedule = FALSE
       )
@@ -790,7 +872,9 @@ ugplot_geo_build_transcript_groups_remote <- function(candidates, matrix_files, 
         target_column = target_column,
         min_samples_pct = min_samples_pct,
         source = source,
-        candidate_dataset = candidate_dataset
+        candidate_dataset = candidate_dataset,
+        metadata_numeric_predictors = metadata_numeric_predictors,
+        metadata_categorical_predictors = metadata_categorical_predictors
       ))
     }
     progress_rows <- ugplot_geo_bind_rows(c(list(progress_rows), progress_batch))
@@ -1331,13 +1415,15 @@ ugplot_geo_stability_complete_groups <- function(screen_summary, stability_summa
 ugplot_geo_ml_pipeline_config <- function(models, seed_end, timeout, best_only_model = NULL,
                                           cpu_limit = 1L, parallel_enabled = FALSE,
                                           restart_parallel_each_model = TRUE,
-                                          retry_parallel_connection_errors = TRUE) {
+                                          retry_parallel_connection_errors = TRUE,
+                                          category_columns = character(0)) {
   cpu_limit <- suppressWarnings(as.integer(cpu_limit %||% 1L))
   if (is.na(cpu_limit) || cpu_limit < 1L) {
     cpu_limit <- 1L
   }
   list(
     target = "target",
+    category_columns = unique(as.character(category_columns)),
     models = if (is.null(best_only_model)) models else best_only_model,
     dataset_seed_start = 1,
     dataset_seed_end = 1,
@@ -1455,7 +1541,8 @@ ugplot_geo_screen_group <- function(dataset, group, source, config, screen_path,
     cpu_limit = cpu_limit,
     parallel_enabled = isTRUE(config$parallel_enabled),
     restart_parallel_each_model = isTRUE(config$restart_parallel_each_model %||% TRUE),
-    retry_parallel_connection_errors = isTRUE(config$retry_parallel_connection_errors %||% TRUE)
+    retry_parallel_connection_errors = isTRUE(config$retry_parallel_connection_errors %||% TRUE),
+    category_columns = config$geo_metadata_categorical_predictors %||% character(0)
   )
   screen_config$resume_result_path <- screen_path
   screen_config$model_log_dir <- file.path(dirname(screen_path), "logs", "screen")
@@ -2842,7 +2929,8 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
           cpu_limit = cpu_limit,
           parallel_enabled = parallel_enabled,
           restart_parallel_each_model = restart_parallel_each_model,
-          retry_parallel_connection_errors = retry_parallel_connection_errors
+          retry_parallel_connection_errors = retry_parallel_connection_errors,
+          category_columns = config$geo_metadata_categorical_predictors %||% character(0)
         )
         stability_config$resume_result_path <- stability_path
         stability_config$model_log_dir <- file.path(group_dir, "logs", "stability")
@@ -3139,6 +3227,24 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
 
   publish(0.08, "Fetching sample metadata", force = TRUE)
   metadata <- ugplot_geo_fetch_sample_metadata(accession, cache_dir)
+  metadata_predictor_spec <- ugplot_geo_metadata_predictor_spec(
+    metadata,
+    target_column = target_column,
+    numeric_columns = config$geo_metadata_numeric_predictors %||% character(0),
+    categorical_columns = config$geo_metadata_categorical_predictors %||% character(0)
+  )
+  config$geo_metadata_numeric_predictors <- metadata_predictor_spec$numeric
+  config$geo_metadata_categorical_predictors <- metadata_predictor_spec$categorical
+  if (length(metadata_predictor_spec$numeric) > 0L) {
+    ugplot_geo_metadata_predictor_values(
+      metadata,
+      target_column = target_column,
+      numeric_columns = metadata_predictor_spec$numeric,
+      categorical_columns = metadata_predictor_spec$categorical
+    )
+  }
+  result$settings$geo_metadata_numeric_predictors <- metadata_predictor_spec$numeric
+  result$settings$geo_metadata_categorical_predictors <- metadata_predictor_spec$categorical
   result$tables$metadata_preview <- utils::head(metadata, 50)
   if (!nzchar(target_column)) {
     stop("Remote GEO pipeline requires a target metadata field selected by the client.", call. = FALSE)
@@ -3260,7 +3366,11 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
       transcript_min_samples = min_transcript_samples,
       transcript_annotation = ugplot_geo_annotation_cache_version()
     ))
-    transcript_ml_run_key <- ugplot_geo_transcript_ml_run_key(target_column, threshold, min_transcript_samples)
+    transcript_ml_run_key <- ugplot_geo_transcript_ml_run_key(
+      target_column, threshold, min_transcript_samples,
+      config$geo_metadata_numeric_predictors,
+      config$geo_metadata_categorical_predictors
+    )
     config$geo_transcript_ml_run_key <- transcript_ml_run_key
     transcript_ml_dir <- ugplot_geo_transcript_ml_dir(cache_dir, source, transcript_ml_run_key)
     result$settings <- c(result$settings %||% list(), list(
@@ -3296,7 +3406,12 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
     if (is.data.frame(candidates) && nrow(candidates) > 0) {
       utils::write.csv(candidates, candidates_path, row.names = FALSE)
       result$paths$transcript_candidates <- candidates_path
-      group_paths <- ugplot_geo_transcript_group_paths(cache_dir, target_column, threshold, min_transcript_samples, source = source)
+      group_paths <- ugplot_geo_transcript_group_paths(
+        cache_dir, target_column, threshold, min_transcript_samples,
+        source = source,
+        metadata_numeric_predictors = config$geo_metadata_numeric_predictors,
+        metadata_categorical_predictors = config$geo_metadata_categorical_predictors
+      )
       group_cache_complete <- isTRUE(resume_mode) &&
         ugplot_geo_transcript_group_cache_complete(candidates, group_paths)
       group_result <- if (isTRUE(group_cache_complete)) {
@@ -3321,6 +3436,8 @@ ugplot_run_geo_pipeline_job <- function(dataset, config = list(), progress_callb
           source = source,
           cpu_limit = config$cpu_limit %||% 1L,
           parallel_enabled = isTRUE(config$parallel_enabled),
+          metadata_numeric_predictors = config$geo_metadata_numeric_predictors,
+          metadata_categorical_predictors = config$geo_metadata_categorical_predictors,
           progress_callback = function(value, message, stage_progress = NULL) {
             publish(
               0.86 + 0.06 * value,

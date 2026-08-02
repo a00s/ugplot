@@ -145,6 +145,35 @@ test_that("remote ML runner trains a model on sample data", {
   expect_equal(result$results_table$Status, "OK")
 })
 
+test_that("class metadata predictors participate in numeric-target prediction", {
+  skip_on_os("windows")
+  local_env <- local_ml_runner_env()
+  set.seed(7)
+  stage <- rep(c("II", "III", "IV", "II"), 10)
+  cpg <- stats::runif(40)
+  dataset <- data.frame(
+    target = 20 + 5 * (stage == "III") + 11 * (stage == "IV") + 3 * cpg,
+    stage = stage,
+    cg1 = cpg,
+    stringsAsFactors = FALSE
+  )
+
+  result <- local_env$ugplot_run_ml_job(
+    dataset = dataset,
+    config = list(
+      target = "target", category_columns = "stage", models = "lm",
+      dataset_seed_start = 1, dataset_seed_end = 1,
+      training_seed_start = 1, training_seed_end = 1,
+      timeout = 30, performance_mode = "custom",
+      cv_method = "cv", cv_folds = 2, tune_length = 1, cpu_limit = 1
+    )
+  )
+
+  expect_equal(result$results_table$Status, "OK")
+  expect_true(is.factor(result$best_model$trainingData$stage))
+  expect_gt(result$results_table$R2, 0.9)
+})
+
 test_that("remote ML runner timeout skips remaining seeds for that model and continues", {
   skip_on_os("windows")
   local_env <- local_ml_runner_env()

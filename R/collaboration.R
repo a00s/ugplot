@@ -564,7 +564,11 @@ ugplot_collaboration_job_group_activity <- function(job_id,
   min_samples <- suppressWarnings(as.numeric(config$transcript_min_samples %||% 80))
   run_key <- as.character(config$geo_transcript_ml_run_key %||% "")
   if (!nzchar(run_key) && nzchar(target) && is.finite(threshold) && is.finite(min_samples)) {
-    run_key <- ugplot_geo_transcript_ml_run_key(target, threshold, min_samples)
+    run_key <- ugplot_geo_transcript_ml_run_key(
+      target, threshold, min_samples,
+      config$geo_metadata_numeric_predictors %||% character(0),
+      config$geo_metadata_categorical_predictors %||% character(0)
+    )
   }
   pipeline_dir <- if (nzchar(accession)) {
     ugplot_geo_transcript_ml_dir(ugplot_geo_cache_dir(accession), source, run_key)

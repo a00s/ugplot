@@ -127,6 +127,99 @@ test_that("shared transcript matrix is read in blocks and reports scan progress"
   expect_equal(unname(utils::tail(updates, 1L)[[1L]]), c(205, 2, 2))
 })
 
+test_that("selected GEO metadata predictors preserve numeric and class roles", {
+  predictor_spec <- ugplot_test_internal("ugplot_geo_metadata_predictor_spec")
+  predictor_values <- ugplot_test_internal("ugplot_geo_metadata_predictor_values")
+  predictor_key <- ugplot_test_internal("ugplot_geo_metadata_predictor_key")
+  metadata <- data.frame(
+    sample_id = c("S1", "S2", "S3"), age = c(41, 55, 63),
+    stage = c("II", "III", "IV"), dose = c("1.5", "2.0", "2.5"),
+    title = c("a", "b", "c"), stringsAsFactors = FALSE
+  )
+
+  spec <- predictor_spec(
+    metadata, target_column = "age",
+    numeric_columns = c("dose", "sample_id", "age"),
+    categorical_columns = c("stage", "sample_id")
+  )
+  expect_equal(spec$numeric, "dose")
+  expect_equal(spec$categorical, "stage")
+  expect_false(any(c("sample_id", "age", "title") %in% spec$all))
+
+  prepared <- predictor_values(
+    metadata, target_column = "age",
+    numeric_columns = "dose", categorical_columns = "stage"
+  )
+  expect_equal(names(prepared$data), c("dose", "stage"))
+  expect_type(prepared$data$dose, "double")
+  expect_type(prepared$data$stage, "character")
+  expect_identical(
+    predictor_key("dose", "stage"),
+    predictor_key("dose", "stage")
+  )
+  expect_false(identical(predictor_key("dose", "stage"), predictor_key("dose", character(0))))
+  expect_equal(
+    ugplot_test_internal("ugplot_geo_transcript_cache_version")(),
+    "reader_v5_members"
+  )
+  expect_match(
+    ugplot_test_internal("ugplot_geo_transcript_cache_version")("dose", "stage"),
+    "reader_v6_metadata_metadata_"
+  )
+
+  bad_metadata <- metadata
+  bad_metadata$dose[[2]] <- "unknown"
+  expect_error(
+    predictor_values(bad_metadata, "age", numeric_columns = "dose"),
+    "declared numeric"
+  )
+})
+
+test_that("transcript datasets include only explicitly selected metadata predictors", {
+  build_dataset <- ugplot_test_internal("ugplot_geo_transcript_dataset")
+  matrix_path <- tempfile("ugplot-metadata-matrix-", fileext = ".tsv")
+  on.exit(unlink(matrix_path, force = TRUE), add = TRUE)
+  writeLines(c("ID_REF\tS1\tS2", "cg1\t0.1\t0.2"), matrix_path)
+  metadata <- data.frame(
+    sample_id = c("S1", "S2"), age = c(40, 50),
+    stage = c("II", "III"), dose = c("1.5", "2.5"),
+    unused = c("x", "y"), stringsAsFactors = FALSE
+  )
+
+  dataset <- build_dataset(
+    matrix_files = matrix_path, metadata = metadata,
+    target_column = "age", cpgs = "cg1",
+    metadata_numeric_predictors = "dose",
+    metadata_categorical_predictors = "stage"
+  )
+
+  expect_equal(names(dataset), c("sample_id", "age", "dose", "stage", "cg1"))
+  expect_equal(dataset$dose, c(1.5, 2.5))
+  expect_false("unused" %in% names(dataset))
+})
+
+test_that("metadata predictors are retained without being counted as CpGs", {
+  filter_dataset <- ugplot_test_internal("ugplot_geo_filter_transcript_dataset")
+  dataset <- data.frame(
+    sample_id = paste0("S", 1:5), age = 31:35,
+    stage = c("II", "II", "III", "III", "IV"),
+    dose = c(1, 2, 3, 4, 5),
+    cg1 = c(0.1, 0.2, 0.3, 0.4, 0.5),
+    cg2 = c(0.5, 0.4, 0.3, 0.2, 0.1),
+    stringsAsFactors = FALSE
+  )
+
+  filtered <- filter_dataset(
+    dataset, target_column = "age", min_samples_pct = 80,
+    metadata_predictors = c("stage", "dose")
+  )
+
+  expect_equal(filtered$status, "compatible")
+  expect_equal(filtered$kept_cpgs, c("cg1", "cg2"))
+  expect_true(all(c("stage", "dose") %in% names(filtered$dataset)))
+  expect_false(any(c("stage", "dose") %in% filtered$kept_cpgs))
+})
+
 test_that("transcript dataset progress reports concrete counts and ETA fields", {
   build_groups <- ugplot_test_internal("ugplot_geo_build_transcript_groups_remote")
   dataset_path <- ugplot_test_internal("ugplot_geo_transcript_dataset_path")

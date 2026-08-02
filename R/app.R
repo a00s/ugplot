@@ -2637,6 +2637,7 @@ server <- function(input, output, session) {
   geo_files <- reactiveVal(data.frame())
   geo_remote_files <- reactiveVal(data.frame())
   geo_sample_metadata <- reactiveVal(data.frame())
+  geo_metadata_predictor_defaults <- reactiveVal(list(numeric = character(0), categorical = character(0)))
   geo_cpg_annotation <- reactiveVal(data.frame())
   geo_pending_annotation_platform <- reactiveVal(NULL)
   geo_spearman_results <- reactiveVal(data.frame())
@@ -2989,6 +2990,7 @@ server <- function(input, output, session) {
         render_geo_step_card(6, "Analyze CpGs", spearman_done,
           tags$div(
             uiOutput("geo_target_selector"),
+            uiOutput("geo_metadata_predictor_selector"),
             tags$p(class = "geo-step-note", "Spearman scan uses the selected numeric metadata field and saves CpG-level correlations for the active matrix source."),
             numericInput("geo_spearman_max_cpgs", "Max CpGs to scan (0 = all):", value = max_cpgs_value, min = 0, step = 10000),
             numericInput("geo_spearman_min_samples", "Minimum samples per CpG for Spearman (%):", value = min_spearman_samples_value, min = 0, max = 100, step = 1),
@@ -4136,6 +4138,124 @@ server <- function(input, output, session) {
     selectInput("geo_target_column", "Metadata field to predict/correlate:", choices = choices, selected = selected)
   })
 
+  geo_metadata_predictor_spec <- reactive({
+    defaults <- geo_metadata_predictor_defaults()
+    ugplot_geo_metadata_predictor_spec(
+      geo_sample_metadata(),
+      target_column = input$geo_target_column %||% "",
+      numeric_columns = input$geo_metadata_numeric_predictors %||% defaults$numeric,
+      categorical_columns = input$geo_metadata_categorical_predictors %||% defaults$categorical
+    )
+  })
+
+  observeEvent(input$geo_metadata_numeric_predictors, {
+    defaults <- geo_metadata_predictor_defaults()
+    defaults$numeric <- unique(as.character(input$geo_metadata_numeric_predictors %||% character(0)))
+    geo_metadata_predictor_defaults(defaults)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$geo_metadata_categorical_predictors, {
+    defaults <- geo_metadata_predictor_defaults()
+    defaults$categorical <- unique(as.character(input$geo_metadata_categorical_predictors %||% character(0)))
+    geo_metadata_predictor_defaults(defaults)
+  }, ignoreInit = TRUE)
+
+  output$geo_metadata_predictor_selector <- renderUI({
+    metadata <- geo_sample_metadata()
+    if (!is.data.frame(metadata) || nrow(metadata) == 0L) return(NULL)
+    target_column <- input$geo_target_column %||% ""
+    reserved <- c(
+      "sample_id", "gse_matrix", "title", "geo_accession", "status",
+      "submission_date", "last_update_date", target_column
+    )
+    eligible <- setdiff(names(metadata), reserved)
+    if (length(eligible) == 0L) {
+      return(tags$p(class = "geo-step-note", "No additional metadata columns are available as ML predictors."))
+    }
+    choice_labels <- vapply(eligible, function(column_name) {
+      values <- metadata[[column_name]]
+      unique_n <- length(unique(stats::na.omit(as.character(values))))
+      numeric_values <- suppressWarnings(as.numeric(as.character(values)))
+      non_missing <- !is.na(values) & nzchar(trimws(as.character(values)))
+      inferred <- if (any(non_missing) && all(is.finite(numeric_values[non_missing]))) "numeric" else "class"
+      paste0(column_name, " · ", inferred, " · ", unique_n, " unique")
+    }, character(1))
+    choices <- stats::setNames(eligible, choice_labels)
+    defaults <- geo_metadata_predictor_defaults()
+    numeric_selected <- intersect(isolate(input$geo_metadata_numeric_predictors %||% defaults$numeric), eligible)
+    categorical_selected <- intersect(isolate(input$geo_metadata_categorical_predictors %||% defaults$categorical), eligible)
+    tags$details(
+      class = "geo-metadata-predictor-panel",
+      tags$summary("Choose additional sample-metadata predictors"),
+      tags$div(
+        class = "geo-metadata-predictor-content",
+        tags$p(
+          class = "geo-step-note",
+          "Only selected columns join the CpGs as prediction features. sample_id remains an identifier; the target remains the outcome. If a column is selected in both lists, Class predictor takes precedence."
+        ),
+        selectizeInput(
+          "geo_metadata_numeric_predictors",
+          "Numeric predictors:",
+          choices = choices,
+          selected = numeric_selected,
+          multiple = TRUE,
+          options = list(plugins = list("remove_button"), placeholder = "Select numeric covariates")
+        ),
+        selectizeInput(
+          "geo_metadata_categorical_predictors",
+          "Class predictors:",
+          choices = choices,
+          selected = categorical_selected,
+          multiple = TRUE,
+          options = list(plugins = list("remove_button"), placeholder = "Select categorical covariates")
+        ),
+        DT::DTOutput("geo_metadata_roles_table")
+      )
+    )
+  })
+
+  output$geo_metadata_roles_table <- DT::renderDT({
+    metadata <- geo_sample_metadata()
+    shiny::validate(shiny::need(
+      is.data.frame(metadata) && nrow(metadata) > 0L,
+      "Fetch sample metadata first."
+    ))
+    target_column <- input$geo_target_column %||% ""
+    spec <- geo_metadata_predictor_spec()
+    role <- vapply(names(metadata), function(column_name) {
+      if (identical(column_name, "sample_id")) "Identifier (never a predictor)"
+      else if (identical(column_name, target_column)) "Target / outcome"
+      else if (column_name %in% spec$categorical) "Class predictor"
+      else if (column_name %in% spec$numeric) "Numeric predictor"
+      else "Excluded"
+    }, character(1))
+    type <- vapply(names(metadata), function(column_name) {
+      if (column_name %in% spec$categorical) return("Class")
+      values <- metadata[[column_name]]
+      numeric_values <- suppressWarnings(as.numeric(as.character(values)))
+      non_missing <- !is.na(values) & nzchar(trimws(as.character(values)))
+      if (any(non_missing) && all(is.finite(numeric_values[non_missing]))) "Numeric" else "Text/Class"
+    }, character(1))
+    missing_n <- vapply(metadata, function(values) {
+      sum(is.na(values) | !nzchar(trimws(as.character(values))))
+    }, integer(1))
+    roles <- data.frame(
+      Column = names(metadata), Role = role, Type = type,
+      Unique = vapply(metadata, function(values) length(unique(stats::na.omit(as.character(values)))), integer(1)),
+      Missing = missing_n,
+      stringsAsFactors = FALSE
+    )
+    role_order <- match(
+      roles$Role,
+      c("Target / outcome", "Class predictor", "Numeric predictor", "Identifier (never a predictor)", "Excluded")
+    )
+    roles <- roles[order(role_order, roles$Column), , drop = FALSE]
+    DT::datatable(
+      roles, rownames = FALSE, selection = "none",
+      options = list(pageLength = 10, lengthChange = FALSE, dom = "ftp", order = list(list(1, "asc")))
+    )
+  })
+
   output$geo_annotation_summary <- renderUI({
     metadata <- geo_sample_metadata()
     if (!is.data.frame(metadata) || nrow(metadata) == 0) {
@@ -4264,7 +4384,12 @@ server <- function(input, output, session) {
   }
 
   geo_transcript_cache_version <- function() {
-    "reader_v5_members"
+    spec <- geo_metadata_predictor_spec()
+    if (length(spec$all) == 0L) return("reader_v5_members")
+    paste0(
+      "reader_v6_metadata_",
+      ugplot_geo_metadata_predictor_key(spec$numeric, spec$categorical)
+    )
   }
 
   geo_transcript_group_cache_paths <- function(cache_dir, target_column, threshold, min_samples_pct, source = NULL, create = TRUE) {
@@ -4694,6 +4819,7 @@ server <- function(input, output, session) {
     cpu_limit <- configured_cpu_limit()
     list(
       target = "target",
+      category_columns = geo_metadata_predictor_spec()$categorical,
       models = if (is.null(best_only_model)) models else best_only_model,
       dataset_seed_start = 1,
       dataset_seed_end = 1,
@@ -7190,6 +7316,8 @@ server <- function(input, output, session) {
                                           progress_callback = NULL) {
     source <- geo_matrix_source_value()
     metadata <- geo_sample_metadata()
+    metadata_spec <- geo_metadata_predictor_spec()
+    metadata_predictors <- metadata_spec$all
     if ((!nzchar(target_column) || !target_column %in% names(metadata)) && is.data.frame(metadata) && nrow(metadata) > 0) {
       target_candidates <- ugplot_geo_target_candidates(metadata)
       target_column <- if ("age" %in% target_candidates) "age" else if (length(target_candidates) > 0) target_candidates[[1]] else ""
@@ -7283,7 +7411,9 @@ server <- function(input, output, session) {
       data.frame()
     }
     if (is.data.frame(candidate_matrix) && nrow(candidate_matrix) > 0) {
-      predictor_cols <- setdiff(names(candidate_matrix), c("sample_id", target_column))
+      predictor_cols <- setdiff(
+        names(candidate_matrix), c("sample_id", target_column, metadata_predictors)
+      )
       if (length(predictor_cols) > 0) {
         all_missing_rows <- rowSums(is.na(candidate_matrix[, predictor_cols, drop = FALSE])) == length(predictor_cols)
         if (mean(all_missing_rows) > 0.1) {
@@ -7326,6 +7456,8 @@ server <- function(input, output, session) {
             metadata = metadata,
             target_column = target_column,
             cpgs = all_candidate_cpgs,
+            metadata_numeric_predictors = metadata_spec$numeric,
+            metadata_categorical_predictors = metadata_spec$categorical,
             progress_callback = function(scanned, found, total) {
               update_geo_transcript_build_progress(
                 phase = "building candidate CpG matrix",
@@ -7358,7 +7490,11 @@ server <- function(input, output, session) {
           utils::write.csv(candidate_matrix, candidate_matrix_path, row.names = FALSE)
           update_geo_transcript_build_progress(
             phase = "candidate CpG matrix cached",
-            message = paste0("Candidate CpG matrix ready with ", nrow(candidate_matrix), " samples and ", max(0, ncol(candidate_matrix) - 2), " CpG columns."),
+            message = paste0(
+              "Candidate CpG matrix ready with ", nrow(candidate_matrix),
+              " samples, ", length(metadata_predictors), " metadata predictor(s), and ",
+              max(0, ncol(candidate_matrix) - 2 - length(metadata_predictors)), " CpG columns."
+            ),
             processed = length(processed),
             total = length(transcripts),
             compatible = compatible_n,
@@ -7410,7 +7546,10 @@ server <- function(input, output, session) {
           is.data.frame(candidate_matrix) && nrow(candidate_matrix) > 0) {
         available_cpgs <- intersect(transcript_cpgs, names(candidate_matrix))
         if (length(available_cpgs) > 0) {
-          transcript_dataset <- candidate_matrix[, c("sample_id", target_column, available_cpgs), drop = FALSE]
+          transcript_dataset <- candidate_matrix[
+            , c("sample_id", target_column, metadata_predictors, available_cpgs),
+            drop = FALSE
+          ]
           utils::write.csv(transcript_dataset, raw_dataset_path, row.names = FALSE)
         } else {
           transcript_dataset <- data.frame()
@@ -7421,7 +7560,9 @@ server <- function(input, output, session) {
             matrix_files = matrix_files,
             metadata = metadata,
             target_column = target_column,
-            cpgs = transcript_cpgs
+            cpgs = transcript_cpgs,
+            metadata_numeric_predictors = metadata_spec$numeric,
+            metadata_categorical_predictors = metadata_spec$categorical
           ),
           error = function(e) data.frame()
         )
@@ -7441,7 +7582,19 @@ server <- function(input, output, session) {
           missing_definition = geo_transcript_missing_definition()
         )[, 1]
         analysis_dataset <- transcript_dataset[!target_missing, , drop = FALSE]
-        predictor_cols <- setdiff(names(analysis_dataset), c("sample_id", target_column))
+        if (length(metadata_predictors) > 0L) {
+          metadata_complete <- stats::complete.cases(
+            analysis_dataset[, metadata_predictors, drop = FALSE]
+          )
+          for (column_name in metadata_spec$categorical) {
+            metadata_complete <- metadata_complete &
+              nzchar(trimws(as.character(analysis_dataset[[column_name]])))
+          }
+          analysis_dataset <- analysis_dataset[metadata_complete, , drop = FALSE]
+        }
+        predictor_cols <- setdiff(
+          names(analysis_dataset), c("sample_id", target_column, metadata_predictors)
+        )
         predictors <- analysis_dataset[, predictor_cols, drop = FALSE]
         if (length(predictor_cols) > 0) {
           predictor_missing <- build_missing_mask(
@@ -7480,7 +7633,11 @@ server <- function(input, output, session) {
             kept_cpgs <- colnames(filtered$filtered_predictors)
             kept_samples <- analysis_dataset$sample_id[filtered$keep_rows]
             filtered_dataset <- cbind(
-              analysis_dataset[filtered$keep_rows, c("sample_id", target_column), drop = FALSE],
+              analysis_dataset[
+                filtered$keep_rows,
+                c("sample_id", target_column, metadata_predictors),
+                drop = FALSE
+              ],
               filtered$filtered_predictors
             )
             filtered_path <- dataset_path
@@ -8255,6 +8412,7 @@ server <- function(input, output, session) {
     }
     geo_files(data.frame())
     geo_sample_metadata(data.frame())
+    geo_metadata_predictor_defaults(list(numeric = character(0), categorical = character(0)))
     geo_cpg_annotation(data.frame())
     geo_spearman_raw_results(data.frame())
     geo_spearman_results(data.frame())
@@ -10242,6 +10400,8 @@ server <- function(input, output, session) {
         metadata = metadata,
         target_column = target_column,
         cpgs = transcript_cpgs,
+        metadata_numeric_predictors = geo_metadata_predictor_spec()$numeric,
+        metadata_categorical_predictors = geo_metadata_predictor_spec()$categorical,
         progress_callback = function(scanned, found, total) {
           geo_stage(list(
             step = "Step 6",
@@ -12137,6 +12297,8 @@ server <- function(input, output, session) {
 	      accession = accession,
 	      matrix_source = matrix_source,
 	      target_column = target_column,
+	      geo_metadata_numeric_predictors = geo_metadata_predictor_spec()$numeric,
+	      geo_metadata_categorical_predictors = geo_metadata_predictor_spec()$categorical,
 	      resume_cached_geo = TRUE,
 	      resume_from_job_id = loaded_remote_job_id,
 	      spearman_max_cpgs = input$geo_spearman_max_cpgs %||% 0,
@@ -12173,6 +12335,7 @@ server <- function(input, output, session) {
 	      geo_remote_files(data.frame())
 	    }
 	    geo_sample_metadata(data.frame())
+	    geo_metadata_predictor_defaults(list(numeric = character(0), categorical = character(0)))
 	    geo_cpg_annotation(data.frame())
 	    geo_spearman_raw_results(data.frame())
 	    geo_spearman_results(data.frame())
@@ -12234,6 +12397,10 @@ server <- function(input, output, session) {
 	    if (nzchar(target_column)) {
 	      updateSelectInput(session, "geo_target_column", selected = target_column)
 	    }
+	    geo_metadata_predictor_defaults(list(
+	      numeric = unique(as.character(config$geo_metadata_numeric_predictors %||% character(0))),
+	      categorical = unique(as.character(config$geo_metadata_categorical_predictors %||% character(0)))
+	    ))
 	    update_geo_numeric_input("geo_spearman_max_cpgs", config$spearman_max_cpgs)
 	    update_geo_numeric_input("geo_spearman_min_samples", config$spearman_min_samples_pct)
 	    update_geo_numeric_input("geo_transcript_absrho_threshold", config$transcript_absrho_threshold)
@@ -12426,6 +12593,12 @@ server <- function(input, output, session) {
 	      }
 	      if (is.list(result$settings) && !is.null(result$settings$geo_ml_stability_group_column)) {
 	        updateSelectInput(session, "geo_ml_stability_group_column", selected = as.character(result$settings$geo_ml_stability_group_column %||% ""))
+	      }
+	      if (is.list(result$settings)) {
+	        geo_metadata_predictor_defaults(list(
+	          numeric = unique(as.character(result$settings$geo_metadata_numeric_predictors %||% character(0))),
+	          categorical = unique(as.character(result$settings$geo_metadata_categorical_predictors %||% character(0)))
+	        ))
 	      }
 	    }
 	    geo_remote_pipeline_job_id(job_id %||% geo_remote_pipeline_job_id())
