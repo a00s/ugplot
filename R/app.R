@@ -2608,6 +2608,7 @@ server <- function(input, output, session) {
   remote_model_diagnostic_data <- reactiveVal(list())
   remote_job_progress_estimates <- reactiveVal(list())
   remote_job_loading <- reactiveVal(FALSE)
+  remote_group_dataset_picker <- reactiveVal(list(groups = data.frame(), action = NULL))
   remote_job_monitor_state <- reactiveVal(list(checked_at = "", error = ""))
   remote_job_monitor_inflight <- reactiveVal(FALSE)
   remote_geo_result_applying <- reactiveVal(FALSE)
@@ -13769,29 +13770,22 @@ server <- function(input, output, session) {
       if (!is.data.frame(groups) || nrow(groups) == 0L) {
         stop("No transcript-group dataset is available for this job yet.", call. = FALSE)
       }
-      label_value <- function(value, fallback = "") {
-        value <- as.character(value %||% fallback)
-        value[is.na(value)] <- fallback
-        value
-      }
-      labels <- paste0(
-        label_value(groups$group_id), " | ",
-        label_value(groups$gene, "unknown gene"), " | ",
-        label_value(groups$transcript, "unknown transcript"), " | ",
-        label_value(groups$samples, "?"), " samples | ",
-        label_value(groups$cpgs, "?"), " CpGs"
-      )
-      choices <- stats::setNames(label_value(groups$group_id), labels)
+      remote_group_dataset_picker(list(groups = groups, action = action))
       showModal(modalDialog(
         title = "Load one transcript-group dataset",
-        tags$p(
-          "This reads only the selected cached group and loads it into TABLE like a CSV. ",
-          "The remote job keeps running."
+        tags$div(
+          class = "remote-group-dataset-intro",
+          tags$p(
+            "Choose a cached transcript group below. Only that dataset is loaded into TABLE, ",
+            "like a CSV; the remote job keeps running."
+          )
         ),
-        selectizeInput(
-          "remote_group_dataset_id", "Transcript group", choices = choices,
-          selected = unname(choices[[1]])
+        tags$div(
+          class = "remote-group-dataset-table-wrap",
+          DT::DTOutput("remote_group_dataset_table")
         ),
+        size = "l",
+        class = "remote-group-dataset-modal",
         easyClose = TRUE,
         footer = tagList(
           modalButton("Cancel"),
@@ -13804,10 +13798,57 @@ server <- function(input, output, session) {
     })
   })
 
+  output$remote_group_dataset_table <- DT::renderDT({
+    picker <- remote_group_dataset_picker()
+    groups <- picker$groups
+    validate(need(is.data.frame(groups) && nrow(groups) > 0L, "No cached groups are available."))
+    display_value <- function(name, fallback = "") {
+      value <- if (name %in% names(groups)) as.character(groups[[name]]) else rep(fallback, nrow(groups))
+      value[is.na(value) | !nzchar(value)] <- fallback
+      value
+    }
+    display <- data.frame(
+      Group = display_value("group_id"),
+      Gene = display_value("gene", "Unknown"),
+      Transcript = display_value("transcript", "Unknown"),
+      Samples = display_value("samples", "-"),
+      CpGs = display_value("cpgs", "-"),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+    DT::datatable(
+      display,
+      rownames = FALSE,
+      escape = TRUE,
+      selection = list(mode = "single", selected = 1L, target = "row"),
+      class = "stripe hover compact",
+      options = list(
+        pageLength = 8,
+        lengthChange = FALSE,
+        autoWidth = FALSE,
+        dom = "ftp",
+        language = list(search = "Search groups:", emptyTable = "No cached groups are available."),
+        columnDefs = list(
+          list(width = "10%", targets = 0),
+          list(width = "18%", targets = 1),
+          list(width = "42%", targets = 2),
+          list(width = "15%", targets = c(3, 4))
+        )
+      )
+    )
+  })
+
   observeEvent(input$remote_load_group_dataset_confirm, {
     tryCatch({
-      action <- parse_remote_job_action_key(input$remote_choose_group_dataset_row)
-      group_id <- as.character(input$remote_group_dataset_id %||% "")
+      picker <- remote_group_dataset_picker()
+      action <- picker$action
+      groups <- picker$groups
+      selected <- input$remote_group_dataset_table_rows_selected
+      if (is.null(action) || !is.data.frame(groups) || length(selected) != 1L ||
+          selected < 1L || selected > nrow(groups)) {
+        stop("Select one transcript group in the table first.", call. = FALSE)
+      }
+      group_id <- as.character(groups$group_id[[selected]] %||% "")
       req(nzchar(group_id))
       server <- remote_server_by_name(action$server)
       payload <- ugplot_remote_get_job_group_dataset(

@@ -554,12 +554,54 @@ table.dataTable th.dt-error-column {
 .remote-job-action-refresh { background: linear-gradient(135deg, #7657ff, #596dff) !important; }
 .remote-job-action-live { background: linear-gradient(135deg, #6554ff, #258cf5) !important; }
 .remote-job-action-load { background: linear-gradient(135deg, #258cf5, #20bfd0) !important; }
+.remote-job-action-group-dataset { background: linear-gradient(135deg, #8a63ff, #526dff) !important; }
 .remote-job-action-stop,
 .remote-job-action-delete { background: linear-gradient(135deg, #ff6476, #ff7659) !important; }
 .remote-job-action-pause { color: #4f3500 !important; background: linear-gradient(135deg, #ffd15a, #ff9e49) !important; }
 .remote-job-actions .remote-job-action-pause:hover,
 .remote-job-actions .remote-job-action-pause:focus { color: #4f3500 !important; }
 .remote-job-action-resume { background: linear-gradient(135deg, #22b77a, #18bea5) !important; }
+
+#shiny-modal:has(.remote-group-dataset-modal) .modal-dialog { width: min(980px, calc(100vw - 36px)); }
+#shiny-modal:has(.remote-group-dataset-modal) .modal-content { overflow: hidden; border-radius: 18px; }
+.remote-group-dataset-modal { padding: 20px 26px 24px !important; }
+.remote-group-dataset-intro { margin-bottom: 18px; color: #59657d; font-size: 15px; line-height: 1.55; }
+.remote-group-dataset-intro p { margin: 0; }
+.remote-group-dataset-table-wrap {
+  padding: 14px 16px 8px;
+  border: 1px solid #e0e5f1;
+  border-radius: 14px;
+  background: #fbfcff;
+}
+.remote-group-dataset-table-wrap .dataTables_filter { margin-bottom: 14px; text-align: left; }
+.remote-group-dataset-table-wrap .dataTables_filter label { width: 100%; color: #53617c; font-weight: 700; }
+.remote-group-dataset-table-wrap .dataTables_filter input {
+  width: min(380px, calc(100% - 120px));
+  height: 38px;
+  margin-left: 10px;
+  padding: 7px 11px;
+  border: 1px solid #d7deed;
+  border-radius: 9px;
+  background: #fff;
+}
+.remote-group-dataset-table-wrap table.dataTable { width: 100% !important; }
+.remote-group-dataset-table-wrap table.dataTable thead th {
+  padding: 11px 10px;
+  color: #66728e;
+  border-bottom: 1px solid #dfe4ef;
+  background: #f2f5fb;
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.remote-group-dataset-table-wrap table.dataTable tbody td { padding: 12px 10px; vertical-align: middle; }
+.remote-group-dataset-table-wrap table.dataTable tbody tr { cursor: pointer; }
+.remote-group-dataset-table-wrap .dataTables_paginate { padding-top: 12px; }
+@media (max-width: 700px) {
+  .remote-group-dataset-modal { padding: 16px !important; }
+  .remote-group-dataset-table-wrap { padding: 10px 8px 5px; overflow-x: auto; }
+  .remote-group-dataset-table-wrap .dataTables_filter input { width: 100%; margin: 7px 0 0; }
+}
 
 .remote-selected-monitor {
   margin: 8px 0 14px;
