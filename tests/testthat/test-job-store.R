@@ -464,6 +464,7 @@ test_that("process termination includes isolated descendants", {
   skip_on_os("windows")
   skip_if_not(dir.exists("/proc"))
   skip_if_not_installed("processx")
+  skip_if_not_installed("ps")
   terminate_process <- ugplot_test_internal("ugplot_terminate_process")
   process_alive <- ugplot_test_internal("ugplot_process_alive")
   process_tree <- ugplot_test_internal("ugplot_linux_process_tree_metrics")
@@ -476,11 +477,19 @@ test_that("process termination includes isolated descendants", {
   metrics <- process_tree(process$get_pid())
   expect_gte(metrics$process_count, 2L)
   descendants <- setdiff(metrics$pids, process$get_pid())
+  descendant_handles <- Filter(Negate(is.null), lapply(descendants, function(pid) {
+    tryCatch(ps::ps_handle(pid), error = function(e) NULL)
+  }))
+  expect_gte(length(descendant_handles), 1L)
 
   terminate_process(process$get_pid())
 
   expect_false(process_alive(process$get_pid()))
-  expect_false(any(vapply(descendants, process_alive, logical(1))))
+  deadline <- Sys.time() + 3
+  while (any(vapply(descendant_handles, ps::ps_is_running, logical(1))) && Sys.time() < deadline) {
+    Sys.sleep(0.05)
+  }
+  expect_false(any(vapply(descendant_handles, ps::ps_is_running, logical(1))))
 })
 
 test_that("job listing marks dead background processes as failed", {
