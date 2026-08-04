@@ -880,14 +880,37 @@ ugplot_terminate_process <- function(pid) {
     if (length(expanded) == length(tree_pids)) break
     tree_pids <- expanded
   }
-  # Capture and terminate descendants before the root can exit and reparent
-  # isolated trainers, otherwise they survive Stop as untracked processes.
-  termination_order <- c(setdiff(rev(tree_pids), pid), pid)
-  for (process_pid in termination_order) {
-    try(tools::pskill(process_pid, signal = tools::SIGTERM), silent = TRUE)
+  # Stop descendants from the leaves upwards. Keeping each parent alive until
+  # its children disappear lets it reap them instead of leaving zombies behind
+  # when the process runs in a container without a reaping init process.
+  remaining <- setdiff(tree_pids, pid)
+  while (length(remaining) > 0L) {
+    parents <- intersect(process_table$ppid, remaining)
+    leaves <- setdiff(remaining, parents)
+    if (length(leaves) == 0L) {
+      leaves <- remaining
+    }
+    for (process_pid in leaves) {
+      try(tools::pskill(process_pid, signal = tools::SIGTERM), silent = TRUE)
+    }
+    deadline <- Sys.time() + 0.5
+    while (any(file.exists(file.path("/proc", leaves))) && Sys.time() < deadline) {
+      Sys.sleep(0.02)
+    }
+    for (process_pid in leaves) {
+      if (ugplot_process_alive(process_pid)) {
+        try(tools::pskill(process_pid, signal = tools::SIGKILL), silent = TRUE)
+      }
+    }
+    deadline <- Sys.time() + 0.5
+    while (any(file.exists(file.path("/proc", leaves))) && Sys.time() < deadline) {
+      Sys.sleep(0.02)
+    }
+    remaining <- setdiff(remaining, leaves)
   }
+  try(tools::pskill(pid, signal = tools::SIGTERM), silent = TRUE)
   Sys.sleep(0.5)
-  for (process_pid in termination_order) {
+  for (process_pid in tree_pids) {
     if (ugplot_process_alive(process_pid)) {
       try(tools::pskill(process_pid, signal = tools::SIGKILL), silent = TRUE)
     }
