@@ -13070,7 +13070,7 @@ server <- function(input, output, session) {
           server_url = server$url,
           job_id = job_id,
           token = server$token %||% "",
-          include_groups = FALSE,
+          include_groups = TRUE,
           resource_lines = 20L,
           timeout_seconds = 5
         )
@@ -13079,10 +13079,21 @@ server <- function(input, output, session) {
           server_url = server$url, job_id = job_id,
           token = server$token %||% "", timeout_seconds = 5
         )
+        group_activity <- if (remote_server_supports("job_group_activity", server_name)) {
+          tryCatch(
+            ugplot_remote_job_groups(
+              server_url = server$url, job_id = job_id,
+              token = server$token %||% ""
+            ),
+            error = function(e) list(groups = data.frame())
+          )
+        } else {
+          list(groups = data.frame())
+        }
         list(
           checked_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z"),
           status = status, resources = data.frame(),
-          group_activity = list(groups = data.frame())
+          group_activity = group_activity
         )
       }
     }, error = function(e) {
@@ -13748,7 +13759,7 @@ server <- function(input, output, session) {
       ))
       remote_job_status_text(paste(
         "Selected", job_id,
-        "— loading the compact model runtime summary. Use the details button for the complete checkpoint."
+        "— loading compact status, group completion, and model runtime. Use the details button for the complete checkpoint."
       ))
       if (remote_server_supports("job_model_timing", server_name)) {
         timing <- tryCatch({
@@ -13772,6 +13783,14 @@ server <- function(input, output, session) {
         }, error = function(e) list())
         if (is.list(policy)) remote_job_model_policy(policy)
       }
+      # Group activity is a compact manifest read and belongs in the focused
+      # monitor.  Loading it here keeps the per-group completion stripe visible
+      # as soon as a GEO job is selected; the slower details button remains for
+      # checkpoints, logs, and the full result preview.
+      tryCatch(
+        refresh_remote_job_monitor(job_id, server_name = server_name, quiet = TRUE),
+        error = function(e) NULL
+      )
     }
   })
 
@@ -13827,7 +13846,7 @@ server <- function(input, output, session) {
     updateTextInput(session, "remote_job_id", value = job_id)
     withProgress(
       message = paste("Refreshing", action$server, job_id),
-      detail = "Reading lightweight status and recent process telemetry only.",
+      detail = "Reading lightweight status, group activity, and recent process telemetry.",
       value = 0.25,
       {
         tryCatch({

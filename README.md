@@ -478,6 +478,11 @@ The **Server resources** panel is sampled every 30 seconds while a job is active
 
 For remote GEO jobs, selecting the running job also shows a visual **GEO job progress** report. This separates coarse pipeline stage progress from the long stability-seed phase, so a job that is near the final stage does not look falsely complete. Completed steps are green, the active step is blue, and pending steps are gray.
 
+Selecting a GEO job also loads the **Transcript model screening** stripe in
+**JOBS**. Each narrow segment represents one transcript group: green groups are
+complete, orange groups are being processed, and gray groups are waiting. Hover
+over a segment to see its group ID, executor, percentage, and current activity.
+
 <img src="man/img/geo-remote-job-progress.png" alt="Remote GEO job progress report with stability-seed counters" width="760">
 
 The stability bar is a lower-bound estimate based on the saved partial result and the currently running transcript group. It reports how many transcript groups are done, which task is active, how many groups remain, and whether a partial checkpoint is available. Transcript group IDs can move from higher numbers to lower numbers because the stability queue follows the screening `CombinedRank`, not numeric TG order.
@@ -505,6 +510,9 @@ job:
 
 - the top cards show total, screened, and stabilized transcript groups plus the
   best median R² observed so far;
+- the **Group completion map** shows one segment per transcript group: green is
+  complete, purple is processing, orange is screened but not yet stabilized,
+  and gray is waiting; hover a segment to identify its group;
 - **Science collaboration** shows each ugPlot server or Science Collab client
   currently working, its assigned group, activity, and progress;
 - the discovery table is populated while the job is still running and marks
