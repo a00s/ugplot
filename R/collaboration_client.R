@@ -25,6 +25,29 @@ ugplot_science_collab_client_packages <- function() {
   c("httr", "jsonlite", "processx")
 }
 
+ugplot_science_collab_state_dir <- function() {
+  configured <- trimws(Sys.getenv("UGPLOT_SCIENCE_COLLAB_STATE_DIR", unset = ""))
+  state_dir <- if (nzchar(configured)) configured else file.path(path.expand("~"), ".ugplot", "science-collab")
+  dir.create(state_dir, recursive = TRUE, showWarnings = FALSE)
+  state_dir
+}
+
+ugplot_science_collab_state_path <- function(name = "default") {
+  safe_name <- gsub("[^A-Za-z0-9._-]+", "_", as.character(name))
+  file.path(ugplot_science_collab_state_dir(), paste0(safe_name, ".rds"))
+}
+
+ugplot_read_science_collab_state <- function(name = "default") {
+  path <- ugplot_science_collab_state_path(name)
+  if (!file.exists(path)) return(NULL)
+  tryCatch(readRDS(path), error = function(e) NULL)
+}
+
+ugplot_write_science_collab_state <- function(state, name = "default") {
+  saveRDS(state, ugplot_science_collab_state_path(name))
+  invisible(state)
+}
+
 ugplot_install_science_collab_client_deps <- function(install = TRUE, dependencies = TRUE) {
   packages <- ugplot_science_collab_client_packages()
   missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly = TRUE)]
@@ -271,4 +294,152 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
     if (isTRUE(accepted)) counters$accepted <- counters$accepted + 1L
   }
   invisible(counters)
+}
+
+#' Start a Science Collab client in the background
+#'
+#' Starts code{ugPlotScienceCollab()} in a detached R process and keeps its
+#' PID, configuration, and log location under code{~/.ugplot/science-collab}.
+#'
+#' @inheritParams ugPlotScienceCollab
+#' @param name Local handle used by the status and stop functions.
+#' @return Invisibly returns the background client state.
+#' @export
+ugPlotScienceCollabStart <- function(coordinator, scientist_name,
+                                     cpu_limit = max(1L, parallel::detectCores() - 1L),
+                                     install_model_deps = TRUE,
+                                     install_client_deps = TRUE,
+                                     poll_seconds = 6,
+                                     name = "default") {
+  if (!requireNamespace("callr", quietly = TRUE)) {
+    stop("Package 'callr' is required to start Science Collab in the background.", call. = FALSE)
+  }
+  server_url <- ugplot_science_collab_url(coordinator)
+  scientist_name <- trimws(as.character(scientist_name %||% ""))
+  if (length(scientist_name) != 1L || !nzchar(scientist_name)) {
+    stop("Provide the scientist name shown by Science Collab.", call. = FALSE)
+  }
+  cpu_limit <- suppressWarnings(as.integer(cpu_limit))
+  if (length(cpu_limit) != 1L || is.na(cpu_limit) || cpu_limit < 1L) {
+    stop("cpu_limit must be a positive integer.", call. = FALSE)
+  }
+  poll_seconds <- suppressWarnings(as.numeric(poll_seconds))
+  if (length(poll_seconds) != 1L || !is.finite(poll_seconds) || poll_seconds < 1) {
+    stop("poll_seconds must be at least one second.", call. = FALSE)
+  }
+  name <- trimws(as.character(name %||% "default"))
+  if (length(name) != 1L || !nzchar(name)) stop("name must not be empty.", call. = FALSE)
+
+  current <- ugplot_read_science_collab_state(name)
+  if (is.list(current) && ugplot_process_alive(current$pid %||% NA_integer_)) {
+    message(
+      "Science Collab client is already running as ", name,
+      " (pid ", current$pid, ")."
+    )
+    return(invisible(current))
+  }
+
+  state_dir <- ugplot_science_collab_state_dir()
+  safe_name <- gsub("[^A-Za-z0-9._-]+", "_", name)
+  log_file <- file.path(state_dir, paste0(safe_name, ".log"))
+  lib_paths <- .libPaths()
+  process <- callr::r_bg(
+    func = function(server_url, scientist_name, cpu_limit,
+                    install_model_deps, install_client_deps,
+                    poll_seconds, lib_paths) {
+      .libPaths(lib_paths)
+      library(ugplot)
+      ugPlotScienceCollab(
+        coordinator = server_url,
+        scientist_name = scientist_name,
+        cpu_limit = cpu_limit,
+        install_model_deps = install_model_deps,
+        install_client_deps = install_client_deps,
+        poll_seconds = poll_seconds
+      )
+    },
+    args = list(
+      server_url = server_url,
+      scientist_name = scientist_name,
+      cpu_limit = cpu_limit,
+      install_model_deps = isTRUE(install_model_deps),
+      install_client_deps = isTRUE(install_client_deps),
+      poll_seconds = poll_seconds,
+      lib_paths = lib_paths
+    ),
+    stdout = log_file,
+    stderr = log_file,
+    supervise = FALSE,
+    cleanup = FALSE,
+    poll_connection = FALSE
+  )
+  Sys.sleep(0.25)
+  if (!process$is_alive()) {
+    log_lines <- if (file.exists(log_file)) utils::tail(readLines(log_file, warn = FALSE), 30L) else character(0)
+    stop(
+      paste(c("Science Collab client stopped during startup.", log_lines), collapse = "\n"),
+      call. = FALSE
+    )
+  }
+  state <- list(
+    name = name,
+    pid = process$get_pid(),
+    running = TRUE,
+    coordinator = server_url,
+    scientist_name = scientist_name,
+    cpu_limit = cpu_limit,
+    poll_seconds = poll_seconds,
+    log_file = log_file,
+    started_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+  )
+  ugplot_write_science_collab_state(state, name)
+  message(
+    "Science Collab client started as ", name, " (pid ", state$pid,
+    "). Log: ", log_file
+  )
+  invisible(state)
+}
+
+#' Get background Science Collab client status
+#'
+#' @param name Local handle supplied to `ugPlotScienceCollabStart()`.
+#' @return Invisibly returns the background client state.
+#' @export
+ugPlotScienceCollabStatus <- function(name = "default") {
+  state <- ugplot_read_science_collab_state(name)
+  if (is.null(state)) {
+    state <- list(name = name, running = FALSE, message = "No background Science Collab client state found.")
+  } else {
+    state$running <- ugplot_process_alive(state$pid %||% NA_integer_)
+    if (!isTRUE(state$running)) state$message <- "Science Collab client is not running."
+  }
+  print(state)
+  invisible(state)
+}
+
+#' Stop a background Science Collab client
+#'
+#' @param name Local handle supplied to `ugPlotScienceCollabStart()`.
+#' @return Invisibly returns TRUE when a client was stopped.
+#' @export
+ugPlotScienceCollabStop <- function(name = "default") {
+  state <- ugplot_read_science_collab_state(name)
+  if (is.null(state) || !ugplot_process_alive(state$pid %||% NA_integer_)) {
+    message("Science Collab client is not running.")
+    return(invisible(FALSE))
+  }
+  pid <- as.integer(state$pid)
+  if (.Platform$OS.type != "windows") {
+    # SIGINT lets an active mission unwind its lease before the process tree is
+    # forcibly terminated below.
+    try(tools::pskill(pid, signal = tools::SIGINT), silent = TRUE)
+    deadline <- Sys.time() + 5
+    while (ugplot_process_alive(pid) && Sys.time() < deadline) Sys.sleep(0.1)
+  }
+  if (ugplot_process_alive(pid)) ugplot_terminate_process(pid)
+  state$running <- FALSE
+  state$stopped_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+  ugplot_write_science_collab_state(state, name)
+  message("Science Collab client stopped (pid ", pid, ").")
+  invisible(TRUE)
 }

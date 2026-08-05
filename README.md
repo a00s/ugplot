@@ -164,6 +164,24 @@ missing model dependency. It then keeps waiting for work until you press
 `Ctrl+C`. Use an HTTPS URL or a trusted private network when mission data must
 not travel over plain HTTP.
 
+To let ugPlot manage the client as a background process, use:
+
+```r
+ugPlotScienceCollabStart(
+  coordinator = "192.168.1.20",
+  scientist_name = "Alice",
+  cpu_limit = 4,
+  install_model_deps = TRUE
+)
+
+ugPlotScienceCollabStatus()
+ugPlotScienceCollabStop()
+```
+
+The start function returns immediately and records the PID, configuration, and
+log location under `~/.ugplot/science-collab`. Use `name = "lab-machine-2"` in
+all three functions when managing more than one local client.
+
 Run the same client persistently in the background with the prebuilt image:
 
 ```bash
