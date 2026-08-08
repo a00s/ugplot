@@ -104,6 +104,27 @@ test_that("lightweight remote monitor summarizes distributed screening", {
   expect_equal(complete$active_groups, "Fy2:TG7")
 })
 
+test_that("focused monitor combines server workers and Science Collab clients", {
+  monitor_workers <- ugplot_test_internal("ugplot_remote_monitor_workers")
+  workers <- monitor_workers(
+    list(distributed_state = list(active_tasks = list(
+      list(worker = "Fy2", group = "TG61", state = "running", progress = 0.18,
+           message = "Training", error = "", updated_at = "")
+    ))),
+    list(groups = data.frame(
+      group_id = c("TG61", "TG62"), state = c("processing", "processing"),
+      executor = c("Fy2", "Alice"), executor_type = c("server", "collaboration"),
+      progress = c(0.18, 0.42), message = c("Training", "Comparing models"),
+      stringsAsFactors = FALSE
+    ))
+  )
+
+  expect_equal(workers$worker, c("Fy2", "Alice"))
+  expect_equal(workers$group, c("TG61", "TG62"))
+  expect_equal(workers$kind, c("server", "collaboration"))
+  expect_equal(workers$progress, c(0.18, 0.42))
+})
+
 test_that("local coordinator stages suppress stale distributed activity", {
   summarize <- ugplot_test_internal("ugplot_remote_distributed_summary")
   summary <- summarize(list(

@@ -415,6 +415,15 @@ test_that("job group activity identifies collaborative and server executors", {
   expect_equal(active$group_id, "TG2")
   expect_equal(active$progress, 0.42)
   expect_match(active$message, "Comparing models", fixed = TRUE)
+
+  lightweight <- activity(job_id, root, inspect_collaboration = FALSE)
+  lightweight_collaborative <- lightweight$groups[
+    lightweight$groups$group_id == "TG2", , drop = FALSE
+  ]
+  expect_equal(lightweight_collaborative$state, "processing")
+  expect_equal(lightweight_collaborative$executor, "Alice")
+  expect_equal(lightweight_collaborative$executor_type, "collaboration")
+  expect_equal(lightweight_collaborative$progress, 0.42)
 })
 
 test_that("collaboration payload can be staged without loading it in the Shiny process", {

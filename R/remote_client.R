@@ -199,7 +199,9 @@ ugplot_remote_distributed_summary <- function(status) {
   }
   completed <- number(distributed$completed, NA_real_)
   total <- number(distributed$total, NA_real_)
-  processing <- number(distributed$active, NA_real_)
+  # Use exact indexing: `$active` partially matches `active_tasks` when an older
+  # server omits the aggregate count, which turns the task list into a number.
+  processing <- number(distributed[["active"]], NA_real_)
   active_groups <- as.character(distributed$active_groups %||% character(0))
   active_groups <- trimws(active_groups[nzchar(trimws(active_groups))])
   normalize_active_tasks <- function(value) {
@@ -282,6 +284,45 @@ ugplot_remote_distributed_summary <- function(status) {
     active_groups = active_groups,
     active_tasks = active_tasks
   )
+}
+
+ugplot_remote_monitor_workers <- function(status, group_activity = list(groups = data.frame())) {
+  workers <- ugplot_remote_distributed_summary(status)$active_tasks
+  if (!is.data.frame(workers)) workers <- data.frame()
+  if (nrow(workers) > 0L) workers$kind <- "server"
+
+  groups <- group_activity$groups %||% data.frame()
+  if (is.list(groups) && !is.data.frame(groups) && length(groups) > 0L) {
+    groups <- tryCatch(as.data.frame(groups, stringsAsFactors = FALSE), error = function(e) data.frame())
+  }
+  required <- c("group_id", "state", "executor", "executor_type", "progress", "message")
+  if (!is.data.frame(groups) || nrow(groups) == 0L || !all(required %in% names(groups))) {
+    return(workers)
+  }
+  groups <- groups[
+    tolower(as.character(groups$state)) == "processing" & nzchar(as.character(groups$executor)),
+    , drop = FALSE
+  ]
+  if (nrow(groups) == 0L) return(workers)
+
+  group_workers <- data.frame(
+    worker = as.character(groups$executor),
+    group = as.character(groups$group_id),
+    job_id = "",
+    state = "running",
+    progress = pmax(0, pmin(1, suppressWarnings(as.numeric(groups$progress)))),
+    message = as.character(groups$message),
+    error = "",
+    updated_at = "",
+    kind = as.character(groups$executor_type),
+    stringsAsFactors = FALSE
+  )
+  group_workers$progress[!is.finite(group_workers$progress)] <- 0
+  existing_keys <- if (nrow(workers) > 0L) paste(workers$worker, workers$group, sep = "\r") else character(0)
+  group_keys <- paste(group_workers$worker, group_workers$group, sep = "\r")
+  group_workers <- group_workers[!duplicated(group_keys) & !(group_keys %in% existing_keys), , drop = FALSE]
+  if (nrow(group_workers) == 0L) return(workers)
+  if (nrow(workers) == 0L) group_workers else rbind(workers, group_workers)
 }
 
 ugplot_remote_job_log <- function(server_url, job_id, token = "", max_lines = 200L) {

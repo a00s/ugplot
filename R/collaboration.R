@@ -585,6 +585,17 @@ ugplot_collaboration_job_group_activity <- function(job_id,
   }
   status <- ugplot_read_rds_or_null(ugplot_status_path(job_id, jobs_dir))
   active_server_groups <- ugplot_active_distributed_group_ids(status)
+  # The focused monitor deliberately avoids opening two task files for every
+  # transcript group.  Keep that path cheap while still consulting the compact
+  # collaboration index for the handful of currently leased missions.
+  active_collaboration <- if (!isTRUE(inspect_collaboration)) {
+    tryCatch(
+      ugplot_collaboration_active_contributors(job_id, jobs_dir),
+      error = function(e) data.frame()
+    )
+  } else {
+    data.frame()
+  }
   value_at <- function(column, index, default = "") {
     if (!(column %in% names(manifest))) return(default)
     value <- manifest[[column]][[index]]
@@ -605,6 +616,13 @@ ugplot_collaboration_job_group_activity <- function(job_id,
     }
     task <- if (is.list(task)) ugplot_collaboration_reap_task(task) else NULL
     task_state <- if (is.list(task)) as.character(task$state %||% "") else ""
+    contributor_index <- if (is.data.frame(active_collaboration) &&
+                             nrow(active_collaboration) > 0L &&
+                             "group_id" %in% names(active_collaboration)) {
+      match(group_id, as.character(active_collaboration$group_id))
+    } else {
+      NA_integer_
+    }
     state <- "pending"
     executor <- ""
     executor_type <- ""
@@ -624,6 +642,16 @@ ugplot_collaboration_job_group_activity <- function(job_id,
       if (!is.finite(progress)) progress <- 0
       message <- as.character(task$client_message %||% "Collaborative experiment running")
       candidate <- as.character(task$client_candidate %||% "")
+      if (nzchar(candidate)) message <- paste(message, "—", candidate)
+    } else if (!is.na(contributor_index)) {
+      contributor <- active_collaboration[contributor_index, , drop = FALSE]
+      state <- "processing"
+      executor <- as.character(contributor$executor[[1]] %||% "Public scientist")
+      executor_type <- "collaboration"
+      progress <- suppressWarnings(as.numeric(contributor$progress[[1]] %||% 0))
+      if (!is.finite(progress)) progress <- 0
+      message <- as.character(contributor$message[[1]] %||% "Collaborative experiment running")
+      candidate <- as.character(contributor$candidate[[1]] %||% "")
       if (nzchar(candidate)) message <- paste(message, "—", candidate)
     } else if (manifest_state %in% c("dispatching", "submitted", "running") &&
                group_id %in% active_server_groups) {

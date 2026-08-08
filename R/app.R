@@ -14245,7 +14245,11 @@ server <- function(input, output, session) {
     if (exists("ugplot_remote_distributed_summary", mode = "function", inherits = TRUE)) {
       distributed_summary <- ugplot_remote_distributed_summary(status)
     }
-    active_tasks <- distributed_summary$active_tasks %||% data.frame()
+    active_tasks <- if (exists("ugplot_remote_monitor_workers", mode = "function", inherits = TRUE)) {
+      ugplot_remote_monitor_workers(status, activity)
+    } else {
+      distributed_summary$active_tasks %||% data.frame()
+    }
     active_groups <- if (is.data.frame(groups) && processing > 0L && "group_id" %in% names(groups)) {
       paste(utils::head(as.character(groups$group_id[group_states == "processing"]), 3L), collapse = ", ")
     } else ""
@@ -14406,7 +14410,7 @@ server <- function(input, output, session) {
       ),
       if (length(worker_cards) > 0L) tags$div(
         class = "remote-monitor-workers",
-        tags$div(class = "remote-monitor-workers-title", "Servers working on this job"),
+        tags$div(class = "remote-monitor-workers-title", "Servers and Science Collab clients working on this job"),
         worker_cards
       )
     )
