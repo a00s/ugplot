@@ -61,12 +61,16 @@ ugplot_request_config <- function(req) {
   list()
 }
 
-ugplot_request_json_body <- function(req) {
+ugplot_request_json_body <- function(req, max_bytes = Inf) {
   cached_body <- req$ugplot_json_body %||% NULL
   if (!is.null(cached_body)) {
     return(cached_body)
   }
   body <- req$postBody %||% ""
+  body_bytes <- nchar(body, type = "bytes")
+  if (length(body_bytes) != 1L || is.na(body_bytes) || body_bytes > max_bytes) {
+    stop("Request body is too large.", call. = FALSE)
+  }
   if (!nzchar(body)) {
     req$ugplot_json_body <- list()
     return(req$ugplot_json_body)
@@ -852,6 +856,15 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
   pr$filter("auth", function(req, res) {
     request_path <- as.character(req$PATH_INFO %||% "")
     if (grepl("^/(collaboration|reports)(/|$)", request_path)) {
+      if (grepl("^/collaboration(/|$)", request_path)) {
+        max_bytes <- if (grepl("/complete$", request_path)) 10 * 1024^2 else 64 * 1024
+        content_length <- suppressWarnings(as.numeric(req$HTTP_CONTENT_LENGTH %||% 0))
+        body_bytes <- nchar(req$postBody %||% "", type = "bytes")
+        if ((is.finite(content_length) && content_length > max_bytes) || body_bytes > max_bytes) {
+          res$status <- 413
+          return(list(error = "Request body is too large"))
+        }
+      }
       return(plumber::forward())
     }
     if (!ugplot_check_token(req, token)) {
@@ -867,7 +880,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
 
   pr$handle("POST", "/collaboration/claim", function(req, res) {
     tryCatch({
-      body <- ugplot_request_json_body(req)
+      body <- ugplot_request_json_body(req, 64 * 1024)
       claimed <- ugplot_collaboration_claim_task(
         client_id = body$client_id %||% "",
         capabilities = body$capabilities %||% list(),
@@ -889,7 +902,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
 
   pr$handle("POST", "/collaboration/compatibility", function(req, res) {
     tryCatch({
-      body <- ugplot_request_json_body(req)
+      body <- ugplot_request_json_body(req, 64 * 1024)
       ugplot_collaboration_compatibility(body$capabilities %||% list(), jobs_dir)
     }, error = function(e) {
       res$status <- 400
@@ -899,7 +912,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
 
   pr$handle("POST", "/collaboration/<task_id>/heartbeat", function(task_id, req, res) {
     tryCatch({
-      body <- ugplot_request_json_body(req)
+      body <- ugplot_request_json_body(req, 64 * 1024)
       ugplot_collaboration_heartbeat(
         task_id, body$lease_id %||% "", body$client_id %||% "",
         lease_seconds = 120, telemetry = body$telemetry %||% list(), jobs_dir = jobs_dir
@@ -912,7 +925,7 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
 
   pr$handle("POST", "/collaboration/<task_id>/release", function(task_id, req, res) {
     tryCatch({
-      body <- ugplot_request_json_body(req)
+      body <- ugplot_request_json_body(req, 64 * 1024)
       ugplot_collaboration_release_task(
         task_id, body$lease_id %||% "", body$client_id %||% "", jobs_dir
       )
@@ -924,10 +937,12 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
 
   pr$handle("POST", "/collaboration/<task_id>/complete", function(task_id, req, res) {
     tryCatch({
-      body <- ugplot_request_json_body(req)
-      result <- ugplot_read_rds_base64(body$result_rds_base64 %||% "")
+      body <- ugplot_request_json_body(req, 10 * 1024^2)
+      if (!identical(suppressWarnings(as.integer(body$protocol_version %||% 0L)), 2L)) {
+        stop("Science Collab result protocol version 2 is required.", call. = FALSE)
+      }
       ugplot_collaboration_complete_task(
-        task_id, body$lease_id %||% "", body$client_id %||% "", result,
+        task_id, body$lease_id %||% "", body$client_id %||% "", body$result %||% NULL,
         jobs_dir = jobs_dir
       )
     }, error = function(e) {

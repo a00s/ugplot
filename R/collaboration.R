@@ -3,9 +3,12 @@ ugplot_collaboration_dir <- function(jobs_dir = ugplot_default_jobs_dir()) {
 }
 
 ugplot_collaboration_task_dir <- function(task_id, jobs_dir = ugplot_default_jobs_dir()) {
-  task_id <- gsub("[^A-Za-z0-9._-]", "_", as.character(task_id %||% ""))
-  if (!nzchar(task_id)) stop("A collaboration task ID is required.", call. = FALSE)
-  file.path(ugplot_collaboration_dir(jobs_dir), task_id)
+  task_id <- as.character(task_id %||% "")
+  if (length(task_id) != 1L || is.na(task_id) || !nzchar(task_id) ||
+      nchar(task_id, type = "chars") > 200L || !grepl("^[A-Za-z0-9._:-]+$", task_id)) {
+    stop("A valid collaboration task ID is required.", call. = FALSE)
+  }
+  file.path(ugplot_collaboration_dir(jobs_dir), gsub(":", "_", task_id, fixed = TRUE))
 }
 
 ugplot_collaboration_index_path <- function(jobs_dir = ugplot_default_jobs_dir()) {
@@ -240,6 +243,259 @@ ugplot_collaboration_required_models <- function(config) {
   models
 }
 
+ugplot_collaboration_text <- function(value, field, max_chars, allow_empty = FALSE,
+                                      pattern = NULL) {
+  value <- unlist(value %||% "", use.names = FALSE)
+  if (length(value) != 1L || is.na(value)) {
+    stop(field, " must be a single text value.", call. = FALSE)
+  }
+  value <- trimws(gsub("[[:cntrl:]]", " ", as.character(value)))
+  value <- gsub("[[:space:]]+", " ", value)
+  if (!allow_empty && !nzchar(value)) stop(field, " is required.", call. = FALSE)
+  if (nchar(value, type = "chars") > max_chars) stop(field, " is too long.", call. = FALSE)
+  if (!is.null(pattern) && nzchar(value) && !grepl(pattern, value)) {
+    stop(field, " contains unsupported characters.", call. = FALSE)
+  }
+  value
+}
+
+ugplot_collaboration_table <- function(value, field, allowed_columns = NULL,
+                                       required_columns = character(0),
+                                       max_rows = 10000L, max_columns = 64L,
+                                       max_text_chars = 500L) {
+  if (is.null(value) || (is.list(value) && length(value) == 0L)) return(data.frame())
+  rows <- if (is.data.frame(value)) {
+    lapply(seq_len(nrow(value)), function(i) as.list(value[i, , drop = FALSE]))
+  } else if (is.list(value) && all(vapply(value, is.list, logical(1)))) {
+    value
+  } else {
+    stop(field, " must be a JSON table.", call. = FALSE)
+  }
+  if (length(rows) > max_rows) stop(field, " has too many rows.", call. = FALSE)
+  column_names <- unique(unlist(lapply(rows, names), use.names = FALSE))
+  if (length(column_names) > max_columns) stop(field, " has too many columns.", call. = FALSE)
+  if (length(column_names) > 0L && any(
+    is.na(column_names) | !grepl("^[A-Za-z][A-Za-z0-9_.]{0,79}$", column_names)
+  )) stop(field, " contains invalid column names.", call. = FALSE)
+  if (!is.null(allowed_columns) && any(!column_names %in% allowed_columns)) {
+    stop(field, " contains unsupported columns.", call. = FALSE)
+  }
+  if (!all(required_columns %in% column_names)) {
+    stop(field, " is missing required columns.", call. = FALSE)
+  }
+  for (row in rows) {
+    if (is.null(names(row)) || anyDuplicated(names(row))) stop(field, " contains an invalid row.", call. = FALSE)
+    for (cell in row) {
+      cell <- unlist(cell, recursive = FALSE, use.names = FALSE)
+      if (length(cell) > 1L || (length(cell) == 1L && (is.raw(cell) || is.complex(cell)))) {
+        stop(field, " contains a non-scalar value.", call. = FALSE)
+      }
+      if (length(cell) == 1L && is.character(cell) && nchar(cell, type = "chars") > max_text_chars) {
+        stop(field, " contains oversized text.", call. = FALSE)
+      }
+    }
+  }
+  if (length(rows) == 0L) return(data.frame())
+  columns <- lapply(column_names, function(column_name) {
+    cells <- lapply(rows, function(row) {
+      cell <- row[[column_name]]
+      cell <- unlist(cell, recursive = FALSE, use.names = FALSE)
+      if (length(cell) == 0L) NA else cell[[1]]
+    })
+    non_missing <- cells[!vapply(cells, function(cell) length(cell) == 1L && is.na(cell), logical(1))]
+    if (length(non_missing) > 0L && all(vapply(non_missing, is.logical, logical(1)))) {
+      return(vapply(cells, function(cell) if (is.na(cell)) NA else isTRUE(cell), logical(1)))
+    }
+    if (length(non_missing) > 0L && all(vapply(non_missing, is.numeric, logical(1)))) {
+      return(vapply(cells, function(cell) suppressWarnings(as.numeric(cell)), numeric(1)))
+    }
+    vapply(cells, function(cell) {
+      if (length(cell) == 0L || is.na(cell)) return(NA_character_)
+      text <- gsub("[[:cntrl:]]", " ", as.character(cell))
+      if (grepl("^[=+@]", text) || grepl("^-([0-9]|[A-Za-z])", text)) text <- paste0("'", text)
+      text
+    }, character(1))
+  })
+  names(columns) <- column_names
+  as.data.frame(columns, stringsAsFactors = FALSE, check.names = FALSE)
+}
+
+ugplot_collaboration_portable_result <- function(result) {
+  if (!is.list(result)) stop("Science Collab result must be a list.", call. = FALSE)
+  portable_run <- function(run) {
+    if (!is.list(run)) return(NULL)
+    scalar_summary <- run$final_summary %||% list()
+    scalar_summary <- scalar_summary[vapply(scalar_summary, function(value) {
+      value <- unlist(value, recursive = FALSE, use.names = FALSE)
+      length(value) <= 1L && (length(value) == 0L || is.atomic(value))
+    }, logical(1))]
+    list(
+      best_model_name = as.character(run$best_model_name %||% ""),
+      results_table = run$results_table %||% data.frame(),
+      final_summary = scalar_summary,
+      partial = isTRUE(run$partial),
+      updated_at = as.character(run$updated_at %||% ""),
+      finished_at = as.character(run$finished_at %||% "")
+    )
+  }
+  artifacts <- result$stability_artifacts %||% list()
+  list(
+    kind = as.character(result$kind %||% ""),
+    protocol_version = 2L,
+    parent_job_id = as.character(result$parent_job_id %||% ""),
+    worker_name = as.character(result$worker_name %||% ""),
+    group_id = as.character(result$group_id %||% ""),
+    summary = result$summary %||% data.frame(),
+    screen_result = portable_run(result$screen_result),
+    importance = result$importance %||% data.frame(),
+    stability_summary = result$stability_summary %||% data.frame(),
+    stability_artifacts = lapply(artifacts, function(artifact) list(
+      summary = artifact$summary %||% data.frame(),
+      result = portable_run(artifact$result),
+      importance = artifact$importance %||% data.frame()
+    ))
+  )
+}
+
+ugplot_collaboration_validate_result <- function(result, task) {
+  result <- ugplot_collaboration_portable_result(result)
+  kind <- ugplot_collaboration_text(result$kind, "result kind", 40L, pattern = "^geo_complete_group$")
+  expected_group <- ugplot_collaboration_text(
+    task$mission$entity$id %||% sub("^.*:(analyze|screen):", "", task$task_id %||% ""),
+    "expected group", 80L, pattern = "^[A-Za-z0-9._-]+$"
+  )
+  group_id <- ugplot_collaboration_text(
+    result$group_id, "result group", 80L, pattern = "^[A-Za-z0-9._-]+$"
+  )
+  if (!identical(group_id, expected_group)) stop("Science Collab result group does not match its lease.", call. = FALSE)
+  allowed_models <- unique(as.character(task$requirements$models %||% character(0)))
+  summary_columns <- c(
+    "Source", "Phase", "GroupID", "GroupKey", "PrincipalTranscript", "Gene", "Columns", "Samples",
+    "TranscriptCount", "TranscriptMembers", "GeneMembers", "ExtraTranscripts", "CpGs", "TriggerMaxAbsRho",
+    "TriggerBestCpG", "TriggerBestRho", "BestModel", "MetricName", "BestMetric", "MedianMetric", "MeanMetric",
+    "MinMetric", "MaxMetric", "MetricSE", "SeedsRun", "SeedStrategy", "ModelsRun", "ModelsOK", "DatasetPath",
+    "ScreenResultPath", "ImportancePath", "StratumColumn", "StratumValue", "StratumSamples", "Stable",
+    "StabilityDetail", "StabilityResultPath", "ModelRank", "RhoRank", "CombinedRank"
+  )
+  run_columns <- c(
+    "Model", "Status", "elapsed_seconds", "R2", "Accuracy", "MAE", "RMSE", "Error",
+    "dataset_seed", "training_seed", "threshold_scope", "imputation_scope"
+  )
+  validate_summary <- function(value, field, allow_empty = FALSE) {
+    table <- ugplot_collaboration_table(
+      value, field, summary_columns,
+      required_columns = if (allow_empty) character(0) else c("GroupID", "BestModel"),
+      max_rows = if (allow_empty) 64L else 1L, max_columns = length(summary_columns)
+    )
+    if (nrow(table) > 0L && any(as.character(table$GroupID) != expected_group)) {
+      stop(field, " contains a different group.", call. = FALSE)
+    }
+    if (nrow(table) > 0L && "BestModel" %in% names(table) && length(allowed_models) > 0L &&
+        any(!as.character(table$BestModel) %in% c(allowed_models, "-"))) {
+      stop(field, " contains an unauthorized model.", call. = FALSE)
+    }
+    table
+  }
+  validate_run <- function(run, field) {
+    if (is.null(run)) return(NULL)
+    if (!is.list(run)) stop(field, " is invalid.", call. = FALSE)
+    best_model <- ugplot_collaboration_text(run$best_model_name %||% "", paste(field, "model"), 80L, allow_empty = TRUE)
+    if (nzchar(best_model) && length(allowed_models) > 0L && !best_model %in% c(allowed_models, "-")) {
+      stop(field, " contains an unauthorized model.", call. = FALSE)
+    }
+    table <- ugplot_collaboration_table(run$results_table, paste(field, "runs"), run_columns,
+      required_columns = c("Model", "Status"), max_rows = 10000L, max_columns = length(run_columns))
+    if (nrow(table) > 0L) {
+      if (length(allowed_models) > 0L && any(!as.character(table$Model) %in% allowed_models)) {
+        stop(field, " contains unauthorized run models.", call. = FALSE)
+      }
+      allowed_status <- c("OK", "TIMEOUT", "SKIPPED_TIMEOUT", "INCOMPATIBLE", "INVALID_METRICS", "ERROR")
+      if (any(!as.character(table$Status) %in% allowed_status)) stop(field, " contains invalid run status.", call. = FALSE)
+      for (seed_name in intersect(c("dataset_seed", "training_seed"), names(table))) {
+        seeds <- suppressWarnings(as.numeric(table[[seed_name]]))
+        if (any(is.finite(seeds) & (seeds < 1 | seeds > 1000000 | seeds != floor(seeds)))) {
+          stop(field, " contains invalid seeds.", call. = FALSE)
+        }
+      }
+      for (metric_name in intersect(c("R2", "Accuracy", "MAE", "RMSE", "elapsed_seconds"), names(table))) {
+        metrics <- suppressWarnings(as.numeric(table[[metric_name]]))
+        if (any(is.finite(metrics) & abs(metrics) > 1e9)) stop(field, " contains invalid metrics.", call. = FALSE)
+      }
+      if ("Accuracy" %in% names(table)) {
+        accuracy <- suppressWarnings(as.numeric(table$Accuracy))
+        if (any(is.finite(accuracy) & (accuracy < 0 | accuracy > 1))) stop(field, " contains invalid accuracy.", call. = FALSE)
+      }
+    }
+    final_summary <- run$final_summary %||% list()
+    if (!is.list(final_summary) || length(final_summary) > 64L || any(nchar(names(final_summary) %||% "") > 80L)) {
+      stop(field, " summary is invalid.", call. = FALSE)
+    }
+    for (value in final_summary) {
+      value <- unlist(value, recursive = FALSE, use.names = FALSE)
+      if (length(value) > 1L || (length(value) == 1L && is.character(value) && nchar(value) > 500L)) {
+        stop(field, " summary contains invalid values.", call. = FALSE)
+      }
+    }
+    list(best_model_name = best_model, results_table = table, final_summary = final_summary,
+      partial = isTRUE(run$partial), updated_at = ugplot_collaboration_text(run$updated_at %||% "", paste(field, "updated_at"), 80L, TRUE),
+      finished_at = ugplot_collaboration_text(run$finished_at %||% "", paste(field, "finished_at"), 80L, TRUE))
+  }
+  summary <- validate_summary(result$summary, "screening summary")
+  screen_result <- validate_run(result$screen_result, "screening result")
+  importance <- ugplot_collaboration_table(result$importance, "screening importance", max_rows = 10000L, max_columns = 64L)
+  stability_summary <- validate_summary(result$stability_summary, "stability summary", allow_empty = TRUE)
+  artifacts <- result$stability_artifacts %||% list()
+  if (!is.list(artifacts) || length(artifacts) > 64L) stop("Too many stability artifacts.", call. = FALSE)
+  artifacts <- lapply(seq_along(artifacts), function(i) {
+    artifact <- artifacts[[i]]
+    if (!is.list(artifact)) stop("Invalid stability artifact.", call. = FALSE)
+    summary <- validate_summary(artifact$summary, paste0("stability artifact ", i))
+    run <- validate_run(artifact$result, paste0("stability artifact ", i, " result"))
+    if (is.null(run) || !is.data.frame(run$results_table) || nrow(run$results_table) == 0L) {
+      stop("Stability artifacts require seed-level results.", call. = FALSE)
+    }
+    rows <- run$results_table
+    if (!all(c("dataset_seed", "training_seed") %in% names(rows))) {
+      stop("Stability artifacts require dataset and training seeds.", call. = FALSE)
+    }
+    ok <- as.character(rows$Status) == "OK"
+    metric_column <- if ("R2" %in% names(rows)) "R2" else if ("Accuracy" %in% names(rows)) "Accuracy" else ""
+    metrics <- if (nzchar(metric_column)) suppressWarnings(as.numeric(rows[[metric_column]][ok])) else numeric(0)
+    metrics <- metrics[is.finite(metrics)]
+    if (length(metrics) < 2L) stop("Stability artifacts require at least two valid metrics.", call. = FALSE)
+    dataset_seeds <- unique(suppressWarnings(as.integer(rows$dataset_seed[ok])))
+    training_seeds <- unique(suppressWarnings(as.integer(rows$training_seed[ok])))
+    dataset_seeds <- dataset_seeds[!is.na(dataset_seeds)]
+    training_seeds <- training_seeds[!is.na(training_seeds)]
+    if (length(dataset_seeds) < 2L || !identical(training_seeds, 1L)) {
+      stop("Stability artifacts must vary dataset partitions with training seed 1.", call. = FALSE)
+    }
+    summary$BestMetric <- max(metrics)
+    summary$MedianMetric <- stats::median(metrics)
+    summary$MeanMetric <- mean(metrics)
+    summary$MinMetric <- min(metrics)
+    summary$MaxMetric <- max(metrics)
+    summary$MetricSE <- stats::sd(metrics) / sqrt(length(metrics))
+    summary$SeedsRun <- length(metrics)
+    summary$SeedStrategy <- ugplot_geo_ml_seed_strategy()
+    payload <- tryCatch(readRDS(task$payload_path), error = function(e) NULL)
+    config <- if (is.list(payload) && is.list(payload$config)) payload$config else list()
+    stable_state <- ugplot_geo_stability_state(
+      metrics,
+      max(2L, as.integer(config$geo_ml_min_stability_seeds %||% 30L)),
+      max(2L, as.integer(config$geo_ml_stability_window %||% 30L)),
+      max(0, as.numeric(config$geo_ml_stability_tolerance %||% 0.01))
+    )
+    summary$Stable <- isTRUE(stable_state$stable)
+    summary$StabilityDetail <- stable_state$reason
+    list(summary = summary, result = run,
+      importance = ugplot_collaboration_table(artifact$importance, paste0("stability artifact ", i, " importance"), max_rows = 10000L, max_columns = 64L))
+  })
+  list(kind = kind, protocol_version = 2L, parent_job_id = "", worker_name = "", group_id = group_id,
+    summary = summary, screen_result = screen_result, importance = importance,
+    stability_summary = stability_summary, stability_artifacts = artifacts)
+}
+
 ugplot_collaboration_reap_task <- function(task, now = Sys.time()) {
   if (is.list(task) && identical(task$state %||% "", "leased")) {
     expiry <- suppressWarnings(as.POSIXct(task$lease_expires_at))
@@ -284,8 +540,25 @@ ugplot_collaboration_refresh_task <- function(task_id, jobs_dir = ugplot_default
 ugplot_collaboration_claim_task <- function(client_id, capabilities = list(),
                                             lease_seconds = 120,
                                             jobs_dir = ugplot_default_jobs_dir()) {
-  client_id <- trimws(as.character(client_id %||% ""))
-  if (!nzchar(client_id)) stop("A collaboration client ID is required.", call. = FALSE)
+  client_id <- ugplot_collaboration_text(
+    client_id, "collaboration client ID", 128L,
+    pattern = "^[A-Za-z0-9._:-]+$"
+  )
+  if (!is.list(capabilities)) stop("Collaboration capabilities must be an object.", call. = FALSE)
+  if (!is.null(capabilities$protocol_version)) {
+    protocol_version <- suppressWarnings(as.integer(unlist(capabilities$protocol_version, use.names = FALSE)))
+    if (length(protocol_version) != 1L || is.na(protocol_version) || protocol_version != 2L) {
+      stop("Science Collab protocol version 2 is required.", call. = FALSE)
+    }
+  }
+  models <- unique(unlist(capabilities$models %||% character(0), use.names = FALSE))
+  if (length(models) > 256L) stop("Too many collaboration models were declared.", call. = FALSE)
+  models <- vapply(models, ugplot_collaboration_text, character(1),
+    field = "collaboration model", max_chars = 80L, pattern = "^[A-Za-z0-9._-]+$")
+  capabilities$models <- models
+  capabilities$scientist_name <- ugplot_collaboration_text(
+    capabilities$scientist_name %||% client_id, "scientist name", 80L
+  )
   root <- ugplot_collaboration_dir(jobs_dir)
   if (!dir.exists(root)) return(NULL)
   task_ids <- ugplot_collaboration_task_ids(jobs_dir, states = c("pending", "leased"))
@@ -313,7 +586,7 @@ ugplot_collaboration_claim_task <- function(client_id, capabilities = list(),
         task$state <- "leased"
         task$lease_id <- lease_id
         task$client_id <- client_id
-        task$scientist_name <- trimws(as.character(capabilities$scientist_name %||% client_id))
+        task$scientist_name <- capabilities$scientist_name
         task$client_progress <- 0
         task$client_message <- "Mission reserved"
         task$client_candidate <- ""
@@ -335,6 +608,9 @@ ugplot_collaboration_heartbeat <- function(task_id, lease_id, client_id,
                                           telemetry = list(),
                                           jobs_dir = ugplot_default_jobs_dir()) {
   task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  if (!file.exists(file.path(task_dir, "task.rds"))) return(list(accepted = FALSE, reason = "task_not_found"))
+  lease_id <- ugplot_collaboration_text(lease_id, "lease ID", 80L, pattern = "^[A-Za-z0-9._:-]+$")
+  client_id <- ugplot_collaboration_text(client_id, "collaboration client ID", 128L, pattern = "^[A-Za-z0-9._:-]+$")
   ugplot_collaboration_with_lock(task_dir, {
     task <- ugplot_collaboration_read_task(task_id, jobs_dir)
     valid <- is.list(task) && identical(task$state %||% "", "leased") &&
@@ -348,9 +624,18 @@ ugplot_collaboration_heartbeat <- function(task_id, lease_id, client_id,
       if (length(progress) == 1L && is.finite(progress)) {
         task$client_progress <- max(0, min(1, progress))
       }
-      task$client_message <- as.character(telemetry$message %||% task$client_message %||% "")
-      task$client_candidate <- as.character(telemetry$candidate %||% task$client_candidate %||% "")
-      task$client_completed <- suppressWarnings(as.integer(telemetry$completed %||% task$client_completed %||% 0L))
+      task$client_message <- ugplot_collaboration_text(
+        telemetry$message %||% task$client_message %||% "", "telemetry message", 180L, allow_empty = TRUE
+      )
+      task$client_candidate <- ugplot_collaboration_text(
+        telemetry$candidate %||% task$client_candidate %||% "", "telemetry candidate", 80L,
+        allow_empty = TRUE, pattern = "^[A-Za-z0-9._ -]*$"
+      )
+      completed <- suppressWarnings(as.integer(telemetry$completed %||% task$client_completed %||% 0L))
+      if (length(completed) != 1L || is.na(completed) || completed < 0L || completed > 1000000L) {
+        stop("Telemetry completed count is invalid.", call. = FALSE)
+      }
+      task$client_completed <- completed
     }
     task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
     ugplot_collaboration_write_task(task, jobs_dir)
@@ -361,6 +646,9 @@ ugplot_collaboration_heartbeat <- function(task_id, lease_id, client_id,
 ugplot_collaboration_release_task <- function(task_id, lease_id, client_id,
                                               jobs_dir = ugplot_default_jobs_dir()) {
   task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  if (!file.exists(file.path(task_dir, "task.rds"))) return(list(released = FALSE, reason = "task_not_found"))
+  lease_id <- ugplot_collaboration_text(lease_id, "lease ID", 80L, pattern = "^[A-Za-z0-9._:-]+$")
+  client_id <- ugplot_collaboration_text(client_id, "collaboration client ID", 128L, pattern = "^[A-Za-z0-9._:-]+$")
   ugplot_collaboration_with_lock(task_dir, {
     task <- ugplot_collaboration_read_task(task_id, jobs_dir)
     valid <- is.list(task) && identical(task$state %||% "", "leased") &&
@@ -385,6 +673,9 @@ ugplot_collaboration_release_task <- function(task_id, lease_id, client_id,
 ugplot_collaboration_complete_task <- function(task_id, lease_id, client_id, result,
                                                jobs_dir = ugplot_default_jobs_dir()) {
   task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  if (!file.exists(file.path(task_dir, "task.rds"))) return(list(accepted = FALSE, reason = "task_not_found"))
+  lease_id <- ugplot_collaboration_text(lease_id, "lease ID", 80L, pattern = "^[A-Za-z0-9._:-]+$")
+  client_id <- ugplot_collaboration_text(client_id, "collaboration client ID", 128L, pattern = "^[A-Za-z0-9._:-]+$")
   ugplot_collaboration_with_lock(task_dir, {
     task <- ugplot_collaboration_read_task(task_id, jobs_dir)
     if (is.list(task) && identical(task$state %||% "", "completed")) {
@@ -396,6 +687,7 @@ ugplot_collaboration_complete_task <- function(task_id, lease_id, client_id, res
     if (!valid) return(list(accepted = FALSE, reason = "lease_not_active"))
     expiry <- suppressWarnings(as.POSIXct(task$lease_expires_at))
     if (is.na(expiry) || expiry < Sys.time()) return(list(accepted = FALSE, reason = "lease_expired"))
+    result <- ugplot_collaboration_validate_result(result, task)
     result_path <- file.path(task_dir, "result.rds")
     ugplot_write_rds_atomic(result, result_path)
     task$state <- "completed"
@@ -482,7 +774,7 @@ ugplot_collaboration_public_status <- function(jobs_dir = ugplot_default_jobs_di
   }
   list(
     status = "open",
-    protocol_version = 1L,
+    protocol_version = 2L,
     pending = sum(pending_active),
     inactive_pending = length(pending_active) - sum(pending_active),
     leased = state_count("leased"),
@@ -533,7 +825,7 @@ ugplot_collaboration_compatibility <- function(capabilities = list(),
     )
   })
   list(
-    protocol_version = 1L,
+    protocol_version = 2L,
     pending = length(missions),
     compatible = sum(vapply(missions, function(mission) isTRUE(mission$compatible), logical(1))),
     missions = missions,

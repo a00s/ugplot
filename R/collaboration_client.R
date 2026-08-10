@@ -265,7 +265,7 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
   capabilities <- list(
     models = unique(as.character(model_status$models_installed)),
     cpu_limit = cpu_limit,
-    protocol_version = 1L,
+    protocol_version = 2L,
     scientist_name = scientist_name
   )
   counters <- list(completed = 0L, accepted = 0L, server_url = server_url)

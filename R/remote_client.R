@@ -122,15 +122,17 @@ ugplot_remote_collaboration_release <- function(server_url, task_id, lease_id, c
 
 ugplot_remote_collaboration_complete <- function(server_url, task_id, lease_id, client_id, result,
                                                  timeout_seconds = 600) {
-  result_path <- tempfile(fileext = ".rds")
-  on.exit(unlink(result_path), add = TRUE)
-  saveRDS(result, result_path)
+  if (!exists("ugplot_collaboration_portable_result", mode = "function", inherits = TRUE)) {
+    stop("Science Collab result sanitizer is unavailable.", call. = FALSE)
+  }
+  result <- ugplot_collaboration_portable_result(result)
   ugplot_collaboration_post_json(
     server_url, paste0("collaboration/", task_id, "/complete"),
     list(
       lease_id = lease_id,
       client_id = client_id,
-      result_rds_base64 = base64enc::base64encode(result_path)
+      protocol_version = 2L,
+      result = result
     ),
     timeout_seconds
   )

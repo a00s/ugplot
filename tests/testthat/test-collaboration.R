@@ -13,6 +13,24 @@ ugplot_test_active_collaboration_parent <- function(root, parent_job_id = "paren
   )
 }
 
+ugplot_test_collaboration_result <- function(group_id, model = "lm") {
+  list(
+    kind = "geo_complete_group", protocol_version = 2L, group_id = group_id,
+    summary = data.frame(GroupID = group_id, BestModel = model, stringsAsFactors = FALSE),
+    screen_result = list(
+      best_model_name = model,
+      results_table = data.frame(
+        Model = model, Status = "OK", R2 = 0.7,
+        dataset_seed = 1L, training_seed = 1L,
+        stringsAsFactors = FALSE
+      ),
+      final_summary = list(metric_name = "R2", metric_value = 0.7)
+    ),
+    importance = data.frame(), stability_summary = data.frame(),
+    stability_artifacts = list()
+  )
+}
+
 test_that("Science Collab accepts a bare coordinator IP or hostname", {
   normalize <- ugplot_test_internal("ugplot_science_collab_url")
 
@@ -173,10 +191,129 @@ test_that("collaboration accepts only the active lease and first result", {
   lease <- claim("scientist", list(models = c("lm", "rf")), jobs_dir = root)$task
   expect_true(heartbeat("task-1", lease$lease_id, "scientist", jobs_dir = root)$accepted)
   expect_false(release("task-1", "wrong", "scientist", jobs_dir = root)$released)
-  expect_false(complete("task-1", "wrong", "scientist", list(answer = 0), jobs_dir = root)$accepted)
-  expect_true(complete("task-1", lease$lease_id, "scientist", list(answer = 42), jobs_dir = root)$accepted)
-  expect_false(complete("task-1", lease$lease_id, "scientist", list(answer = 99), jobs_dir = root)$accepted)
-  expect_equal(take_result("task-1", root)$result$answer, 42)
+  result <- ugplot_test_collaboration_result("task-1")
+  expect_false(complete("task-1", "wrong", "scientist", result, jobs_dir = root)$accepted)
+  expect_true(complete("task-1", lease$lease_id, "scientist", result, jobs_dir = root)$accepted)
+  expect_false(complete("task-1", lease$lease_id, "scientist", result, jobs_dir = root)$accepted)
+  expect_equal(take_result("task-1", root)$result$group_id, "task-1")
+})
+
+test_that("anonymous collaboration input is bounded before persistence", {
+  root <- tempfile("collaboration-input-")
+  dir.create(root)
+  ugplot_test_active_collaboration_parent(root)
+  publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
+  claim <- ugplot_test_internal("ugplot_collaboration_claim_task")
+  heartbeat <- ugplot_test_internal("ugplot_collaboration_heartbeat")
+
+  publish("safe-task", "parent", list(value = 1), requirements = list(models = "lm"), jobs_dir = root)
+  leased <- claim(
+    "safe-client", list(models = "lm", scientist_name = "<img src=x onerror=alert(1)>") ,
+    jobs_dir = root
+  )$task
+  expect_equal(leased$scientist_name, "<img src=x onerror=alert(1)>")
+  expect_error(
+    claim(strrep("x", 129), list(models = "lm"), jobs_dir = root),
+    "too long"
+  )
+  expect_error(
+    heartbeat(
+      leased$task_id, leased$lease_id, "safe-client",
+      telemetry = list(message = strrep("m", 181)), jobs_dir = root
+    ),
+    "too long"
+  )
+  missing_dir <- file.path(root, "collaboration", "not-a-task")
+  expect_false(heartbeat("not-a-task", "lease", "client", jobs_dir = root)$accepted)
+  expect_false(dir.exists(missing_dir))
+})
+
+test_that("anonymous collaboration results use validated data-only objects", {
+  root <- tempfile("collaboration-result-")
+  dir.create(root)
+  ugplot_test_active_collaboration_parent(root)
+  publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
+  claim <- ugplot_test_internal("ugplot_collaboration_claim_task")
+  complete <- ugplot_test_internal("ugplot_collaboration_complete_task")
+  take_result <- ugplot_test_internal("ugplot_collaboration_take_result")
+
+  publish(
+    "parent:analyze:TG106", "parent",
+    payload = list(config = list(
+      geo_ml_min_stability_seeds = 4L,
+      geo_ml_stability_window = 2L,
+      geo_ml_stability_tolerance = 0.05
+    )),
+    requirements = list(models = "bstSm"),
+    mission = list(entity = list(id = "TG106")), jobs_dir = root
+  )
+  lease <- claim("public-client", list(models = "bstSm"), jobs_dir = root)$task
+  result <- ugplot_test_collaboration_result("TG106", "bstSm")
+  result$screen_result$best_model <- environment()
+  result$screen_result$predictions <- list(secret = function() stop("must not cross the wire"))
+  metrics <- c(0.71, 0.84, 0.82, 0.80)
+  result$stability_artifacts <- list(list(
+    summary = data.frame(
+      GroupID = "TG106", BestModel = "bstSm", MedianMetric = 999,
+      MinMetric = 999, MaxMetric = 999, SeedsRun = 999L,
+      stringsAsFactors = FALSE
+    ),
+    result = list(
+      best_model_name = "bstSm",
+      results_table = data.frame(
+        Model = "bstSm", Status = "OK", R2 = metrics,
+        dataset_seed = 1:4, training_seed = 1L,
+        stringsAsFactors = FALSE
+      ),
+      final_summary = list(metric_name = "R2", metric_value = 999)
+    ),
+    importance = data.frame(CpG = "cg1", Importance = 1)
+  ))
+  wrong_group <- result
+  wrong_group$group_id <- "TG999"
+  expect_error(
+    complete(lease$task_id, lease$lease_id, "public-client", wrong_group, jobs_dir = root),
+    "does not match"
+  )
+  expect_true(complete(
+    lease$task_id, lease$lease_id, "public-client", result, jobs_dir = root
+  )$accepted)
+
+  accepted <- take_result(lease$task_id, root)$result
+  expect_false("best_model" %in% names(accepted$screen_result))
+  expect_false("predictions" %in% names(accepted$screen_result))
+  summary <- accepted$stability_artifacts[[1]]$summary
+  expect_equal(summary$MedianMetric, stats::median(metrics))
+  expect_equal(summary$MinMetric, min(metrics))
+  expect_equal(summary$MaxMetric, max(metrics))
+  expect_equal(summary$SeedsRun, length(metrics))
+  expect_equal(summary$SeedStrategy, "dataset_partition_v1")
+})
+
+test_that("legacy training-seed-only collaboration stability is rejected", {
+  validate <- ugplot_test_internal("ugplot_collaboration_validate_result")
+  result <- ugplot_test_collaboration_result("TG106", "bstSm")
+  result$stability_artifacts <- list(list(
+    summary = data.frame(GroupID = "TG106", BestModel = "bstSm"),
+    result = list(
+      best_model_name = "bstSm",
+      results_table = data.frame(
+        Model = "bstSm", Status = "OK", R2 = rep(0.8402, 4),
+        dataset_seed = 1L, training_seed = 1:4
+      )
+    ),
+    importance = data.frame()
+  ))
+  task <- list(
+    task_id = "parent:analyze:TG106",
+    requirements = list(models = "bstSm"),
+    mission = list(entity = list(id = "TG106")),
+    payload_path = tempfile(fileext = ".rds")
+  )
+  saveRDS(list(config = list()), task$payload_path)
+  on.exit(unlink(task$payload_path), add = TRUE)
+
+  expect_error(validate(result, task), "must vary dataset partitions")
 })
 
 test_that("claim skips unavailable tasks and continues through the queue", {
@@ -193,7 +330,8 @@ test_that("claim skips unavailable tasks and continues through the queue", {
   )
   first_lease <- claim("first-client", list(models = "lm"), jobs_dir = root)$task
   expect_true(complete(
-    first$task_id, first_lease$lease_id, "first-client", list(answer = 1), jobs_dir = root
+    first$task_id, first_lease$lease_id, "first-client",
+    ugplot_test_collaboration_result(first$task_id), jobs_dir = root
   )$accepted)
 
   publish(

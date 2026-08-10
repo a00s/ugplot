@@ -377,7 +377,7 @@ ugplot_collaboration_tab_server <- function(id, remote_servers, total_system_cpu
       last_claim_at(Sys.time())
       capabilities <- list(
         models = claim_models(), cpu_limit = as.integer(input$cpu_limit %||% 1L),
-        protocol_version = 1L,
+        protocol_version = 2L,
         scientist_name = trimws(input$scientist_name %||% "Anonymous scientist")
       )
       coordinators <- available_coordinators()
