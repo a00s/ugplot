@@ -42,6 +42,7 @@ test_that("incremental discovery report upgrades screened groups with stability"
   stability$MetricSE <- 0.004
   stability$SeedsRun <- 90
   stability$Stable <- TRUE
+  stability$SeedStrategy <- "dataset_partition_v1"
   stability_result_path <- file.path(paths$pipeline_dir, "TG1-stability-result.rds")
   saveRDS(
     list(results_table = data.frame(R2 = c(0.71, 0.82, 0.91), Status = "OK")),
@@ -49,7 +50,10 @@ test_that("incremental discovery report upgrades screened groups with stability"
   )
   stability$StabilityResultPath <- stability_result_path
   utils::write.csv(screening, paths$screening, row.names = FALSE)
-  utils::write.csv(rbind(stability, stability), paths$stability, row.names = FALSE)
+  legacy_stability <- stability
+  legacy_stability$GroupID <- "TG2"
+  legacy_stability$SeedStrategy <- ""
+  utils::write.csv(rbind(stability, stability, legacy_stability), paths$stability, row.names = FALSE)
   group_candidates <- screening
   group_candidates$Phase <- NULL
   group_candidates$BestModel <- NULL
@@ -95,6 +99,7 @@ test_that("incremental discovery report upgrades screened groups with stability"
   expect_equal(report$progress$total, 3L)
   expect_equal(report$progress$screened, 2L)
   expect_equal(report$progress$stabilized, 1L)
+  expect_equal(report$protocol_version, 2L)
   expect_length(report$discoveries, 3L)
   expect_equal(report$discoveries[[1]]$status, "stabilized")
   expect_equal(report$discoveries[[1]]$gene, "GENE1")
@@ -150,11 +155,17 @@ test_that("discovery report HTML accepts a direct job link", {
   expect_false(grepl("Open report", report_html, fixed = TRUE))
   expect_match(report_html, "/reports/assets/ugplot.png", fixed = TRUE)
   expect_match(report_html, "Best CpG correlation", fixed = TRUE)
-  expect_match(report_html, "<th>CpGs</th>", fixed = TRUE)
-  expect_match(report_html, "<th>Resolved by</th>", fixed = TRUE)
+  expect_match(report_html, 'data-sort-key="cpgs"', fixed = TRUE)
+  expect_match(report_html, 'data-sort-key="resolved_by"', fixed = TRUE)
   expect_match(report_html, "resolverBadge(r.resolved_by)", fixed = TRUE)
   expect_match(report_html, "fmt(r.cpgs)", fixed = TRUE)
   expect_match(report_html, "Best overall performance", fixed = TRUE)
+  expect_match(report_html, 'data-sort-key="median_r2"', fixed = TRUE)
+  expect_match(report_html, 'data-sort-type="number"', fixed = TRUE)
+  expect_match(report_html, "activateHeader(th)", fixed = TRUE)
+  expect_match(report_html, "columnCompare(a,b)", fixed = TRUE)
+  expect_match(report_html, 'setAttribute("aria-sort"', fixed = TRUE)
+  expect_match(report_html, "Click any column heading to sort it", fixed = TRUE)
   expect_match(report_html, "computational group may contain multiple biological transcripts", fixed = TRUE)
   expect_match(report_html, "Math.max(...values)", fixed = TRUE)
   expect_false(grepl("(ml+cpg)/2", report_html, fixed = TRUE))
