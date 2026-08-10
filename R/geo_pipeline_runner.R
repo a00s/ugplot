@@ -993,6 +993,19 @@ ugplot_geo_ml_metric_values <- function(result) {
   values[is.finite(values)]
 }
 
+ugplot_geo_ml_result_uses_dataset_partitions <- function(result) {
+  if (!is.list(result) || !is.data.frame(result$results_table) ||
+      nrow(result$results_table) == 0L) return(FALSE)
+  rows <- result$results_table
+  if ("Status" %in% names(rows)) rows <- rows[as.character(rows$Status) == "OK", , drop = FALSE]
+  if (nrow(rows) < 2L || !all(c("dataset_seed", "training_seed") %in% names(rows))) return(FALSE)
+  dataset_seeds <- unique(suppressWarnings(as.integer(rows$dataset_seed)))
+  training_seeds <- unique(suppressWarnings(as.integer(rows$training_seed)))
+  dataset_seeds <- dataset_seeds[!is.na(dataset_seeds)]
+  training_seeds <- training_seeds[!is.na(training_seeds)]
+  length(dataset_seeds) > 1L && identical(training_seeds, 1L)
+}
+
 ugplot_geo_ml_model_run_counts <- function(result) {
   results_table <- result$results_table
   if (!is.data.frame(results_table) || nrow(results_table) == 0 || !"Model" %in% names(results_table)) {
@@ -1432,6 +1445,20 @@ ugplot_geo_ml_stability_task_key <- function(group_id, stratum_column = "", stra
   )
 }
 
+ugplot_geo_ml_seed_strategy <- function() {
+  "dataset_partition_v1"
+}
+
+ugplot_geo_current_stability_rows <- function(stability_summary) {
+  if (!is.data.frame(stability_summary)) return(data.frame())
+  if (nrow(stability_summary) == 0L || !"SeedStrategy" %in% names(stability_summary)) {
+    return(stability_summary[0, , drop = FALSE])
+  }
+  strategy <- as.character(stability_summary$SeedStrategy)
+  strategy[is.na(strategy)] <- ""
+  stability_summary[strategy == ugplot_geo_ml_seed_strategy(), , drop = FALSE]
+}
+
 ugplot_geo_stability_complete_groups <- function(screen_summary, stability_summary,
                                                   config = list(), metadata = NULL) {
   if (!is.data.frame(screen_summary) || nrow(screen_summary) == 0L || !"GroupID" %in% names(screen_summary)) {
@@ -1444,6 +1471,7 @@ ugplot_geo_stability_complete_groups <- function(screen_summary, stability_summa
   if (!is.data.frame(strata) || nrow(strata) == 0L) {
     strata <- data.frame(StratumColumn = "", StratumValue = "", stringsAsFactors = FALSE)
   }
+  stability_summary <- ugplot_geo_current_stability_rows(stability_summary)
   existing_keys <- if (is.data.frame(stability_summary) && nrow(stability_summary) > 0L &&
                        "GroupID" %in% names(stability_summary)) {
     existing_column <- if ("StratumColumn" %in% names(stability_summary)) stability_summary$StratumColumn else rep("", nrow(stability_summary))
@@ -1475,10 +1503,12 @@ ugplot_geo_ml_pipeline_config <- function(models, seed_end, timeout, best_only_m
     target = "target",
     category_columns = unique(as.character(category_columns)),
     models = if (is.null(best_only_model)) models else best_only_model,
+    # Stability must vary the train/test partition. Varying only the training
+    # seed produces identical metrics for deterministic learners such as bstSm.
     dataset_seed_start = 1,
-    dataset_seed_end = 1,
+    dataset_seed_end = seed_end,
     training_seed_start = 1,
-    training_seed_end = seed_end,
+    training_seed_end = 1,
     timeout = timeout,
     performance_mode = "default",
     missing_definition = ugplot_geo_transcript_missing_definition(),
@@ -1637,6 +1667,7 @@ ugplot_geo_screen_group <- function(dataset, group, source, config, screen_path,
     MinMetric = if (length(metric_values) > 0) min(metric_values) else NA_real_,
     MaxMetric = if (length(metric_values) > 0) max(metric_values) else NA_real_,
     SeedsRun = length(metric_values),
+    SeedStrategy = ugplot_geo_ml_seed_strategy(),
     ModelsRun = model_counts[["ModelsRun"]],
     ModelsOK = model_counts[["ModelsOK"]],
     DatasetPath = as.character(config$coordinator_dataset_path %||% ""),
@@ -2059,6 +2090,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
   stability_summaries <- if (file.exists(stability_summary_path)) {
     tryCatch(utils::read.csv(stability_summary_path, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) data.frame())
   } else data.frame()
+  current_stability_summaries <- ugplot_geo_current_stability_rows(stability_summaries)
   stability_strata <- if (nzchar(stability_column)) {
     ugplot_geo_ml_stability_strata(config$geo_stability_metadata %||% NULL, stability_column)
   } else data.frame(StratumColumn = "", StratumValue = "", stringsAsFactors = FALSE)
@@ -2070,11 +2102,11 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
     if (nrow(screen_row) == 0L) return(FALSE)
     best_model <- as.character(screen_row$BestModel[[1]] %||% "")
     if (!nzchar(best_model) || identical(best_model, "-")) return(TRUE)
-    if (!is.data.frame(stability_summaries) || nrow(stability_summaries) == 0L ||
-        !"GroupID" %in% names(stability_summaries)) return(FALSE)
-    existing_column <- if ("StratumColumn" %in% names(stability_summaries)) stability_summaries$StratumColumn else rep("", nrow(stability_summaries))
-    existing_value <- if ("StratumValue" %in% names(stability_summaries)) stability_summaries$StratumValue else rep("", nrow(stability_summaries))
-    existing_keys <- ugplot_geo_ml_stability_task_key(stability_summaries$GroupID, existing_column, existing_value)
+    if (!is.data.frame(current_stability_summaries) || nrow(current_stability_summaries) == 0L ||
+        !"GroupID" %in% names(current_stability_summaries)) return(FALSE)
+    existing_column <- if ("StratumColumn" %in% names(current_stability_summaries)) current_stability_summaries$StratumColumn else rep("", nrow(current_stability_summaries))
+    existing_value <- if ("StratumValue" %in% names(current_stability_summaries)) current_stability_summaries$StratumValue else rep("", nrow(current_stability_summaries))
+    existing_keys <- ugplot_geo_ml_stability_task_key(current_stability_summaries$GroupID, existing_column, existing_value)
     required_keys <- ugplot_geo_ml_stability_task_key(
       rep(group_id, nrow(stability_strata)),
       stability_strata$StratumColumn,
@@ -2215,6 +2247,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         } else stability_summaries <<- stability_row
       }
       stability_summaries <<- ugplot_geo_ml_rank_summary(stability_summaries)
+      current_stability_summaries <<- ugplot_geo_current_stability_rows(stability_summaries)
       utils::write.csv(stability_summaries, stability_summary_path, row.names = FALSE)
     }
     if (!stability_group_complete(group_id)) {
@@ -2933,10 +2966,11 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
     summaries <- summaries[!duplicated(resume_keys, fromLast = TRUE), , drop = FALSE]
     utils::write.csv(summaries, summary_path, row.names = FALSE)
   }
-  processed <- if (is.data.frame(summaries) && "GroupID" %in% names(summaries)) {
-    existing_col <- if ("StratumColumn" %in% names(summaries)) summaries$StratumColumn else rep("", nrow(summaries))
-    existing_value <- if ("StratumValue" %in% names(summaries)) summaries$StratumValue else rep("", nrow(summaries))
-    unique(ugplot_geo_ml_stability_task_key(summaries$GroupID, existing_col, existing_value))
+  current_summaries <- ugplot_geo_current_stability_rows(summaries)
+  processed <- if (is.data.frame(current_summaries) && "GroupID" %in% names(current_summaries)) {
+    existing_col <- if ("StratumColumn" %in% names(current_summaries)) current_summaries$StratumColumn else rep("", nrow(current_summaries))
+    existing_value <- if ("StratumValue" %in% names(current_summaries)) current_summaries$StratumValue else rep("", nrow(current_summaries))
+    unique(ugplot_geo_ml_stability_task_key(current_summaries$GroupID, existing_col, existing_value))
   } else {
     character(0)
   }
@@ -2968,6 +3002,8 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
       stability_path <- file.path(group_dir, "stability_result.rds")
       current_end <- min_seeds
       stability_result <- if (file.exists(stability_path)) tryCatch(readRDS(stability_path), error = function(e) NULL) else NULL
+      resume_compatible <- ugplot_geo_ml_result_uses_dataset_partitions(stability_result)
+      if (!isTRUE(resume_compatible)) stability_result <- NULL
       stable_state <- list(stable = FALSE, reason = "not started")
       repeat {
         existing_n <- length(ugplot_geo_ml_metric_values(stability_result))
@@ -2983,7 +3019,7 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
           retry_parallel_connection_errors = retry_parallel_connection_errors,
           category_columns = config$geo_metadata_categorical_predictors %||% character(0)
         )
-        stability_config$resume_result_path <- stability_path
+        stability_config$resume_result_path <- if (isTRUE(resume_compatible)) stability_path else ""
         stability_config$model_log_dir <- file.path(group_dir, "logs", "stability")
         if (!is.null(progress_callback)) {
           progress_callback((task_i - 1) / total_tasks, paste0("Stability ", group_id, " / ", stratum_label, " with ", best_model, " to seed ", current_end))
@@ -3003,6 +3039,7 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
           }
         )
         ugplot_geo_write_checkpoint(stability_result, stability_path)
+        resume_compatible <- TRUE
         metric_values <- ugplot_geo_ml_metric_values(stability_result)
         if (length(metric_values) <= existing_n) {
           results_table <- stability_result$results_table %||% data.frame()
@@ -3058,6 +3095,7 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
       summary_row$MaxMetric <- if (length(metric_values) > 0) max(metric_values) else NA_real_
       summary_row$MetricSE <- if (length(metric_values) > 1) stats::sd(metric_values) / sqrt(length(metric_values)) else NA_real_
       summary_row$SeedsRun <- length(metric_values)
+      summary_row$SeedStrategy <- ugplot_geo_ml_seed_strategy()
       summary_row$Stable <- isTRUE(stable_state$stable)
       summary_row$StabilityDetail <- stable_state$reason
       summary_row$StabilityResultPath <- stability_path

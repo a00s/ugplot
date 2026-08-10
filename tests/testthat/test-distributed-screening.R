@@ -232,12 +232,39 @@ test_that("stability completion requires every configured stratum", {
   metadata <- data.frame(sample_id = c("S1", "S2"), sex = c("F", "M"), stringsAsFactors = FALSE)
   partial <- data.frame(
     GroupID = "TG1", StratumColumn = "sex", StratumValue = "F",
+    SeedStrategy = "dataset_partition_v1",
     stringsAsFactors = FALSE
   )
-  finished <- rbind(partial, data.frame(GroupID = "TG1", StratumColumn = "sex", StratumValue = "M"))
+  finished <- rbind(partial, data.frame(
+    GroupID = "TG1", StratumColumn = "sex", StratumValue = "M",
+    SeedStrategy = "dataset_partition_v1"
+  ))
 
   expect_length(complete(screen, partial, list(geo_ml_stability_group_column = "sex"), metadata), 0L)
   expect_equal(complete(screen, finished, list(geo_ml_stability_group_column = "sex"), metadata), "TG1")
+})
+
+test_that("legacy training-seed stability summaries are recomputed", {
+  complete <- ugplot_test_internal("ugplot_geo_stability_complete_groups")
+  uses_partitions <- ugplot_test_internal("ugplot_geo_ml_result_uses_dataset_partitions")
+  screen <- data.frame(GroupID = "TG106", BestModel = "bstSm", stringsAsFactors = FALSE)
+  legacy_summary <- data.frame(
+    GroupID = "TG106", MedianMetric = 0.8402, MinMetric = 0.8402,
+    MaxMetric = 0.8402, MetricSE = 0, SeedsRun = 60L,
+    stringsAsFactors = FALSE
+  )
+  legacy_result <- list(results_table = data.frame(
+    Model = "bstSm", R2 = rep(0.8402, 60), Status = "OK",
+    dataset_seed = 1L, training_seed = seq_len(60)
+  ))
+  current_result <- list(results_table = data.frame(
+    Model = "bstSm", R2 = c(0.71, 0.84), Status = "OK",
+    dataset_seed = 1:2, training_seed = 1L
+  ))
+
+  expect_length(complete(screen, legacy_summary), 0L)
+  expect_false(uses_partitions(legacy_result))
+  expect_true(uses_partitions(current_result))
 })
 
 test_that("public job servers require authentication", {
@@ -544,6 +571,7 @@ test_that("stability resume skips strata already completed elsewhere", {
   saved_stability <- data.frame(
     GroupID = "TG1", BestModel = "lm", Phase = "stability",
     StratumColumn = "sex", StratumValue = "F",
+    SeedStrategy = "dataset_partition_v1",
     stringsAsFactors = FALSE
   )
   screen_summary <- data.frame(
@@ -677,6 +705,7 @@ test_that("distributed scheduler checkpoints worker results in coordinator cache
   stability_summary$Phase <- "stability"
   stability_summary$StratumColumn <- ""
   stability_summary$StratumValue <- ""
+  stability_summary$SeedStrategy <- "dataset_partition_v1"
   stability_summary$Stable <- TRUE
   stability_summary$StabilityResultPath <- "/worker/stability.rds"
   ugplot_test_local_namespace_binding("ugplot_remote_create_job", function(...) list(id = "worker-job-1"))
@@ -781,6 +810,7 @@ test_that("incomplete worker result resumes the same remote job", {
   stability_summary$Phase <- "stability"
   stability_summary$StratumColumn <- ""
   stability_summary$StratumValue <- ""
+  stability_summary$SeedStrategy <- "dataset_partition_v1"
   stability_summary$Stable <- TRUE
   stability_summary$StabilityResultPath <- "/worker/stability.rds"
 
@@ -847,4 +877,13 @@ test_that("incomplete worker result resumes the same remote job", {
   manifest <- readRDS(file.path(pipeline_dir, "distributed-screening.rds"))
   expect_equal(manifest$State, "completed")
   expect_equal(manifest$Attempts, 1L)
+})
+test_that("GEO ML seed sweeps vary dataset partitions", {
+  pipeline_config <- ugplot_test_internal("ugplot_geo_ml_pipeline_config")
+  config <- pipeline_config(models = "bstSm", seed_end = 60L, timeout = 120)
+
+  expect_equal(config$dataset_seed_start, 1)
+  expect_equal(config$dataset_seed_end, 60L)
+  expect_equal(config$training_seed_start, 1)
+  expect_equal(config$training_seed_end, 1)
 })

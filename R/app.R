@@ -4821,10 +4821,12 @@ server <- function(input, output, session) {
       target = "target",
       category_columns = geo_metadata_predictor_spec()$categorical,
       models = if (is.null(best_only_model)) models else best_only_model,
+      # Use independent train/test partitions for the seed distribution.
+      # A training-seed-only sweep is constant for deterministic models.
       dataset_seed_start = 1,
-      dataset_seed_end = 1,
+      dataset_seed_end = seed_end,
       training_seed_start = 1,
-      training_seed_end = seed_end,
+      training_seed_end = 1,
       timeout = timeout,
       performance_mode = "default",
       missing_definition = geo_transcript_missing_definition(),
@@ -4908,6 +4910,7 @@ server <- function(input, output, session) {
       MinMetric = if (length(metric_values) > 0) min(metric_values) else NA_real_,
       MaxMetric = if (length(metric_values) > 0) max(metric_values) else NA_real_,
       SeedsRun = length(metric_values),
+      SeedStrategy = ugplot_geo_ml_seed_strategy(),
       ModelsRun = model_counts[["ModelsRun"]],
       ModelsOK = model_counts[["ModelsOK"]],
       DatasetPath = dataset_path,
@@ -4952,6 +4955,8 @@ server <- function(input, output, session) {
 
     current_end <- settings$min_stability_seeds
     stability_result <- if (file.exists(stability_path)) tryCatch(readRDS(stability_path), error = function(e) NULL) else NULL
+    resume_compatible <- ugplot_geo_ml_result_uses_dataset_partitions(stability_result)
+    if (!isTRUE(resume_compatible)) stability_result <- NULL
     stable_state <- list(stable = FALSE, reason = "not started")
     stability_progress_detail <- function(result = NULL, source = "cache") {
       if (is.null(result) && file.exists(stability_path)) {
@@ -4973,7 +4978,7 @@ server <- function(input, output, session) {
       existing_n <- length(geo_ml_result_metric_values(stability_result))
       current_end <- max(current_end, min(settings$max_stability_seeds, existing_n + settings$window))
       stability_config <- geo_ml_pipeline_config(best_model, settings$screen_seeds, current_end, settings$timeout, best_only_model = best_model)
-      stability_config$resume_result_path <- stability_path
+      stability_config$resume_result_path <- if (isTRUE(resume_compatible)) stability_path else ""
       stability_config$model_log_dir <- file.path(group_dir, "logs", "stability")
       stability_result <- ugplot_run_ml_job(
         dataset,
@@ -4999,6 +5004,7 @@ server <- function(input, output, session) {
         }
       )
       saveRDS(stability_result, stability_path)
+      resume_compatible <- TRUE
       metric_values <- geo_ml_result_metric_values(stability_result)
       stable_state <- geo_ml_stability_state(metric_values, settings$min_stability_seeds, settings$window, settings$tolerance)
       if (isTRUE(stable_state$stable) || length(metric_values) >= settings$max_stability_seeds) {
@@ -5050,6 +5056,7 @@ server <- function(input, output, session) {
       MaxMetric = if (length(metric_values) > 0) max(metric_values) else NA_real_,
       MetricSE = if (length(metric_values) > 1) stats::sd(metric_values) / sqrt(length(metric_values)) else NA_real_,
       SeedsRun = length(metric_values),
+      SeedStrategy = ugplot_geo_ml_seed_strategy(),
       Stable = isTRUE(stable_state$stable),
       StabilityDetail = stable_state$reason,
       DatasetPath = dataset_path,
