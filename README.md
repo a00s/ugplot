@@ -54,6 +54,23 @@ Then open in your browser:
 
 Use this when you want to integrate ugPlot into your own R environment and scripts.
 
+For a clean machine, use the non-interactive installer. It configures CRAN,
+R-universe, and the matching Bioconductor repository, installs required
+dependencies, and then installs the current ugPlot version:
+
+```r
+source("https://raw.githubusercontent.com/a00s/ugplot/main/scripts/install-ugplot.R")
+```
+
+To install a specific commit, set `UGPLOT_INSTALL_REF` first:
+
+```r
+Sys.setenv(UGPLOT_INSTALL_REF = "YOUR_COMMIT_SHA")
+source("https://raw.githubusercontent.com/a00s/ugplot/main/scripts/install-ugplot.R")
+```
+
+If the dependencies are already configured, the shorter R-universe command is:
+
 ```r
 install.packages(
   "ugplot",
