@@ -228,6 +228,24 @@ test_that("anonymous collaboration input is bounded before persistence", {
   expect_false(dir.exists(missing_dir))
 })
 
+test_that("collaboration clients bound telemetry before anonymous upload", {
+  payload <- ugplot_test_internal("ugplot_collaboration_telemetry_payload")(list(
+    progress = 2,
+    message = paste(rep("A long dependency warning", 30), collapse = "\n"),
+    candidate = paste0("<script>", strrep("x", 100)),
+    completed = 2000000L,
+    ignored = strrep("z", 1000)
+  ))
+
+  expect_equal(names(payload), c("progress", "message", "candidate", "completed"))
+  expect_equal(payload$progress, 1)
+  expect_lte(nchar(payload$message, type = "chars"), 180L)
+  expect_false(grepl("\n", payload$message, fixed = TRUE))
+  expect_lte(nchar(payload$candidate, type = "chars"), 80L)
+  expect_match(payload$candidate, "^[A-Za-z0-9._ -]*$")
+  expect_equal(payload$completed, 1000000L)
+})
+
 test_that("anonymous collaboration results use validated data-only objects", {
   root <- tempfile("collaboration-result-")
   dir.create(root)

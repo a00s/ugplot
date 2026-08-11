@@ -105,11 +105,39 @@ ugplot_remote_collaboration_compatibility <- function(server_url, capabilities, 
   )
 }
 
+ugplot_collaboration_telemetry_payload <- function(telemetry = list()) {
+  if (!is.list(telemetry)) telemetry <- list()
+  bounded_text <- function(value, max_chars, candidate = FALSE) {
+    value <- paste(as.character(value %||% ""), collapse = " ")
+    value <- gsub("[[:cntrl:]]", " ", value)
+    if (isTRUE(candidate)) value <- gsub("[^A-Za-z0-9._ -]", " ", value)
+    value <- trimws(gsub("[[:space:]]+", " ", value))
+    if (nchar(value, type = "chars") > max_chars) {
+      value <- substr(value, 1L, max_chars)
+    }
+    value
+  }
+  progress <- suppressWarnings(as.numeric(telemetry$progress %||% 0))
+  if (length(progress) != 1L || !is.finite(progress)) progress <- 0
+  completed <- suppressWarnings(as.integer(telemetry$completed %||% 0L))
+  if (length(completed) != 1L || is.na(completed)) completed <- 0L
+  list(
+    progress = max(0, min(1, progress)),
+    message = bounded_text(telemetry$message %||% "Collaborative experiment running", 180L),
+    candidate = bounded_text(telemetry$candidate %||% "", 80L, candidate = TRUE),
+    completed = max(0L, min(1000000L, completed))
+  )
+}
+
 ugplot_remote_collaboration_heartbeat <- function(server_url, task_id, lease_id, client_id,
                                                   telemetry = list()) {
   ugplot_collaboration_post_json(
     server_url, paste0("collaboration/", task_id, "/heartbeat"),
-    list(lease_id = lease_id, client_id = client_id, telemetry = telemetry)
+    list(
+      lease_id = lease_id,
+      client_id = client_id,
+      telemetry = ugplot_collaboration_telemetry_payload(telemetry)
+    )
   )
 }
 
