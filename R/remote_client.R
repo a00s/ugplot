@@ -76,7 +76,12 @@ ugplot_remote_decode_rds_base64 <- function(value) {
   readRDS(path)
 }
 
-ugplot_remote_store_rds_base64 <- function(value, path = tempfile(fileext = ".rds")) {
+ugplot_remote_store_rds_base64 <- function(value, path = NULL) {
+  if (is.null(path)) {
+    path <- ugplot_science_collab_tempfile(
+      "ugplot-collab-payload-", fileext = ".rds"
+    )
+  }
   writeBin(base64enc::base64decode(value), path)
   path
 }

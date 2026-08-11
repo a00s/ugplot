@@ -37,6 +37,30 @@ ugplot_science_collab_state_path <- function(name = "default") {
   file.path(ugplot_science_collab_state_dir(), paste0(safe_name, ".rds"))
 }
 
+ugplot_science_collab_work_dir <- function() {
+  work_dir <- file.path(ugplot_science_collab_state_dir(), "work")
+  if (!dir.exists(work_dir)) {
+    created <- dir.create(
+      work_dir, recursive = TRUE, showWarnings = FALSE, mode = "0700"
+    )
+    if (!isTRUE(created) && !dir.exists(work_dir)) {
+      stop(
+        "Could not create the Science Collab work directory: ", work_dir,
+        call. = FALSE
+      )
+    }
+  }
+  work_dir
+}
+
+ugplot_science_collab_tempfile <- function(pattern = "file", fileext = "") {
+  tempfile(
+    pattern = pattern,
+    tmpdir = ugplot_science_collab_work_dir(),
+    fileext = fileext
+  )
+}
+
 ugplot_read_science_collab_state <- function(name = "default") {
   path <- ugplot_science_collab_state_path(name)
   if (!file.exists(path)) return(NULL)
@@ -67,12 +91,12 @@ ugplot_install_science_collab_client_deps <- function(install = TRUE, dependenci
 }
 
 ugplot_science_collab_worker <- function(payload_path, cpu_limit) {
-  event_path <- tempfile("ugplot-collab-events-", fileext = ".rds")
-  result_path <- tempfile("ugplot-collab-result-", fileext = ".rds")
-  launcher_path <- tempfile("ugplot-collab-launcher-", fileext = ".R")
-  lib_paths_path <- tempfile("ugplot-collab-libs-", fileext = ".rds")
-  stdout_path <- tempfile("ugplot-collab-worker-", fileext = ".stdout.log")
-  stderr_path <- tempfile("ugplot-collab-worker-", fileext = ".stderr.log")
+  event_path <- ugplot_science_collab_tempfile("ugplot-collab-events-", ".rds")
+  result_path <- ugplot_science_collab_tempfile("ugplot-collab-result-", ".rds")
+  launcher_path <- ugplot_science_collab_tempfile("ugplot-collab-launcher-", ".R")
+  lib_paths_path <- ugplot_science_collab_tempfile("ugplot-collab-libs-", ".rds")
+  stdout_path <- ugplot_science_collab_tempfile("ugplot-collab-worker-", ".stdout.log")
+  stderr_path <- ugplot_science_collab_tempfile("ugplot-collab-worker-", ".stderr.log")
   writeLines(c(
     "args <- commandArgs(trailingOnly = TRUE)",
     ".libPaths(readRDS(args[[5]]))",

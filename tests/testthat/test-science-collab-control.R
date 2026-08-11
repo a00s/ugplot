@@ -9,6 +9,22 @@ test_that("Science Collab background state uses a safe named path", {
   )
 })
 
+test_that("Science Collab mission files use its persistent work directory", {
+  state_dir <- tempfile("ugplot-collab-state-")
+  withr::local_envvar(UGPLOT_SCIENCE_COLLAB_STATE_DIR = state_dir)
+  collab_tempfile <- ugplot_test_internal("ugplot_science_collab_tempfile")
+
+  mission_path <- collab_tempfile("mission-", ".rds")
+
+  expect_true(dir.exists(file.path(state_dir, "work")))
+  expect_equal(dirname(mission_path), file.path(state_dir, "work"))
+
+  unlink(file.path(state_dir, "work"), recursive = TRUE, force = TRUE)
+  recreated_path <- collab_tempfile("mission-", ".rds")
+  expect_true(dir.exists(file.path(state_dir, "work")))
+  expect_equal(dirname(recreated_path), file.path(state_dir, "work"))
+})
+
 test_that("Science Collab background client can start, report status, and stop", {
   skip_if_not_installed("callr")
   state_dir <- tempfile("ugplot-collab-control-")

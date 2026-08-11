@@ -583,6 +583,8 @@ test_that("job group activity identifies collaborative and server executors", {
 })
 
 test_that("collaboration payload can be staged without loading it in the Shiny process", {
+  state_dir <- tempfile("collaboration-client-state-")
+  withr::local_envvar(UGPLOT_SCIENCE_COLLAB_STATE_DIR = state_dir)
   payload <- list(dataset = data.frame(x = 1:4), config = list(runner = "worker"))
   source_path <- tempfile(fileext = ".rds")
   saveRDS(payload, source_path)
@@ -593,5 +595,6 @@ test_that("collaboration payload can be staged without loading it in the Shiny p
   on.exit(unlink(staged_path), add = TRUE)
 
   expect_true(file.exists(staged_path))
+  expect_equal(dirname(staged_path), file.path(state_dir, "work"))
   expect_identical(readRDS(staged_path), payload)
 })
