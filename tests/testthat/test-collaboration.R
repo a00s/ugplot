@@ -308,6 +308,27 @@ test_that("anonymous collaboration results use validated data-only objects", {
   expect_equal(summary$SeedStrategy, "dataset_partition_v1")
 })
 
+test_that("collaboration omits redundant biological lists from portable results", {
+  validate <- ugplot_test_internal("ugplot_collaboration_validate_result")
+  result <- ugplot_test_collaboration_result("TG11", "lm")
+  long_cpg_list <- strrep("cg12345678;", 2L * 1024L * 1024L)
+  result$summary$CpGs <- long_cpg_list
+  task <- list(
+    task_id = "parent:analyze:TG11",
+    requirements = list(models = "lm"),
+    mission = list(entity = list(id = "TG11")),
+    payload_path = tempfile(fileext = ".rds")
+  )
+  saveRDS(list(config = list()), task$payload_path)
+  on.exit(unlink(task$payload_path), add = TRUE)
+
+  accepted <- validate(result, task)
+  expect_false("CpGs" %in% names(accepted$summary))
+
+  result$summary$Gene <- strrep("G", 501L)
+  expect_error(validate(result, task), "screening summary contains oversized text", fixed = TRUE)
+})
+
 test_that("legacy training-seed-only collaboration stability is rejected", {
   validate <- ugplot_test_internal("ugplot_collaboration_validate_result")
   result <- ugplot_test_collaboration_result("TG106", "bstSm")

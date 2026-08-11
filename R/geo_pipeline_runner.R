@@ -2207,6 +2207,12 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
       utils::write.csv(remote_result$importance, importance_path, row.names = FALSE)
     }
     summary_row <- remote_result$summary
+    biological_fields <- c(
+      "TranscriptMembers", "GeneMembers", "ExtraTranscripts", "CpGs"
+    )
+    for (column_name in intersect(biological_fields, names(group))) {
+      summary_row[[column_name]] <- group[[column_name]][[1]]
+    }
     summary_row$DatasetPath <- dataset_info$dataset_path
     summary_row$ScreenResultPath <- if (file.exists(screen_path)) screen_path else ""
     summary_row$ImportancePath <- if (file.exists(importance_path)) importance_path else ""
@@ -2222,6 +2228,9 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
       for (artifact in artifacts) {
         if (!is.list(artifact) || !is.data.frame(artifact$summary) || nrow(artifact$summary) != 1L) next
         stability_row <- artifact$summary
+        for (column_name in intersect(biological_fields, names(summary_row))) {
+          stability_row[[column_name]] <- summary_row[[column_name]][[1]]
+        }
         stratum_col <- as.character(stability_row$StratumColumn[[1]] %||% "")
         stratum_value <- as.character(stability_row$StratumValue[[1]] %||% "")
         target_dir <- group_dir
