@@ -716,7 +716,9 @@ test_that("distributed scheduler checkpoints worker results in coordinator cache
     list(
       kind = "geo_complete_group",
       group_id = "TG1",
-      summary = worker_summary,
+      summary = worker_summary[, setdiff(
+        names(worker_summary), c("ExtraTranscripts", "CpGs")
+      ), drop = FALSE],
       screen_result = list(best_model_name = "lm"),
       importance = data.frame(CpG = "cg1", Overall = 1),
       stability_summary = stability_summary,
@@ -768,6 +770,8 @@ test_that("distributed scheduler checkpoints worker results in coordinator cache
   manifest <- readRDS(file.path(pipeline_dir, "distributed-screening.rds"))
   expect_equal(result$GroupID, "TG1")
   expect_equal(result$DatasetPath, dataset_path)
+  expect_equal(result$ExtraTranscripts, eligible$ExtraTranscripts)
+  expect_equal(result$CpGs, eligible$CpGs)
   expect_true(file.exists(result$ScreenResultPath))
   expect_true(file.exists(result$ImportancePath))
   final_summary <- utils::read.csv(file.path(pipeline_dir, "summary.csv"), stringsAsFactors = FALSE)

@@ -322,6 +322,20 @@ ugplot_collaboration_table <- function(value, field, allowed_columns = NULL,
 
 ugplot_collaboration_portable_result <- function(result) {
   if (!is.list(result)) stop("Science Collab result must be a list.", call. = FALSE)
+  portable_summary <- function(summary) {
+    redundant_fields <- c(
+      "TranscriptMembers", "GeneMembers", "ExtraTranscripts", "CpGs"
+    )
+    if (is.data.frame(summary)) {
+      return(summary[, setdiff(names(summary), redundant_fields), drop = FALSE])
+    }
+    if (is.list(summary) && all(vapply(summary, is.list, logical(1)))) {
+      return(lapply(summary, function(row) {
+        row[setdiff(names(row) %||% character(0), redundant_fields)]
+      }))
+    }
+    summary
+  }
   portable_run <- function(run) {
     if (!is.list(run)) return(NULL)
     scalar_summary <- run$final_summary %||% list()
@@ -345,12 +359,12 @@ ugplot_collaboration_portable_result <- function(result) {
     parent_job_id = as.character(result$parent_job_id %||% ""),
     worker_name = as.character(result$worker_name %||% ""),
     group_id = as.character(result$group_id %||% ""),
-    summary = result$summary %||% data.frame(),
+    summary = portable_summary(result$summary %||% data.frame()),
     screen_result = portable_run(result$screen_result),
     importance = result$importance %||% data.frame(),
-    stability_summary = result$stability_summary %||% data.frame(),
+    stability_summary = portable_summary(result$stability_summary %||% data.frame()),
     stability_artifacts = lapply(artifacts, function(artifact) list(
-      summary = artifact$summary %||% data.frame(),
+      summary = portable_summary(artifact$summary %||% data.frame()),
       result = portable_run(artifact$result),
       importance = artifact$importance %||% data.frame()
     ))
