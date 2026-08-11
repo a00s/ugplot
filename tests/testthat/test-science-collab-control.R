@@ -17,12 +17,18 @@ test_that("Science Collab mission files use its persistent work directory", {
   mission_path <- collab_tempfile("mission-", ".rds")
 
   expect_true(dir.exists(file.path(state_dir, "work")))
-  expect_equal(dirname(mission_path), file.path(state_dir, "work"))
+  expect_equal(
+    normalizePath(dirname(mission_path), winslash = "/", mustWork = FALSE),
+    normalizePath(file.path(state_dir, "work"), winslash = "/", mustWork = FALSE)
+  )
 
   unlink(file.path(state_dir, "work"), recursive = TRUE, force = TRUE)
   recreated_path <- collab_tempfile("mission-", ".rds")
   expect_true(dir.exists(file.path(state_dir, "work")))
-  expect_equal(dirname(recreated_path), file.path(state_dir, "work"))
+  expect_equal(
+    normalizePath(dirname(recreated_path), winslash = "/", mustWork = FALSE),
+    normalizePath(file.path(state_dir, "work"), winslash = "/", mustWork = FALSE)
+  )
 })
 
 test_that("Science Collab background client can start, report status, and stop", {

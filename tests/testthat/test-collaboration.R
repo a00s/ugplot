@@ -616,6 +616,9 @@ test_that("collaboration payload can be staged without loading it in the Shiny p
   on.exit(unlink(staged_path), add = TRUE)
 
   expect_true(file.exists(staged_path))
-  expect_equal(dirname(staged_path), file.path(state_dir, "work"))
+  expect_equal(
+    normalizePath(dirname(staged_path), winslash = "/", mustWork = FALSE),
+    normalizePath(file.path(state_dir, "work"), winslash = "/", mustWork = FALSE)
+  )
   expect_identical(readRDS(staged_path), payload)
 })
