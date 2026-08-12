@@ -32,7 +32,7 @@ test_that("Science Collab mission files use its persistent work directory", {
 })
 
 test_that("Science Collab background client can start, report status, and stop", {
-  skip_if_not_installed("callr")
+  skip_if_not_installed("processx")
   state_dir <- tempfile("ugplot-collab-control-")
   withr::local_envvar(UGPLOT_SCIENCE_COLLAB_STATE_DIR = state_dir)
 
@@ -53,6 +53,10 @@ test_that("Science Collab background client can start, report status, and stop",
 
   expect_true(started$running)
   expect_true(file.exists(started$log_file))
+  expect_true(dir.exists(started$runtime_dir))
+  expect_true(file.exists(file.path(started$runtime_dir, "launcher.R")))
+  expect_true(file.exists(file.path(started$runtime_dir, "config.rds")))
+  expect_false(grepl("callr-res-", started$runtime_dir, fixed = TRUE))
   expect_true(ugplot_test_internal("ugplot_process_alive")(started$pid))
 
   status <- capture.output(current <- ugPlotScienceCollabStatus("test-client"))

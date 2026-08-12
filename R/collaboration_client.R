@@ -335,8 +335,8 @@ ugPlotScienceCollabStart <- function(coordinator, scientist_name,
                                      install_client_deps = TRUE,
                                      poll_seconds = 6,
                                      name = "default") {
-  if (!requireNamespace("callr", quietly = TRUE)) {
-    stop("Package 'callr' is required to start Science Collab in the background.", call. = FALSE)
+  if (!requireNamespace("processx", quietly = TRUE)) {
+    stop("Package 'processx' is required to start Science Collab in the background.", call. = FALSE)
   }
   server_url <- ugplot_science_collab_url(coordinator)
   scientist_name <- trimws(as.character(scientist_name %||% ""))
@@ -366,36 +366,45 @@ ugPlotScienceCollabStart <- function(coordinator, scientist_name,
   state_dir <- ugplot_science_collab_state_dir()
   safe_name <- gsub("[^A-Za-z0-9._-]+", "_", name)
   log_file <- file.path(state_dir, paste0(safe_name, ".log"))
-  lib_paths <- .libPaths()
-  process <- callr::r_bg(
-    func = function(server_url, scientist_name, cpu_limit,
-                    install_model_deps, install_client_deps,
-                    poll_seconds, lib_paths) {
-      .libPaths(lib_paths)
-      library(ugplot)
-      ugPlotScienceCollab(
-        coordinator = server_url,
-        scientist_name = scientist_name,
-        cpu_limit = cpu_limit,
-        install_model_deps = install_model_deps,
-        install_client_deps = install_client_deps,
-        poll_seconds = poll_seconds
-      )
-    },
-    args = list(
-      server_url = server_url,
-      scientist_name = scientist_name,
-      cpu_limit = cpu_limit,
-      install_model_deps = isTRUE(install_model_deps),
-      install_client_deps = isTRUE(install_client_deps),
-      poll_seconds = poll_seconds,
-      lib_paths = lib_paths
-    ),
+  runtime_dir <- file.path(ugplot_science_collab_work_dir(), paste0("client-", safe_name))
+  ugplot_ensure_dir(runtime_dir)
+  launcher_path <- file.path(runtime_dir, "launcher.R")
+  config_path <- file.path(runtime_dir, "config.rds")
+  writeLines(c(
+    "args <- commandArgs(trailingOnly = TRUE)",
+    "config <- readRDS(args[[1]])",
+    ".libPaths(config$lib_paths)",
+    "library(ugplot)",
+    "ugPlotScienceCollab(",
+    "  coordinator = config$server_url,",
+    "  scientist_name = config$scientist_name,",
+    "  cpu_limit = config$cpu_limit,",
+    "  install_model_deps = config$install_model_deps,",
+    "  install_client_deps = config$install_client_deps,",
+    "  poll_seconds = config$poll_seconds",
+    ")"
+  ), launcher_path, useBytes = TRUE)
+  saveRDS(list(
+    server_url = server_url,
+    scientist_name = scientist_name,
+    cpu_limit = cpu_limit,
+    install_model_deps = isTRUE(install_model_deps),
+    install_client_deps = isTRUE(install_client_deps),
+    poll_seconds = poll_seconds,
+    lib_paths = .libPaths()
+  ), config_path)
+  try(Sys.chmod(c(launcher_path, config_path), mode = "0600"), silent = TRUE)
+  process <- processx::process$new(
+    command = file.path(R.home("bin"), "Rscript"),
+    args = c("--vanilla", launcher_path, config_path),
     stdout = log_file,
     stderr = log_file,
     supervise = FALSE,
     cleanup = FALSE,
-    poll_connection = FALSE
+    cleanup_tree = FALSE,
+    poll_connection = FALSE,
+    env = c(TMPDIR = runtime_dir, TMP = runtime_dir, TEMP = runtime_dir),
+    windows_hide_window = TRUE
   )
   Sys.sleep(0.25)
   if (!process$is_alive()) {
@@ -414,6 +423,7 @@ ugPlotScienceCollabStart <- function(coordinator, scientist_name,
     cpu_limit = cpu_limit,
     poll_seconds = poll_seconds,
     log_file = log_file,
+    runtime_dir = runtime_dir,
     started_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
   )
   ugplot_write_science_collab_state(state, name)
