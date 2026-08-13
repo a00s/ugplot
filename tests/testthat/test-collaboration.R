@@ -308,11 +308,16 @@ test_that("anonymous collaboration results use validated data-only objects", {
   expect_equal(summary$SeedStrategy, "dataset_partition_v1")
 })
 
-test_that("collaboration omits redundant biological lists from portable results", {
+test_that("collaboration omits coordinator-owned summary fields from portable results", {
   validate <- ugplot_test_internal("ugplot_collaboration_validate_result")
   result <- ugplot_test_collaboration_result("TG11", "lm")
   long_cpg_list <- strrep("cg12345678;", 2L * 1024L * 1024L)
   result$summary$CpGs <- long_cpg_list
+  result$summary$GroupKey <- strrep("cg12345678\r", 1000L)
+  result$summary$DatasetPath <- strrep("/collaborator/cache/", 100L)
+  result$summary$ScreenResultPath <- strrep("/collaborator/screen/", 100L)
+  result$summary$ImportancePath <- strrep("/collaborator/importance/", 100L)
+  result$summary$StabilityResultPath <- strrep("/collaborator/stability/", 100L)
   task <- list(
     task_id = "parent:analyze:TG11",
     requirements = list(models = "lm"),
@@ -323,10 +328,18 @@ test_that("collaboration omits redundant biological lists from portable results"
   on.exit(unlink(task$payload_path), add = TRUE)
 
   accepted <- validate(result, task)
-  expect_false("CpGs" %in% names(accepted$summary))
+  coordinator_owned <- c(
+    "GroupKey", "TranscriptMembers", "GeneMembers", "ExtraTranscripts", "CpGs",
+    "DatasetPath", "ScreenResultPath", "ImportancePath", "StabilityResultPath"
+  )
+  expect_false(any(coordinator_owned %in% names(accepted$summary)))
 
   result$summary$Gene <- strrep("G", 501L)
-  expect_error(validate(result, task), "screening summary contains oversized text", fixed = TRUE)
+  expect_error(
+    validate(result, task),
+    "screening summary contains oversized text in column Gene (row 1).",
+    fixed = TRUE
+  )
 })
 
 test_that("legacy training-seed-only collaboration stability is rejected", {

@@ -283,15 +283,20 @@ ugplot_collaboration_table <- function(value, field, allowed_columns = NULL,
   if (!all(required_columns %in% column_names)) {
     stop(field, " is missing required columns.", call. = FALSE)
   }
-  for (row in rows) {
+  for (row_index in seq_along(rows)) {
+    row <- rows[[row_index]]
     if (is.null(names(row)) || anyDuplicated(names(row))) stop(field, " contains an invalid row.", call. = FALSE)
-    for (cell in row) {
+    for (column_name in names(row)) {
+      cell <- row[[column_name]]
       cell <- unlist(cell, recursive = FALSE, use.names = FALSE)
       if (length(cell) > 1L || (length(cell) == 1L && (is.raw(cell) || is.complex(cell)))) {
         stop(field, " contains a non-scalar value.", call. = FALSE)
       }
       if (length(cell) == 1L && is.character(cell) && nchar(cell, type = "chars") > max_text_chars) {
-        stop(field, " contains oversized text.", call. = FALSE)
+        stop(
+          field, " contains oversized text in column ", column_name,
+          " (row ", row_index, ").", call. = FALSE
+        )
       }
     }
   }
@@ -324,7 +329,8 @@ ugplot_collaboration_portable_result <- function(result) {
   if (!is.list(result)) stop("Science Collab result must be a list.", call. = FALSE)
   portable_summary <- function(summary) {
     redundant_fields <- c(
-      "TranscriptMembers", "GeneMembers", "ExtraTranscripts", "CpGs"
+      "GroupKey", "TranscriptMembers", "GeneMembers", "ExtraTranscripts", "CpGs",
+      "DatasetPath", "ScreenResultPath", "ImportancePath", "StabilityResultPath"
     )
     if (is.data.frame(summary)) {
       return(summary[, setdiff(names(summary), redundant_fields), drop = FALSE])
