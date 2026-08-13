@@ -269,6 +269,32 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
     install = install_client_deps,
     dependencies = TRUE
   )
+  client_version <- ugplot_build_version()
+  coordinator_status <- tryCatch(
+    ugplot_remote_collaboration_status(server_url),
+    error = function(e) {
+      message(
+        "Science Collab preflight could not reach ", server_url, ": ",
+        conditionMessage(e)
+      )
+      NULL
+    }
+  )
+  coordinator_version <- trimws(as.character(
+    coordinator_status$ugplot_build_version %||% ""
+  ))
+  message(
+    "Science Collab version check: client ", client_version,
+    " | coordinator ", if (nzchar(coordinator_version)) coordinator_version else if (is.null(coordinator_status)) "unavailable" else "not reported"
+  )
+  if (!is.null(coordinator_status) && (!nzchar(coordinator_version) ||
+      !identical(ugplot_compare_build_versions(client_version, coordinator_version), 0L))) {
+    stop(
+      ugplot_version_mismatch_message(client_version, coordinator_version),
+      " Restart both R processes after installing the matching version.",
+      call. = FALSE
+    )
+  }
   if (isTRUE(install_model_deps)) {
     message("Checking and attempting to install dependencies for all caret models...")
     tryCatch(
@@ -293,7 +319,8 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
   counters <- list(completed = 0L, accepted = 0L, server_url = server_url)
   message(
     "Science Collab client ready at ", server_url, " as ", scientist_name,
-    " (", cpu_limit, " CPU core", if (cpu_limit == 1L) "" else "s", ")."
+    " (", cpu_limit, " CPU core", if (cpu_limit == 1L) "" else "s",
+    ", build ", client_version, ")."
   )
   message("Waiting for public missions. Press Ctrl+C to stop safely.")
 
@@ -309,8 +336,18 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
       Sys.sleep(poll_seconds)
       next
     }
-    accepted <- ugplot_science_collab_run_mission(
-      claimed, server_url, client_id, cpu_limit
+    accepted <- tryCatch(
+      ugplot_science_collab_run_mission(
+        claimed, server_url, client_id, cpu_limit
+      ),
+      error = function(e) {
+        task_id <- as.character(claimed$task$task_id %||% "unknown")
+        stop(
+          "Mission ", task_id, " failed [client ", client_version,
+          " | coordinator ", coordinator_version, "]: ",
+          conditionMessage(e), call. = FALSE
+        )
+      }
     )
     counters$completed <- counters$completed + 1L
     if (isTRUE(accepted)) counters$accepted <- counters$accepted + 1L

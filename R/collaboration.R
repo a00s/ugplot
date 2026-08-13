@@ -795,6 +795,7 @@ ugplot_collaboration_public_status <- function(jobs_dir = ugplot_default_jobs_di
   list(
     status = "open",
     protocol_version = 2L,
+    ugplot_build_version = ugplot_build_version(),
     pending = sum(pending_active),
     inactive_pending = length(pending_active) - sum(pending_active),
     leased = state_count("leased"),

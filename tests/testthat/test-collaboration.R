@@ -505,6 +505,7 @@ test_that("collaboration only offers tasks from a running parent job", {
   )
 
   status <- public_status(root)
+  expect_equal(status$ugplot_build_version, ugplot_test_internal("ugplot_build_version")())
   expect_equal(status$pending, 1L)
   expect_equal(status$inactive_pending, 1L)
   report <- compatibility(list(models = "lm"), root)

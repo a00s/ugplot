@@ -1,3 +1,11 @@
+test_that("reported build version matches the package release", {
+  description <- read.dcf(testthat::test_path("..", "..", "DESCRIPTION"))
+  expect_equal(
+    ugplot_test_internal("ugplot_build_version")(),
+    unname(description[[1L, "Version"]])
+  )
+})
+
 test_that("remote server config stores CPU limits and migrates old records", {
   config_dir <- tempfile("ugplot-config-")
   ugplot_test_local_namespace_binding("ugplot_remote_servers_path", function() {
