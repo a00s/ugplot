@@ -94,24 +94,22 @@ ugplot_science_collab_worker <- function(payload_path, cpu_limit) {
   event_path <- ugplot_science_collab_tempfile("ugplot-collab-events-", ".rds")
   result_path <- ugplot_science_collab_tempfile("ugplot-collab-result-", ".rds")
   launcher_path <- ugplot_science_collab_tempfile("ugplot-collab-launcher-", ".R")
-  lib_paths_path <- ugplot_science_collab_tempfile("ugplot-collab-libs-", ".rds")
   stdout_path <- ugplot_science_collab_tempfile("ugplot-collab-worker-", ".stdout.log")
   stderr_path <- ugplot_science_collab_tempfile("ugplot-collab-worker-", ".stderr.log")
   writeLines(c(
     "args <- commandArgs(trailingOnly = TRUE)",
-    ".libPaths(readRDS(args[[5]]))",
+    ".libPaths(args[-seq_len(4L)])",
     "library(ugplot)",
     "runner <- get('ugplot_collaboration_run_payload', envir = asNamespace('ugplot'))",
     "payload <- readRDS(args[[1]])",
     "result <- runner(payload, cpu_limit = as.integer(args[[2]]), event_path = args[[3]])",
     "saveRDS(result, args[[4]])"
   ), launcher_path, useBytes = TRUE)
-  saveRDS(.libPaths(), lib_paths_path)
   process <- processx::process$new(
     command = file.path(R.home("bin"), "Rscript"),
     args = c(
       "--vanilla", launcher_path, payload_path, as.character(cpu_limit),
-      event_path, result_path, lib_paths_path
+      event_path, result_path, .libPaths()
     ),
     stdout = stdout_path,
     stderr = stderr_path,
@@ -124,8 +122,8 @@ ugplot_science_collab_worker <- function(payload_path, cpu_limit) {
     event_path = event_path,
     result_path = result_path,
     files = c(
-      payload_path, event_path, result_path, launcher_path, lib_paths_path,
-      stdout_path, stderr_path
+      payload_path, event_path, result_path, launcher_path, stdout_path,
+      stderr_path
     ),
     stdout_path = stdout_path,
     stderr_path = stderr_path

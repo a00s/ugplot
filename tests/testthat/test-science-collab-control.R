@@ -31,6 +31,21 @@ test_that("Science Collab mission files use its persistent work directory", {
   )
 })
 
+test_that("Science Collab worker does not serialize library paths before launch", {
+  worker_source <- paste(
+    deparse(body(ugplot_test_internal("ugplot_science_collab_worker"))),
+    collapse = "\n"
+  )
+
+  # The former saveRDS(.libPaths(), ...) call was the only gzfile() user on
+  # the parent-side path immediately after "starting computation". Library
+  # paths are plain process arguments now, so launching a mission cannot fail
+  # at that serialization step.
+  expect_false(grepl("saveRDS\\(\\.libPaths", worker_source))
+  expect_false(grepl("ugplot-collab-libs-", worker_source, fixed = TRUE))
+  expect_match(worker_source, ".libPaths(args[-seq_len(4L)])", fixed = TRUE)
+})
+
 test_that("Science Collab background client can start, report status, and stop", {
   skip_if_not_installed("processx")
   state_dir <- tempfile("ugplot-collab-control-")
