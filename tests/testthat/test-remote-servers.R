@@ -1,5 +1,7 @@
 test_that("reported build version matches the package release", {
-  description <- read.dcf(testthat::test_path("..", "..", "DESCRIPTION"))
+  description_path <- system.file("DESCRIPTION", package = "ugplot")
+  expect_true(nzchar(description_path))
+  description <- read.dcf(description_path)
   expect_equal(
     ugplot_test_internal("ugplot_build_version")(),
     unname(description[[1L, "Version"]])
