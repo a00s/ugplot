@@ -76,6 +76,53 @@ test_that("headless Science Collab declares its runtime dependencies", {
   expect_setequal(packages, c("httr", "jsonlite", "processx"))
 })
 
+test_that("Science Collab backs off repeated mission failures", {
+  failure_delay <- ugplot_test_internal("ugplot_science_collab_failure_delay")
+
+  expect_equal(failure_delay(1L, 6), 15)
+  expect_equal(failure_delay(2L, 6), 30)
+  expect_equal(failure_delay(5L, 6), 240)
+  expect_equal(failure_delay(6L, 6), 300)
+  expect_equal(failure_delay(1L, 30), 30)
+  expect_equal(failure_delay(NA_integer_, NA_real_), 15)
+})
+
+test_that("Science Collab keeps serving after a mission failure", {
+  run_client <- ugplot_test_internal("ugPlotScienceCollab")
+  claim_count <- 0L
+  mission_count <- 0L
+  ugplot_test_local_namespace_binding("ugplot_install_science_collab_client_deps", function(...) invisible(NULL))
+  ugplot_test_local_namespace_binding("ugplot_remote_collaboration_status", function(...) {
+    list(protocol_version = 2L, ugplot_build_version = "20260814.3")
+  })
+  ugplot_test_local_namespace_binding("ugplot_model_dependency_status", function(...) {
+    list(models_installed = "lm", models_missing = character(), unknown_models = character())
+  })
+  ugplot_test_local_namespace_binding("ugplot_remote_collaboration_claim", function(...) {
+    claim_count <<- claim_count + 1L
+    list(task = list(task_id = paste0("task-", claim_count)))
+  })
+  ugplot_test_local_namespace_binding("ugplot_science_collab_run_mission", function(...) {
+    mission_count <<- mission_count + 1L
+    if (mission_count == 1L) stop("temporary mission failure")
+    TRUE
+  })
+  ugplot_test_local_namespace_binding("ugplot_science_collab_failure_delay", function(...) 0)
+
+  result <- NULL
+  expect_message(
+    result <- run_client(
+      "coordinator.example", "Test scientist",
+      install_model_deps = FALSE, install_client_deps = FALSE,
+      poll_seconds = 1, max_missions = 1
+    ),
+    "Mission task-1 failed"
+  )
+  expect_equal(mission_count, 2L)
+  expect_equal(result$completed, 1L)
+  expect_equal(result$accepted, 1L)
+})
+
 test_that("a direct Science Collab coordinator excludes configured servers", {
   candidates <- ugplot_test_internal("ugplot_collaboration_coordinator_candidates")
   servers <- data.frame(
@@ -390,6 +437,43 @@ test_that("collaboration bounds run errors without discarding their tail", {
   expect_match(error, "^original failure:")
   expect_match(error, "final diagnostic$")
   expect_match(error, "\\[truncated\\]")
+})
+
+test_that("collaboration accepts coordinator-owned models from a resumed screen", {
+  validate <- ugplot_test_internal("ugplot_collaboration_validate_result")
+  result <- ugplot_test_collaboration_result("TG11", "lm")
+  result$screen_result$results_table <- data.frame(
+    Model = c("lm", "rpart"), Status = "OK", R2 = c(0.7, 0.6),
+    dataset_seed = 1L, training_seed = 1L,
+    stringsAsFactors = FALSE
+  )
+  task <- list(
+    task_id = "parent:analyze:TG11",
+    requirements = list(models = "lm"),
+    mission = list(entity = list(id = "TG11")),
+    payload_path = tempfile(fileext = ".rds")
+  )
+  resume_result <- list(
+    best_model_name = "lm",
+    results_table = result$screen_result$results_table
+  )
+  saveRDS(list(config = list(
+    distributed_resume_screen = list(screen_result = resume_result)
+  )), task$payload_path)
+  on.exit(unlink(task$payload_path), add = TRUE)
+
+  accepted <- validate(result, task)
+  expect_equal(accepted$screen_result$results_table$Model, c("lm", "rpart"))
+
+  result$screen_result$results_table <- rbind(
+    result$screen_result$results_table,
+    data.frame(
+      Model = "rf", Status = "OK", R2 = 0.5,
+      dataset_seed = 1L, training_seed = 1L,
+      stringsAsFactors = FALSE
+    )
+  )
+  expect_error(validate(result, task), "unauthorized run models")
 })
 
 test_that("legacy training-seed-only collaboration stability is rejected", {

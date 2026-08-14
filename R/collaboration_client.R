@@ -201,6 +201,16 @@ ugplot_science_collab_latest_telemetry <- function(event_path) {
   )
 }
 
+ugplot_science_collab_failure_delay <- function(attempt, poll_seconds) {
+  attempt <- suppressWarnings(as.integer(attempt %||% 1L))
+  if (length(attempt) != 1L || is.na(attempt) || attempt < 1L) attempt <- 1L
+  poll_seconds <- suppressWarnings(as.numeric(poll_seconds %||% 6))
+  if (length(poll_seconds) != 1L || !is.finite(poll_seconds) || poll_seconds < 1) {
+    poll_seconds <- 6
+  }
+  min(300, max(15, poll_seconds) * 2^(min(attempt, 6L) - 1L))
+}
+
 ugplot_science_collab_run_mission <- function(claimed, server_url, client_id, cpu_limit) {
   task <- claimed$task
   task_id <- as.character(task$task_id %||% "")
@@ -362,6 +372,7 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
     scientist_name = scientist_name
   )
   counters <- list(completed = 0L, accepted = 0L, server_url = server_url)
+  failed_attempts <- new.env(parent = emptyenv())
   message(
     "Science Collab client ready at ", server_url, " as ", scientist_name,
     " (", cpu_limit, " CPU core", if (cpu_limit == 1L) "" else "s",
@@ -381,19 +392,36 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
       Sys.sleep(poll_seconds)
       next
     }
+    mission_error <- NULL
     accepted <- tryCatch(
       ugplot_science_collab_run_mission(
         claimed, server_url, client_id, cpu_limit
       ),
       error = function(e) {
-        task_id <- as.character(claimed$task$task_id %||% "unknown")
-        stop(
-          "Mission ", task_id, " failed [client ", client_version,
-          " | coordinator ", coordinator_version, "]: ",
-          conditionMessage(e), call. = FALSE
-        )
+        mission_error <<- e
+        FALSE
       }
     )
+    task_id <- as.character(claimed$task$task_id %||% "unknown")
+    if (!is.null(mission_error)) {
+      attempt <- if (exists(task_id, envir = failed_attempts, inherits = FALSE)) {
+        get(task_id, envir = failed_attempts, inherits = FALSE) + 1L
+      } else 1L
+      assign(task_id, attempt, envir = failed_attempts)
+      retry_delay <- ugplot_science_collab_failure_delay(attempt, poll_seconds)
+      message(
+        "Mission ", task_id, " failed [client ", client_version,
+        " | coordinator ", coordinator_version, "]: ",
+        conditionMessage(mission_error),
+        ". Mission released; returning to the public queue in ",
+        retry_delay, " second", if (retry_delay == 1) "" else "s", "."
+      )
+      Sys.sleep(retry_delay)
+      next
+    }
+    if (exists(task_id, envir = failed_attempts, inherits = FALSE)) {
+      rm(list = task_id, envir = failed_attempts)
+    }
     counters$completed <- counters$completed + 1L
     if (isTRUE(accepted)) counters$accepted <- counters$accepted + 1L
   }

@@ -419,6 +419,19 @@ ugplot_collaboration_validate_result <- function(result, task) {
   )
   if (!identical(group_id, expected_group)) stop("Science Collab result group does not match its lease.", call. = FALSE)
   allowed_models <- unique(as.character(task$requirements$models %||% character(0)))
+  payload <- tryCatch(readRDS(task$payload_path), error = function(e) NULL)
+  config <- if (is.list(payload) && is.list(payload$config)) payload$config else list()
+  resume_run <- config$distributed_resume_screen$screen_result %||% NULL
+  resume_models <- if (is.list(resume_run) && is.data.frame(resume_run$results_table) &&
+                       "Model" %in% names(resume_run$results_table)) {
+    as.character(resume_run$results_table$Model)
+  } else character(0)
+  resume_models <- unique(c(
+    resume_models,
+    as.character(resume_run$best_model_name %||% character(0))
+  ))
+  resume_models <- resume_models[nzchar(resume_models) & !is.na(resume_models)]
+  allowed_screen_models <- unique(c(allowed_models, resume_models))
   summary_columns <- c(
     "Source", "Phase", "GroupID", "GroupKey", "PrincipalTranscript", "Gene", "Columns", "Samples",
     "TranscriptCount", "TranscriptMembers", "GeneMembers", "ExtraTranscripts", "CpGs", "TriggerMaxAbsRho",
@@ -446,17 +459,17 @@ ugplot_collaboration_validate_result <- function(result, task) {
     }
     table
   }
-  validate_run <- function(run, field) {
+  validate_run <- function(run, field, permitted_models = allowed_models) {
     if (is.null(run)) return(NULL)
     if (!is.list(run)) stop(field, " is invalid.", call. = FALSE)
     best_model <- ugplot_collaboration_text(run$best_model_name %||% "", paste(field, "model"), 80L, allow_empty = TRUE)
-    if (nzchar(best_model) && length(allowed_models) > 0L && !best_model %in% c(allowed_models, "-")) {
+    if (nzchar(best_model) && length(permitted_models) > 0L && !best_model %in% c(permitted_models, "-")) {
       stop(field, " contains an unauthorized model.", call. = FALSE)
     }
     table <- ugplot_collaboration_table(run$results_table, paste(field, "runs"), run_columns,
       required_columns = c("Model", "Status"), max_rows = 10000L, max_columns = length(run_columns))
     if (nrow(table) > 0L) {
-      if (length(allowed_models) > 0L && any(!as.character(table$Model) %in% allowed_models)) {
+      if (length(permitted_models) > 0L && any(!as.character(table$Model) %in% permitted_models)) {
         stop(field, " contains unauthorized run models.", call. = FALSE)
       }
       allowed_status <- c("OK", "TIMEOUT", "SKIPPED_TIMEOUT", "INCOMPATIBLE", "INVALID_METRICS", "ERROR")
@@ -491,7 +504,7 @@ ugplot_collaboration_validate_result <- function(result, task) {
       finished_at = ugplot_collaboration_text(run$finished_at %||% "", paste(field, "finished_at"), 80L, TRUE))
   }
   summary <- validate_summary(result$summary, "screening summary")
-  screen_result <- validate_run(result$screen_result, "screening result")
+  screen_result <- validate_run(result$screen_result, "screening result", allowed_screen_models)
   importance <- ugplot_collaboration_table(result$importance, "screening importance", max_rows = 10000L, max_columns = 64L)
   stability_summary <- validate_summary(result$stability_summary, "stability summary", allow_empty = TRUE)
   artifacts <- result$stability_artifacts %||% list()
@@ -528,8 +541,6 @@ ugplot_collaboration_validate_result <- function(result, task) {
     summary$MetricSE <- stats::sd(metrics) / sqrt(length(metrics))
     summary$SeedsRun <- length(metrics)
     summary$SeedStrategy <- ugplot_geo_ml_seed_strategy()
-    payload <- tryCatch(readRDS(task$payload_path), error = function(e) NULL)
-    config <- if (is.list(payload) && is.list(payload$config)) payload$config else list()
     stable_state <- ugplot_geo_stability_state(
       metrics,
       max(2L, as.integer(config$geo_ml_min_stability_seeds %||% 30L)),
