@@ -16,3 +16,28 @@ test_that("model dependency helper reports caret model status", {
   expect_true("models_installed" %in% names(status))
   expect_true("packages_to_install" %in% names(status))
 })
+
+test_that("model dependency status requires packages to be loadable", {
+  ugplot_test_local_namespace_binding(
+    "ugplot_r_package_available",
+    function(package, installed_packages = NULL) !identical(package, "glmnet")
+  )
+  status <- ugplot_test_internal("ugplot_model_dependency_status")(models = "glmnet")
+
+  expect_false(status$models$installed)
+  expect_equal(status$models$missing_packages, "glmnet")
+  expect_true("glmnet" %in% status$packages_to_install)
+})
+
+test_that("package installation gets a noninteractive CRAN fallback", {
+  repositories <- ugplot_test_internal("ugplot_install_repositories")
+
+  expect_equal(
+    unname(repositories(c(CRAN = "@CRAN@"))),
+    "https://cloud.r-project.org"
+  )
+  expect_equal(
+    repositories(c(CRAN = "https://cran.rstudio.com")),
+    c(CRAN = "https://cran.rstudio.com")
+  )
+})

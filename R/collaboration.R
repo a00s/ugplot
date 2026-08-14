@@ -327,6 +327,36 @@ ugplot_collaboration_table <- function(value, field, allowed_columns = NULL,
 
 ugplot_collaboration_portable_result <- function(result) {
   if (!is.list(result)) stop("Science Collab result must be a list.", call. = FALSE)
+  bounded_error <- function(value, max_chars = 500L) {
+    if (length(value) != 1L || is.na(value) || !is.character(value) ||
+        nchar(value, type = "chars") <= max_chars) {
+      return(value)
+    }
+    marker <- " ... [truncated] ... "
+    tail_chars <- 120L
+    head_chars <- max_chars - nchar(marker, type = "chars") - tail_chars
+    paste0(
+      substr(value, 1L, head_chars), marker,
+      substr(
+        value,
+        nchar(value, type = "chars") - tail_chars + 1L,
+        nchar(value, type = "chars")
+      )
+    )
+  }
+  portable_results_table <- function(value) {
+    if (is.data.frame(value) && "Error" %in% names(value)) {
+      value$Error <- vapply(as.character(value$Error), bounded_error, character(1))
+    } else if (is.list(value) && all(vapply(value, is.list, logical(1)))) {
+      value <- lapply(value, function(row) {
+        if ("Error" %in% (names(row) %||% character(0))) {
+          row$Error <- bounded_error(row$Error)
+        }
+        row
+      })
+    }
+    value
+  }
   portable_summary <- function(summary) {
     redundant_fields <- c(
       "GroupKey", "TranscriptMembers", "GeneMembers", "ExtraTranscripts", "CpGs",
@@ -351,7 +381,7 @@ ugplot_collaboration_portable_result <- function(result) {
     }, logical(1))]
     list(
       best_model_name = as.character(run$best_model_name %||% ""),
-      results_table = run$results_table %||% data.frame(),
+      results_table = portable_results_table(run$results_table %||% data.frame()),
       final_summary = scalar_summary,
       partial = isTRUE(run$partial),
       updated_at = as.character(run$updated_at %||% ""),

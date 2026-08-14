@@ -22,6 +22,31 @@ ugplot_installed_r_packages <- function() {
   rownames(utils::installed.packages())
 }
 
+ugplot_r_package_available <- function(package, installed_packages = NULL) {
+  if (!is.null(installed_packages) && !package %in% installed_packages) {
+    return(FALSE)
+  }
+  isTRUE(tryCatch(
+    requireNamespace(package, quietly = TRUE),
+    error = function(e) FALSE
+  ))
+}
+
+ugplot_install_repositories <- function(repos = getOption("repos")) {
+  repo_names <- names(repos)
+  repos <- as.character(repos %||% character(0))
+  invalid <- is.na(repos) | !nzchar(trimws(repos)) | repos == "@CRAN@"
+  if (length(repos) == 0L) {
+    return(c(CRAN = "https://cloud.r-project.org"))
+  }
+  repos[invalid] <- "https://cloud.r-project.org"
+  names(repos) <- repo_names
+  if (!any(grepl("^https?://", repos, ignore.case = TRUE))) {
+    repos <- c(repos, CRAN = "https://cloud.r-project.org")
+  }
+  repos
+}
+
 ugplot_model_dependency_status <- function(models = NULL, exclude_models = character()) {
   if (!requireNamespace("caret", quietly = TRUE)) {
     stop("Package 'caret' is required to inspect model dependencies.", call. = FALSE)
@@ -39,13 +64,23 @@ ugplot_model_dependency_status <- function(models = NULL, exclude_models = chara
   model_names <- setdiff(model_names, exclude_models)
   installed_packages <- ugplot_installed_r_packages()
 
+  required_packages <- unique(unlist(lapply(model_names, function(model_name) {
+    as.character(all_models[[model_name]]$library %||% character(0))
+  }), use.names = FALSE))
+  package_available <- stats::setNames(vapply(
+    required_packages,
+    ugplot_r_package_available,
+    logical(1),
+    installed_packages = installed_packages
+  ), required_packages)
+
   model_rows <- lapply(model_names, function(model_name) {
     libraries <- all_models[[model_name]]$library
     if (is.null(libraries)) {
       libraries <- character(0)
     }
     libraries <- unique(as.character(libraries))
-    missing_libraries <- setdiff(libraries, installed_packages)
+    missing_libraries <- libraries[!package_available[libraries]]
     data.frame(
       model = model_name,
       packages = paste(libraries, collapse = ", "),
@@ -131,7 +166,11 @@ ugPlotInstallModelDeps <- function(models = NULL, install = TRUE, dependencies =
   ugplot_print_model_dependency_status(status)
 
   if (install && length(status$packages_to_install) > 0) {
-    utils::install.packages(status$packages_to_install, dependencies = dependencies)
+    utils::install.packages(
+      status$packages_to_install,
+      dependencies = dependencies,
+      repos = ugplot_install_repositories()
+    )
     status <- ugplot_model_dependency_status(models = models, exclude_models = exclude_models)
     ugplot_print_model_dependency_status(status)
   }

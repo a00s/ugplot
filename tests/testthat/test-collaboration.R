@@ -44,6 +44,33 @@ test_that("Science Collab accepts a bare coordinator IP or hostname", {
   expect_error(normalize("ftp://example.org"), "HTTP")
 })
 
+test_that("Science Collab permits rolling builds with the same protocol", {
+  preflight <- ugplot_test_internal("ugplot_science_collab_preflight")
+
+  compatible <- NULL
+  expect_warning(
+    compatible <- preflight(
+      list(protocol_version = 2L, ugplot_build_version = "20260814.1"),
+      "20260814.2"
+    ),
+    "build differs"
+  )
+  expect_equal(compatible$coordinator_version, "20260814.1")
+  expect_equal(compatible$protocol_version, 2L)
+
+  expect_error(
+    preflight(
+      list(protocol_version = 1L, ugplot_build_version = "20260814.2"),
+      "20260814.2"
+    ),
+    "protocol mismatch"
+  )
+  expect_error(
+    preflight(list(ugplot_build_version = "20260814.2"), "20260814.2"),
+    "not reported"
+  )
+})
+
 test_that("headless Science Collab declares its runtime dependencies", {
   packages <- ugplot_test_internal("ugplot_science_collab_client_packages")()
   expect_setequal(packages, c("httr", "jsonlite", "processx"))
@@ -340,6 +367,29 @@ test_that("collaboration omits coordinator-owned summary fields from portable re
     "screening summary contains oversized text in column Gene (row 1).",
     fixed = TRUE
   )
+})
+
+test_that("collaboration bounds run errors without discarding their tail", {
+  validate <- ugplot_test_internal("ugplot_collaboration_validate_result")
+  result <- ugplot_test_collaboration_result("TG11", "lm")
+  long_error <- paste0("original failure: ", strrep("x", 700L), " final diagnostic")
+  result$screen_result$results_table$Status[[1]] <- "ERROR"
+  result$screen_result$results_table$Error[[1]] <- long_error
+  task <- list(
+    task_id = "parent:analyze:TG11",
+    requirements = list(models = "lm"),
+    mission = list(entity = list(id = "TG11")),
+    payload_path = tempfile(fileext = ".rds")
+  )
+  saveRDS(list(config = list()), task$payload_path)
+  on.exit(unlink(task$payload_path), add = TRUE)
+
+  accepted <- validate(result, task)
+  error <- accepted$screen_result$results_table$Error[[1]]
+  expect_lte(nchar(error, type = "chars"), 500L)
+  expect_match(error, "^original failure:")
+  expect_match(error, "final diagnostic$")
+  expect_match(error, "\\[truncated\\]")
 })
 
 test_that("legacy training-seed-only collaboration stability is rejected", {

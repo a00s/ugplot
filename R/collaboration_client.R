@@ -77,7 +77,11 @@ ugplot_install_science_collab_client_deps <- function(install = TRUE, dependenci
   missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly = TRUE)]
   if (isTRUE(install) && length(missing) > 0L) {
     message("Installing Science Collab client packages: ", paste(missing, collapse = ", "))
-    utils::install.packages(missing, dependencies = dependencies)
+    utils::install.packages(
+      missing,
+      dependencies = dependencies,
+      repos = ugplot_install_repositories()
+    )
     missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly = TRUE)]
   }
   if (length(missing) > 0L) {
@@ -88,6 +92,53 @@ ugplot_install_science_collab_client_deps <- function(install = TRUE, dependenci
     )
   }
   invisible(packages)
+}
+
+ugplot_science_collab_preflight <- function(coordinator_status, client_version,
+                                             protocol_version = 2L) {
+  if (is.null(coordinator_status)) {
+    return(list(coordinator_version = "", protocol_version = NA_integer_))
+  }
+  coordinator_protocol <- suppressWarnings(as.integer(
+    coordinator_status$protocol_version %||% NA_integer_
+  ))
+  if (length(coordinator_protocol) != 1L || is.na(coordinator_protocol) ||
+      !identical(coordinator_protocol, as.integer(protocol_version))) {
+    stop(
+      "Science Collab protocol mismatch: client ", protocol_version,
+      " | coordinator ",
+      if (length(coordinator_protocol) == 1L && !is.na(coordinator_protocol)) {
+        coordinator_protocol
+      } else {
+        "not reported"
+      },
+      ". Install a version that supports protocol ", protocol_version, ".",
+      call. = FALSE
+    )
+  }
+  coordinator_version <- trimws(as.character(
+    coordinator_status$ugplot_build_version %||% ""
+  ))
+  if (!nzchar(coordinator_version)) {
+    warning(
+      "Science Collab coordinator did not report its build; protocol ",
+      protocol_version, " is compatible, continuing.",
+      call. = FALSE
+    )
+  } else if (!identical(
+    ugplot_compare_build_versions(client_version, coordinator_version), 0L
+  )) {
+    warning(
+      "Science Collab build differs: client ", client_version,
+      " | coordinator ", coordinator_version,
+      ". Protocol ", protocol_version, " is compatible; continuing.",
+      call. = FALSE
+    )
+  }
+  list(
+    coordinator_version = coordinator_version,
+    protocol_version = coordinator_protocol
+  )
 }
 
 ugplot_science_collab_worker <- function(payload_path, cpu_limit) {
@@ -280,21 +331,15 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
       NULL
     }
   )
-  coordinator_version <- trimws(as.character(
-    coordinator_status$ugplot_build_version %||% ""
-  ))
+  preflight <- ugplot_science_collab_preflight(
+    coordinator_status, client_version, protocol_version = 2L
+  )
+  coordinator_version <- preflight$coordinator_version
   message(
     "Science Collab version check: client ", client_version,
-    " | coordinator ", if (nzchar(coordinator_version)) coordinator_version else if (is.null(coordinator_status)) "unavailable" else "not reported"
+    " | coordinator ", if (nzchar(coordinator_version)) coordinator_version else if (is.null(coordinator_status)) "unavailable" else "not reported",
+    " | protocol ", if (is.na(preflight$protocol_version)) "unavailable" else preflight$protocol_version
   )
-  if (!is.null(coordinator_status) && (!nzchar(coordinator_version) ||
-      !identical(ugplot_compare_build_versions(client_version, coordinator_version), 0L))) {
-    stop(
-      ugplot_version_mismatch_message(client_version, coordinator_version),
-      " Restart both R processes after installing the matching version.",
-      call. = FALSE
-    )
-  }
   if (isTRUE(install_model_deps)) {
     message("Checking and attempting to install dependencies for all caret models...")
     tryCatch(
