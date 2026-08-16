@@ -93,7 +93,7 @@ test_that("Science Collab keeps serving after a mission failure", {
   mission_count <- 0L
   ugplot_test_local_namespace_binding("ugplot_install_science_collab_client_deps", function(...) invisible(NULL))
   ugplot_test_local_namespace_binding("ugplot_remote_collaboration_status", function(...) {
-    list(protocol_version = 2L, ugplot_build_version = "20260814.3")
+    list(protocol_version = 2L, ugplot_build_version = "20260816.1")
   })
   ugplot_test_local_namespace_binding("ugplot_model_dependency_status", function(...) {
     list(models_installed = "lm", models_missing = character(), unknown_models = character())
@@ -247,6 +247,77 @@ test_that("republishing an unchanged pending mission preserves its payload", {
 
   expect_equal(file.info(second$payload_path)$mtime, payload_time)
   expect_equal(readRDS(second$payload_path)$dataset$x, 1)
+})
+
+test_that("a consumed partial collaboration result can be published again", {
+  root <- tempfile("collaboration-requeue-")
+  dir.create(root)
+  ugplot_test_active_collaboration_parent(root)
+  publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
+  claim <- ugplot_test_internal("ugplot_collaboration_claim_task")
+  complete <- ugplot_test_internal("ugplot_collaboration_complete_task")
+  requeue <- ugplot_test_internal("ugplot_collaboration_requeue_completed_task")
+
+  first <- publish(
+    "parent:analyze:TG1", "parent", list(checkpoint = 1L),
+    requirements = list(models = "lm"), jobs_dir = root
+  )
+  lease <- claim("client-a", list(models = "lm"), jobs_dir = root)$task
+  expect_true(complete(
+    lease$task_id, lease$lease_id, "client-a",
+    ugplot_test_collaboration_result("TG1"), jobs_dir = root
+  )$accepted)
+  expect_true(requeue(first$task_id, jobs_dir = root))
+
+  second <- publish(
+    "parent:analyze:TG1", "parent", list(checkpoint = 2L),
+    requirements = list(models = "lm"), jobs_dir = root
+  )
+  expect_equal(second$state, "pending")
+  expect_equal(readRDS(second$payload_path)$checkpoint, 2L)
+  expect_equal(
+    claim("client-b", list(models = "lm"), jobs_dir = root)$task$client_id,
+    "client-b"
+  )
+})
+
+test_that("offline Science Collab results remain valid after lease expiry", {
+  root <- tempfile("collaboration-offline-")
+  dir.create(root)
+  ugplot_test_active_collaboration_parent(root)
+  publish <- ugplot_test_internal("ugplot_collaboration_publish_task")
+  claim <- ugplot_test_internal("ugplot_collaboration_claim_task")
+  read_task <- ugplot_test_internal("ugplot_collaboration_read_task")
+  write_task <- ugplot_test_internal("ugplot_collaboration_write_task")
+  refresh <- ugplot_test_internal("ugplot_collaboration_refresh_task")
+  complete <- ugplot_test_internal("ugplot_collaboration_complete_task")
+
+  publish(
+    "parent:analyze:TG1", "parent", list(value = 1),
+    requirements = list(models = "lm"), jobs_dir = root
+  )
+  first <- claim("offline-a", list(
+    models = "lm", scientist_name = "Offline A", offline_delivery = TRUE,
+    delivery_grace_seconds = 3600
+  ), jobs_dir = root)$task
+  expired <- read_task(first$task_id, root)
+  expired$lease_expires_at <- Sys.time() - 1
+  write_task(expired, root)
+  expect_equal(refresh(first$task_id, root)$state, "pending")
+
+  second <- claim("client-b", list(models = "lm"), jobs_dir = root)$task
+  late <- complete(
+    first$task_id, first$lease_id, "offline-a",
+    ugplot_test_collaboration_result("TG1"), jobs_dir = root
+  )
+  expect_true(late$accepted)
+  accepted_task <- read_task(first$task_id, root)
+  expect_true(accepted_task$completed_from_offline_delivery)
+  expect_equal(accepted_task$scientist_name, "Offline A")
+  expect_false(complete(
+    second$task_id, second$lease_id, "client-b",
+    ugplot_test_collaboration_result("TG1"), jobs_dir = root
+  )$accepted)
 })
 
 test_that("collaboration accepts only the active lease and first result", {

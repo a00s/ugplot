@@ -438,6 +438,15 @@ test_that("smooth drain waits for every fixed and collaborative worker", {
   expect_true(drain_ready(character(0), logical(0)))
 })
 
+test_that("offline-capable collaboration missions do not block maintenance drain", {
+  blocks_drain <- ugplot_test_internal("ugplot_geo_collaboration_blocks_drain")
+
+  expect_true(blocks_drain(list(state = "leased", offline_delivery = FALSE)))
+  expect_true(blocks_drain(list(state = "leased")))
+  expect_false(blocks_drain(list(state = "leased", offline_delivery = TRUE)))
+  expect_false(blocks_drain(list(state = "pending", offline_delivery = TRUE)))
+})
+
 test_that("transcript group cache is complete only when every candidate was processed", {
   cache_complete <- ugplot_test_internal("ugplot_geo_transcript_group_cache_complete")
   root <- tempfile("transcript-group-cache-")

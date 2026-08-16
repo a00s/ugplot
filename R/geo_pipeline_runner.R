@@ -1978,6 +1978,11 @@ ugplot_geo_drain_ready <- function(busy_workers, collaboration_leased = logical(
   length(busy_workers) == 0L && !any(as.logical(collaboration_leased))
 }
 
+ugplot_geo_collaboration_blocks_drain <- function(task) {
+  is.list(task) && identical(task$state %||% "", "leased") &&
+    !isTRUE(task$offline_delivery)
+}
+
 ugplot_geo_collaboration_group_from_task_id <- function(task_id, parent_job_id) {
   task_id <- as.character(task_id %||% "")
   parent_job_id <- as.character(parent_job_id %||% "")
@@ -2283,6 +2288,19 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
       }
       manifest$UpdatedAt[[row_index]] <<- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
       ugplot_geo_write_distributed_manifest(manifest, manifest_path)
+      if (!isTRUE(keep_remote_job) && exists(
+        "ugplot_collaboration_requeue_completed_task",
+        mode = "function", inherits = TRUE
+      )) {
+        try(
+          ugplot_collaboration_requeue_completed_task(
+            paste(parent_job_id, "analyze", group_id, sep = ":"),
+            reason = "partial_result_consumed",
+            jobs_dir = collaboration_jobs_dir
+          ),
+          silent = TRUE
+        )
+      }
       return(invisible(FALSE))
     }
     manifest$State[[row_index]] <<- "completed"
@@ -2411,6 +2429,20 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         draining = draining
       )
       for (row_index in offer_rows) {
+        current_task_id <- collaboration_task_id(manifest$GroupID[[row_index]])
+        if (exists(
+          "ugplot_collaboration_requeue_completed_task",
+          mode = "function", inherits = TRUE
+        )) {
+          try(
+            ugplot_collaboration_requeue_completed_task(
+              current_task_id,
+              reason = "pending_group_republish",
+              jobs_dir = collaboration_jobs_dir
+            ),
+            silent = TRUE
+          )
+        }
         try(ugplot_collaboration_cancel_task(
           legacy_collaboration_task_id(manifest$GroupID[[row_index]]),
           reason = "replaced_by_complete_group_analysis",
@@ -2450,7 +2482,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         )
         try(
           ugplot_collaboration_publish_task(
-            collaboration_task_id(manifest$GroupID[[row_index]]),
+            current_task_id,
             parent_job_id,
             payload = list(dataset = dataset_info$dataset, config = task_config),
             requirements = list(models = task_config$collaboration_required_models, protocol_version = 2L),
@@ -2603,6 +2635,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
       }
     }
     collaboration_leased <- logical(0)
+    collaboration_blocking_leases <- logical(0)
     collaboration_leased_groups <- character(0)
     if (isTRUE(collaboration_enabled)) {
       leased_task_ids <- collaboration_index_ids("leased")
@@ -2615,15 +2648,29 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
       collaboration_leased <- vapply(refreshed_tasks, function(task) {
         is.list(task) && identical(task$state %||% "", "leased")
       }, logical(1))
+      collaboration_blocking_leases <- vapply(refreshed_tasks, function(task) {
+        ugplot_geo_collaboration_blocks_drain(task)
+      }, logical(1))
       collaboration_leased_groups <- vapply(
         leased_task_ids[collaboration_leased],
         collaboration_group_id,
         character(1)
       )
     }
-    if (isTRUE(draining) && ugplot_geo_drain_ready(busy_workers, collaboration_leased)) {
+    if (isTRUE(draining) && ugplot_geo_drain_ready(
+      busy_workers, collaboration_blocking_leases
+    )) {
       report_progress()
-      ugplot_signal_job_drained("Drained safely; active work collected and checkpoint ready")
+      offline_count <- sum(collaboration_leased & !collaboration_blocking_leases)
+      drain_message <- if (offline_count > 0L) {
+        paste0(
+          "Drained safely; checkpoint ready and ", offline_count,
+          " offline-capable mission(s) may return after maintenance"
+        )
+      } else {
+        "Drained safely; active work collected and checkpoint ready"
+      }
+      ugplot_signal_job_drained(drain_message)
     }
     pending_rows <- if (isTRUE(draining)) integer(0) else which(manifest$State == "pending" & manifest$Attempts < max_attempts)
     if (isTRUE(collaboration_enabled) && length(pending_rows) > 0L) {

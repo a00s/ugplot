@@ -188,12 +188,33 @@ ugplot_collaboration_publish_task <- function(task_id, parent_job_id, payload,
       client_message = "",
       client_candidate = "",
       lease_expires_at = as.POSIXct(NA),
+      offline_delivery = FALSE,
+      delivery_grace_seconds = 0,
+      delivery_grace_expires_at = as.POSIXct(NA),
+      late_leases = list(),
       heartbeat_at = as.POSIXct(NA),
       completed_at = as.POSIXct(NA),
       result_path = ""
     )
     ugplot_collaboration_write_task(task, jobs_dir)
     task
+  })
+}
+
+ugplot_collaboration_requeue_completed_task <- function(
+    task_id, reason = "partial_result_consumed",
+    jobs_dir = ugplot_default_jobs_dir()) {
+  task_dir <- ugplot_collaboration_task_dir(task_id, jobs_dir)
+  ugplot_collaboration_with_lock(task_dir, {
+    task <- ugplot_collaboration_read_task(task_id, jobs_dir)
+    if (!is.list(task) || !identical(task$state %||% "", "completed")) {
+      return(FALSE)
+    }
+    task$state <- "consumed"
+    task$consume_reason <- as.character(reason)
+    task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    ugplot_collaboration_write_task(task, jobs_dir)
+    TRUE
   })
 }
 
@@ -561,6 +582,29 @@ ugplot_collaboration_reap_task <- function(task, now = Sys.time()) {
   if (is.list(task) && identical(task$state %||% "", "leased")) {
     expiry <- suppressWarnings(as.POSIXct(task$lease_expires_at))
     if (!is.na(expiry) && expiry <= now) {
+      if (isTRUE(task$offline_delivery)) {
+        late_leases <- task$late_leases %||% list()
+        grace_expiry <- suppressWarnings(as.POSIXct(
+          task$delivery_grace_expires_at %||% as.POSIXct(NA)
+        ))
+        if (!is.na(grace_expiry) && grace_expiry > now) {
+          late_leases[[length(late_leases) + 1L]] <- list(
+            lease_id = as.character(task$lease_id %||% ""),
+            client_id = as.character(task$client_id %||% ""),
+            scientist_name = as.character(task$scientist_name %||% ""),
+            expires_at = grace_expiry
+          )
+        }
+        late_leases <- Filter(function(lease) {
+          lease_expiry <- suppressWarnings(as.POSIXct(
+            lease$expires_at %||% as.POSIXct(NA)
+          ))
+          !is.na(lease_expiry) && lease_expiry > now &&
+            nzchar(as.character(lease$lease_id %||% "")) &&
+            nzchar(as.character(lease$client_id %||% ""))
+        }, late_leases)
+        task$late_leases <- utils::tail(late_leases, 8L)
+      }
       task$state <- "pending"
       task$lease_id <- ""
       task$client_id <- ""
@@ -569,6 +613,8 @@ ugplot_collaboration_reap_task <- function(task, now = Sys.time()) {
       task$client_message <- "Waiting for a contributor"
       task$client_candidate <- ""
       task$lease_expires_at <- as.POSIXct(NA)
+      task$delivery_grace_expires_at <- as.POSIXct(NA)
+      task$offline_delivery <- FALSE
       task$lease_expired_count <- as.integer(task$lease_expired_count %||% 0L) + 1L
       task$fallback_requested <- TRUE
       task$updated_at <- format(now, "%Y-%m-%d %H:%M:%S %z")
@@ -620,6 +666,14 @@ ugplot_collaboration_claim_task <- function(client_id, capabilities = list(),
   capabilities$scientist_name <- ugplot_collaboration_text(
     capabilities$scientist_name %||% client_id, "scientist name", 80L
   )
+  offline_delivery <- isTRUE(capabilities$offline_delivery)
+  delivery_grace_seconds <- suppressWarnings(as.numeric(
+    capabilities$delivery_grace_seconds %||% 86400
+  ))
+  if (length(delivery_grace_seconds) != 1L || !is.finite(delivery_grace_seconds)) {
+    delivery_grace_seconds <- 86400
+  }
+  delivery_grace_seconds <- max(300, min(7 * 86400, delivery_grace_seconds))
   root <- ugplot_collaboration_dir(jobs_dir)
   if (!dir.exists(root)) return(NULL)
   task_ids <- ugplot_collaboration_task_ids(jobs_dir, states = c("pending", "leased"))
@@ -653,6 +707,13 @@ ugplot_collaboration_claim_task <- function(client_id, capabilities = list(),
         task$client_candidate <- ""
         task$heartbeat_at <- Sys.time()
         task$lease_expires_at <- Sys.time() + max(30, as.numeric(lease_seconds))
+        task$offline_delivery <- offline_delivery
+        task$delivery_grace_seconds <- if (offline_delivery) delivery_grace_seconds else 0
+        task$delivery_grace_expires_at <- if (offline_delivery) {
+          Sys.time() + delivery_grace_seconds
+        } else {
+          as.POSIXct(NA)
+        }
         task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
         ugplot_collaboration_write_task(task, jobs_dir)
         payload <- readRDS(task$payload_path)
@@ -674,12 +735,24 @@ ugplot_collaboration_heartbeat <- function(task_id, lease_id, client_id,
   client_id <- ugplot_collaboration_text(client_id, "collaboration client ID", 128L, pattern = "^[A-Za-z0-9._:-]+$")
   ugplot_collaboration_with_lock(task_dir, {
     task <- ugplot_collaboration_read_task(task_id, jobs_dir)
+    if (is.list(task) && identical(task$state %||% "", "completed")) {
+      return(list(accepted = FALSE, reason = "already_completed"))
+    }
+    if (is.list(task) && identical(task$state %||% "", "cancelled") &&
+        length(task$late_leases %||% list()) == 0L) {
+      return(list(accepted = FALSE, reason = "task_cancelled"))
+    }
     valid <- is.list(task) && identical(task$state %||% "", "leased") &&
       identical(as.character(task$lease_id %||% ""), as.character(lease_id)) &&
       identical(as.character(task$client_id %||% ""), as.character(client_id))
     if (!valid) return(list(accepted = FALSE, reason = "lease_not_active"))
     task$heartbeat_at <- Sys.time()
     task$lease_expires_at <- Sys.time() + max(30, as.numeric(lease_seconds))
+    if (isTRUE(task$offline_delivery)) {
+      grace_seconds <- suppressWarnings(as.numeric(task$delivery_grace_seconds %||% 86400))
+      if (!is.finite(grace_seconds)) grace_seconds <- 86400
+      task$delivery_grace_expires_at <- Sys.time() + max(300, min(7 * 86400, grace_seconds))
+    }
     if (is.list(telemetry)) {
       progress <- suppressWarnings(as.numeric(telemetry$progress %||% task$client_progress %||% 0))
       if (length(progress) == 1L && is.finite(progress)) {
@@ -724,6 +797,8 @@ ugplot_collaboration_release_task <- function(task_id, lease_id, client_id,
     task$client_message <- "Waiting for a contributor"
     task$client_candidate <- ""
     task$lease_expires_at <- as.POSIXct(NA)
+    task$delivery_grace_expires_at <- as.POSIXct(NA)
+    task$offline_delivery <- FALSE
     task$heartbeat_at <- as.POSIXct(NA)
     task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
     ugplot_collaboration_write_task(task, jobs_dir)
@@ -742,18 +817,47 @@ ugplot_collaboration_complete_task <- function(task_id, lease_id, client_id, res
     if (is.list(task) && identical(task$state %||% "", "completed")) {
       return(list(accepted = FALSE, reason = "already_completed"))
     }
-    valid <- is.list(task) && identical(task$state %||% "", "leased") &&
+    active_identity <- is.list(task) && identical(task$state %||% "", "leased") &&
       identical(as.character(task$lease_id %||% ""), as.character(lease_id)) &&
       identical(as.character(task$client_id %||% ""), as.character(client_id))
-    if (!valid) return(list(accepted = FALSE, reason = "lease_not_active"))
     expiry <- suppressWarnings(as.POSIXct(task$lease_expires_at))
-    if (is.na(expiry) || expiry < Sys.time()) return(list(accepted = FALSE, reason = "lease_expired"))
+    grace_expiry <- suppressWarnings(as.POSIXct(
+      task$delivery_grace_expires_at %||% as.POSIXct(NA)
+    ))
+    active_valid <- isTRUE(active_identity) && (
+      (!is.na(expiry) && expiry >= Sys.time()) ||
+        (isTRUE(task$offline_delivery) && !is.na(grace_expiry) && grace_expiry >= Sys.time())
+    )
+    late_leases <- task$late_leases %||% list()
+    late_matches <- vapply(late_leases, function(lease) {
+      late_expiry <- suppressWarnings(as.POSIXct(
+        lease$expires_at %||% as.POSIXct(NA)
+      ))
+      !is.na(late_expiry) && late_expiry >= Sys.time() &&
+        identical(as.character(lease$lease_id %||% ""), as.character(lease_id)) &&
+        identical(as.character(lease$client_id %||% ""), as.character(client_id))
+    }, logical(1))
+    late_valid <- any(late_matches)
+    if (!isTRUE(active_valid) && !isTRUE(late_valid)) {
+      reason <- if (isTRUE(active_identity)) "lease_expired" else "lease_not_active"
+      return(list(accepted = FALSE, reason = reason))
+    }
     result <- ugplot_collaboration_validate_result(result, task)
     result_path <- file.path(task_dir, "result.rds")
     ugplot_write_rds_atomic(result, result_path)
     task$state <- "completed"
+    if (isTRUE(late_valid)) {
+      accepted_lease <- late_leases[[which(late_matches)[[1]]]]
+      task$lease_id <- as.character(lease_id)
+      task$client_id <- as.character(client_id)
+      task$scientist_name <- as.character(
+        accepted_lease$scientist_name %||% task$scientist_name %||% client_id
+      )
+    }
     task$result_path <- result_path
     task$completed_at <- Sys.time()
+    task$completed_from_offline_delivery <- isTRUE(late_valid) ||
+      (isTRUE(task$offline_delivery) && !is.na(expiry) && expiry < Sys.time())
     task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
     ugplot_collaboration_write_task(task, jobs_dir)
     list(accepted = TRUE, task_id = task_id)
@@ -781,6 +885,9 @@ ugplot_collaboration_cancel_task <- function(task_id, reason = "completed_elsewh
     task$cancel_reason <- as.character(reason)
     task$lease_id <- ""
     task$client_id <- ""
+    task$offline_delivery <- FALSE
+    task$delivery_grace_expires_at <- as.POSIXct(NA)
+    task$late_leases <- list()
     task$updated_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
     ugplot_collaboration_write_task(task, jobs_dir)
     TRUE
@@ -837,6 +944,8 @@ ugplot_collaboration_public_status <- function(jobs_dir = ugplot_default_jobs_di
     status = "open",
     protocol_version = 2L,
     ugplot_build_version = ugplot_build_version(),
+    offline_delivery = TRUE,
+    delivery_grace_seconds = 86400L,
     pending = sum(pending_active),
     inactive_pending = length(pending_active) - sum(pending_active),
     leased = state_count("leased"),

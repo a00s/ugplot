@@ -199,6 +199,14 @@ The start function returns immediately and records the PID, configuration, and
 log location under `~/.ugplot/science-collab`. Use `name = "lab-machine-2"` in
 all three functions when managing more than one local client.
 
+Headless clients support offline delivery for coordinator maintenance. Once a
+mission has been leased, a temporary coordinator outage does not stop its local
+calculation. The completed result is kept under the client's persistent work
+directory and retried until the coordinator returns. By default, the server
+accepts that late result for 24 hours (`delivery_grace_seconds = 86400`). The
+regular short lease still permits reassignment; when duplicate calculations
+finish, the first valid result accepted by the coordinator wins.
+
 Run the same client persistently in the background with the prebuilt image:
 
 ```bash
@@ -1133,6 +1141,14 @@ The highlighted result is the best result found so far, not a final biological c
 ### 10.6 Stop contributing
 
 Click **Stop after current mission** when you no longer want to receive new work. ugPlot finishes the current mission when possible and then stops. Closing the contributor does not erase the main job or make its completed groups start over.
+
+For coordinator maintenance, request a drain on the parent job before stopping
+the server. The coordinator stops publishing new missions and closes unclaimed
+offers. Headless clients that advertise offline delivery may continue their
+already leased group while the coordinator is down and submit it after the
+server returns; legacy clients still block the drain until their current lease
+finishes or expires. Start the server with the same jobs directory and resume a
+deliberately stopped parent job after maintenance.
 
 ### 10.7 If no mission starts
 

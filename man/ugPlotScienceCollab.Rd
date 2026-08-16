@@ -9,6 +9,8 @@ ugPlotScienceCollab(
   install_model_deps = TRUE,
   install_client_deps = TRUE,
   poll_seconds = 6,
+  delivery_grace_seconds = 86400,
+  spool_dir = NULL,
   max_missions = Inf
 )
 }
@@ -28,6 +30,13 @@ by the headless client.}
 
 \item{poll_seconds}{Seconds between attempts when no compatible mission is
 waiting.}
+
+\item{delivery_grace_seconds}{Maximum time a completed mission may be
+delivered after its regular lease expires while the coordinator is
+unavailable. The default is 24 hours.}
+
+\item{spool_dir}{Persistent directory used to retain results that are waiting
+for the coordinator. The default uses the Science Collab state directory.}
 
 \item{max_missions}{Maximum missions to complete before returning. The default
 keeps the client running until interrupted.}

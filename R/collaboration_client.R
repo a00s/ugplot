@@ -61,6 +61,73 @@ ugplot_science_collab_tempfile <- function(pattern = "file", fileext = "") {
   )
 }
 
+ugplot_science_collab_spool_dir <- function(path = NULL) {
+  path <- trimws(as.character(path %||% ""))
+  if (length(path) != 1L || !nzchar(path)) {
+    path <- file.path(ugplot_science_collab_work_dir(), "pending-delivery")
+  }
+  if (!dir.exists(path)) {
+    created <- dir.create(path, recursive = TRUE, showWarnings = FALSE, mode = "0700")
+    if (!isTRUE(created) && !dir.exists(path)) {
+      stop("Could not create the Science Collab delivery spool: ", path, call. = FALSE)
+    }
+  }
+  normalizePath(path, mustWork = FALSE)
+}
+
+ugplot_science_collab_delivery_path <- function(task_id, lease_id, spool_dir = NULL) {
+  safe <- gsub("[^A-Za-z0-9._-]+", "_", paste(task_id, lease_id, sep = "--"))
+  file.path(ugplot_science_collab_spool_dir(spool_dir), paste0(safe, ".rds"))
+}
+
+ugplot_science_collab_store_delivery <- function(record, spool_dir = NULL) {
+  path <- ugplot_science_collab_delivery_path(
+    record$task_id %||% "mission", record$lease_id %||% "lease", spool_dir
+  )
+  ugplot_write_rds_atomic(record, path)
+  try(Sys.chmod(path, mode = "0600"), silent = TRUE)
+  path
+}
+
+ugplot_science_collab_attempt_delivery <- function(path, timeout_seconds = 60) {
+  record <- tryCatch(readRDS(path), error = function(e) NULL)
+  if (!is.list(record)) {
+    unlink(path, force = TRUE)
+    return(list(done = TRUE, accepted = FALSE, reason = "invalid_spool_record"))
+  }
+  response <- tryCatch(
+    ugplot_remote_collaboration_complete(
+      record$server_url, record$task_id, record$lease_id, record$client_id,
+      record$result, timeout_seconds = timeout_seconds
+    ),
+    error = function(e) e
+  )
+  if (inherits(response, "error")) {
+    return(list(done = FALSE, accepted = FALSE, error = conditionMessage(response)))
+  }
+  accepted <- isTRUE(response$accepted)
+  reason <- as.character(response$reason %||% "")
+  terminal <- accepted || reason %in% c(
+    "already_completed", "lease_expired", "lease_not_active", "task_not_found"
+  )
+  if (isTRUE(terminal)) unlink(path, force = TRUE)
+  list(done = terminal, accepted = accepted, reason = reason)
+}
+
+ugplot_science_collab_flush_deliveries <- function(spool_dir = NULL) {
+  spool_dir <- ugplot_science_collab_spool_dir(spool_dir)
+  paths <- list.files(spool_dir, pattern = "[.]rds$", full.names = TRUE)
+  if (length(paths) == 0L) {
+    return(list(pending = 0L, completed = 0L, accepted = 0L))
+  }
+  outcomes <- lapply(paths, ugplot_science_collab_attempt_delivery)
+  list(
+    pending = sum(!vapply(outcomes, function(item) isTRUE(item$done), logical(1))),
+    completed = sum(vapply(outcomes, function(item) isTRUE(item$done), logical(1))),
+    accepted = sum(vapply(outcomes, function(item) isTRUE(item$accepted), logical(1)))
+  )
+}
+
 ugplot_read_science_collab_state <- function(name = "default") {
   path <- ugplot_science_collab_state_path(name)
   if (!file.exists(path)) return(NULL)
@@ -211,12 +278,15 @@ ugplot_science_collab_failure_delay <- function(attempt, poll_seconds) {
   min(300, max(15, poll_seconds) * 2^(min(attempt, 6L) - 1L))
 }
 
-ugplot_science_collab_run_mission <- function(claimed, server_url, client_id, cpu_limit) {
+ugplot_science_collab_run_mission <- function(claimed, server_url, client_id, cpu_limit,
+                                              spool_dir = NULL, poll_seconds = 6) {
   task <- claimed$task
   task_id <- as.character(task$task_id %||% "")
   lease_id <- as.character(task$lease_id %||% "")
+  offline_delivery <- isTRUE(task$offline_delivery)
   worker <- NULL
   delivered <- FALSE
+  delivery_stored <- FALSE
   on.exit({
     if (!is.null(worker)) {
       if (worker$process$is_alive()) try(worker$process$kill_tree(), silent = TRUE)
@@ -224,7 +294,8 @@ ugplot_science_collab_run_mission <- function(claimed, server_url, client_id, cp
     } else {
       unlink(claimed$payload_path %||% "", force = TRUE)
     }
-    if (!isTRUE(delivered) && nzchar(task_id) && nzchar(lease_id)) {
+    if (!isTRUE(delivered) && !isTRUE(delivery_stored) &&
+        nzchar(task_id) && nzchar(lease_id)) {
       try(
         ugplot_remote_collaboration_release(
           server_url, task_id, lease_id, client_id
@@ -247,14 +318,55 @@ ugplot_science_collab_run_mission <- function(claimed, server_url, client_id, cp
   message("Mission ", task_id, " received; starting computation.")
   worker <- ugplot_science_collab_worker(claimed$payload_path, cpu_limit)
   last_heartbeat <- as.POSIXct(NA)
+  coordinator_offline <- FALSE
+  lease_inactive <- FALSE
   while (worker$process$is_alive()) {
     if (is.na(last_heartbeat) || difftime(Sys.time(), last_heartbeat, units = "secs") >= 25) {
-      heartbeat <- ugplot_remote_collaboration_heartbeat(
-        server_url, task_id, lease_id, client_id,
-        telemetry = ugplot_science_collab_latest_telemetry(worker$event_path)
+      heartbeat <- tryCatch(
+        ugplot_remote_collaboration_heartbeat(
+          server_url, task_id, lease_id, client_id,
+          telemetry = ugplot_science_collab_latest_telemetry(worker$event_path)
+        ),
+        error = function(e) e
       )
-      if (!isTRUE(heartbeat$accepted)) {
-        stop("The coordinator no longer accepts this mission lease.", call. = FALSE)
+      if (inherits(heartbeat, "error")) {
+        if (!isTRUE(offline_delivery)) stop(heartbeat)
+        if (!isTRUE(coordinator_offline)) {
+          message(
+            "Coordinator unavailable during mission ", task_id,
+            "; computation continues offline: ", conditionMessage(heartbeat)
+          )
+        }
+        coordinator_offline <- TRUE
+      } else if (!isTRUE(heartbeat$accepted)) {
+        if (!isTRUE(offline_delivery)) {
+          stop("The coordinator no longer accepts this mission lease.", call. = FALSE)
+        }
+        heartbeat_reason <- as.character(heartbeat$reason %||% "lease_not_active")
+        if (heartbeat_reason %in% c(
+          "already_completed", "task_cancelled", "task_not_found"
+        )) {
+          message(
+            "Mission ", task_id, " no longer needs a result (",
+            heartbeat_reason, "); stopping local computation."
+          )
+          delivered <- TRUE
+          return(FALSE)
+        }
+        if (!isTRUE(lease_inactive)) {
+          message(
+            "Mission ", task_id,
+            " lease is no longer active; finishing locally for late delivery."
+          )
+        }
+        lease_inactive <- TRUE
+        coordinator_offline <- FALSE
+      } else {
+        if (isTRUE(coordinator_offline)) {
+          message("Coordinator connection restored during mission ", task_id, ".")
+        }
+        coordinator_offline <- FALSE
+        lease_inactive <- FALSE
       }
       last_heartbeat <- Sys.time()
     }
@@ -273,14 +385,43 @@ ugplot_science_collab_run_mission <- function(claimed, server_url, client_id, cp
       call. = FALSE
     )
   }
-  response <- ugplot_remote_collaboration_complete(
-    server_url, task_id, lease_id, client_id, readRDS(worker$result_path)
+  delivery_path <- ugplot_science_collab_store_delivery(
+    list(
+      server_url = server_url,
+      task_id = task_id,
+      lease_id = lease_id,
+      client_id = client_id,
+      result = readRDS(worker$result_path),
+      created_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    ),
+    spool_dir = spool_dir
   )
+  delivery_stored <- TRUE
+  attempt <- 0L
+  response <- NULL
+  repeat {
+    attempt <- attempt + 1L
+    response <- ugplot_science_collab_attempt_delivery(delivery_path)
+    if (isTRUE(response$done)) break
+    if (attempt == 1L || attempt %% 10L == 0L) {
+      message(
+        "Mission ", task_id,
+        " finished and saved locally; waiting to deliver: ",
+        response$error %||% "coordinator unavailable"
+      )
+    }
+    Sys.sleep(max(1, suppressWarnings(as.numeric(poll_seconds %||% 6))))
+  }
   delivered <- TRUE
-  message(
-    "Mission ", task_id,
-    if (isTRUE(response$accepted)) " accepted." else " was already completed elsewhere."
-  )
+  delivery_stored <- FALSE
+  outcome_message <- if (isTRUE(response$accepted)) {
+    " accepted."
+  } else if (identical(response$reason %||% "", "already_completed")) {
+    " was already completed elsewhere."
+  } else {
+    paste0(" was not accepted (", response$reason %||% "delivery rejected", ").")
+  }
+  message("Mission ", task_id, outcome_message)
   isTRUE(response$accepted)
 }
 
@@ -301,6 +442,11 @@ ugplot_science_collab_run_mission <- function(claimed, server_url, client_id, cp
 #'   by the headless client.
 #' @param poll_seconds Seconds between attempts when no compatible mission is
 #'   waiting.
+#' @param delivery_grace_seconds Maximum time a completed mission may be
+#'   delivered after its regular lease expires while the coordinator is
+#'   unavailable. The default is 24 hours.
+#' @param spool_dir Persistent directory used to retain results that are waiting
+#'   for the coordinator. The default uses the Science Collab state directory.
 #' @param max_missions Maximum missions to complete before returning. The
 #'   default keeps the client running until interrupted.
 #' @return Invisibly returns contribution counters when the client stops.
@@ -310,6 +456,8 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
                                 install_model_deps = TRUE,
                                 install_client_deps = TRUE,
                                 poll_seconds = 6,
+                                delivery_grace_seconds = 86400,
+                                spool_dir = NULL,
                                 max_missions = Inf) {
   server_url <- ugplot_science_collab_url(coordinator)
   scientist_name <- trimws(as.character(scientist_name %||% ""))
@@ -321,6 +469,12 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
     stop("cpu_limit must be a positive integer.", call. = FALSE)
   }
   poll_seconds <- max(1, suppressWarnings(as.numeric(poll_seconds)))
+  delivery_grace_seconds <- suppressWarnings(as.numeric(delivery_grace_seconds))
+  if (length(delivery_grace_seconds) != 1L || !is.finite(delivery_grace_seconds) ||
+      delivery_grace_seconds < 300 || delivery_grace_seconds > 7 * 86400) {
+    stop("delivery_grace_seconds must be between 300 seconds and 7 days.", call. = FALSE)
+  }
+  spool_dir <- ugplot_science_collab_spool_dir(spool_dir)
   max_missions <- suppressWarnings(as.numeric(max_missions))
   if (length(max_missions) != 1L || is.na(max_missions) || max_missions < 0) {
     stop("max_missions must be zero, a positive number, or Inf.", call. = FALSE)
@@ -369,7 +523,9 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
     models = unique(as.character(model_status$models_installed)),
     cpu_limit = cpu_limit,
     protocol_version = 2L,
-    scientist_name = scientist_name
+    scientist_name = scientist_name,
+    offline_delivery = TRUE,
+    delivery_grace_seconds = delivery_grace_seconds
   )
   counters <- list(completed = 0L, accepted = 0L, server_url = server_url)
   failed_attempts <- new.env(parent = emptyenv())
@@ -380,7 +536,24 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
   )
   message("Waiting for public missions. Press Ctrl+C to stop safely.")
 
+  pending_delivery_notice <- FALSE
   while (counters$completed < max_missions) {
+    flushed <- ugplot_science_collab_flush_deliveries(spool_dir)
+    if (flushed$pending > 0L) {
+      if (!isTRUE(pending_delivery_notice)) {
+        message(
+          flushed$pending, " completed mission(s) saved locally; ",
+          "waiting for the coordinator before claiming more work."
+        )
+      }
+      pending_delivery_notice <- TRUE
+      Sys.sleep(poll_seconds)
+      next
+    }
+    if (isTRUE(pending_delivery_notice)) {
+      message("All locally saved Science Collab results were delivered or resolved.")
+    }
+    pending_delivery_notice <- FALSE
     claimed <- tryCatch(
       ugplot_remote_collaboration_claim(server_url, client_id, capabilities),
       error = function(e) {
@@ -395,7 +568,8 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
     mission_error <- NULL
     accepted <- tryCatch(
       ugplot_science_collab_run_mission(
-        claimed, server_url, client_id, cpu_limit
+        claimed, server_url, client_id, cpu_limit,
+        spool_dir = spool_dir, poll_seconds = poll_seconds
       ),
       error = function(e) {
         mission_error <<- e
@@ -442,6 +616,7 @@ ugPlotScienceCollabStart <- function(coordinator, scientist_name,
                                      install_model_deps = TRUE,
                                      install_client_deps = TRUE,
                                      poll_seconds = 6,
+                                     delivery_grace_seconds = 86400,
                                      name = "default") {
   if (!requireNamespace("processx", quietly = TRUE)) {
     stop("Package 'processx' is required to start Science Collab in the background.", call. = FALSE)
@@ -458,6 +633,11 @@ ugPlotScienceCollabStart <- function(coordinator, scientist_name,
   poll_seconds <- suppressWarnings(as.numeric(poll_seconds))
   if (length(poll_seconds) != 1L || !is.finite(poll_seconds) || poll_seconds < 1) {
     stop("poll_seconds must be at least one second.", call. = FALSE)
+  }
+  delivery_grace_seconds <- suppressWarnings(as.numeric(delivery_grace_seconds))
+  if (length(delivery_grace_seconds) != 1L || !is.finite(delivery_grace_seconds) ||
+      delivery_grace_seconds < 300 || delivery_grace_seconds > 7 * 86400) {
+    stop("delivery_grace_seconds must be between 300 seconds and 7 days.", call. = FALSE)
   }
   name <- trimws(as.character(name %||% "default"))
   if (length(name) != 1L || !nzchar(name)) stop("name must not be empty.", call. = FALSE)
@@ -489,7 +669,9 @@ ugPlotScienceCollabStart <- function(coordinator, scientist_name,
     "  cpu_limit = config$cpu_limit,",
     "  install_model_deps = config$install_model_deps,",
     "  install_client_deps = config$install_client_deps,",
-    "  poll_seconds = config$poll_seconds",
+    "  poll_seconds = config$poll_seconds,",
+    "  delivery_grace_seconds = config$delivery_grace_seconds,",
+    "  spool_dir = config$spool_dir",
     ")"
   ), launcher_path, useBytes = TRUE)
   saveRDS(list(
@@ -499,6 +681,8 @@ ugPlotScienceCollabStart <- function(coordinator, scientist_name,
     install_model_deps = isTRUE(install_model_deps),
     install_client_deps = isTRUE(install_client_deps),
     poll_seconds = poll_seconds,
+    delivery_grace_seconds = delivery_grace_seconds,
+    spool_dir = file.path(runtime_dir, "pending-delivery"),
     lib_paths = .libPaths()
   ), config_path)
   try(Sys.chmod(c(launcher_path, config_path), mode = "0600"), silent = TRUE)
@@ -530,6 +714,7 @@ ugPlotScienceCollabStart <- function(coordinator, scientist_name,
     scientist_name = scientist_name,
     cpu_limit = cpu_limit,
     poll_seconds = poll_seconds,
+    delivery_grace_seconds = delivery_grace_seconds,
     log_file = log_file,
     runtime_dir = runtime_dir,
     started_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
@@ -553,6 +738,12 @@ ugPlotScienceCollabStatus <- function(name = "default") {
     state <- list(name = name, running = FALSE, message = "No background Science Collab client state found.")
   } else {
     state$running <- ugplot_process_alive(state$pid %||% NA_integer_)
+    spool_dir <- file.path(as.character(state$runtime_dir %||% ""), "pending-delivery")
+    state$pending_deliveries <- if (dir.exists(spool_dir)) {
+      length(list.files(spool_dir, pattern = "[.]rds$"))
+    } else {
+      0L
+    }
     if (!isTRUE(state$running)) state$message <- "Science Collab client is not running."
   }
   print(state)
