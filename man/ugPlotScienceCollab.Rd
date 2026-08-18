@@ -22,8 +22,9 @@ port 8080.}
 
 \item{cpu_limit}{Maximum CPU cores offered to a mission.}
 
-\item{install_model_deps}{Whether to attempt installation of dependencies for
-every missing caret model before connecting.}
+\item{install_model_deps}{Whether to inspect the waiting missions and attempt
+installation of dependencies for the caret models they require before
+connecting.}
 
 \item{install_client_deps}{Whether to install the small set of packages needed
 by the headless client.}

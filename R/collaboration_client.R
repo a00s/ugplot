@@ -208,6 +208,54 @@ ugplot_science_collab_preflight <- function(coordinator_status, client_version,
   )
 }
 
+ugplot_science_collab_compatibility_models <- function(report, field) {
+  if (!is.list(report) || !field %in% c("required_models", "missing_models")) {
+    return(character(0))
+  }
+  missions <- report$missions %||% list()
+  values <- if (is.data.frame(missions)) {
+    if (field %in% names(missions)) missions[[field]] else character(0)
+  } else {
+    lapply(missions, function(mission) {
+      if (is.list(mission)) mission[[field]] %||% character(0) else character(0)
+    })
+  }
+  values <- unique(as.character(unlist(values, use.names = FALSE)))
+  values[nzchar(values)]
+}
+
+ugplot_science_collab_compatibility_count <- function(report, field) {
+  value <- suppressWarnings(as.integer(report[[field]] %||% 0L))
+  if (length(value) == 0L || is.na(value[[1L]])) 0L else value[[1L]]
+}
+
+ugplot_science_collab_compatibility <- function(server_url, model_status) {
+  capabilities <- list(
+    models = unique(as.character(model_status$models_installed %||% character(0))),
+    protocol_version = 2L
+  )
+  ugplot_remote_collaboration_compatibility(server_url, capabilities)
+}
+
+ugplot_science_collab_assert_compatible <- function(report) {
+  pending <- ugplot_science_collab_compatibility_count(report, "pending")
+  compatible <- ugplot_science_collab_compatibility_count(report, "compatible")
+  if (pending == 0L || compatible > 0L) return(invisible(TRUE))
+
+  missing <- ugplot_science_collab_compatibility_models(report, "missing_models")
+  detail <- if (length(missing) > 0L) {
+    paste0(" Missing caret models: ", paste(missing, collapse = ", "), ".")
+  } else {
+    " The coordinator did not report the missing model names."
+  }
+  stop(
+    "Science Collab client is incompatible with all ", pending,
+    " waiting mission", if (pending == 1L) "" else "s", ".", detail,
+    " Install their dependencies and start the client again.",
+    call. = FALSE
+  )
+}
+
 ugplot_science_collab_worker <- function(payload_path, cpu_limit) {
   event_path <- ugplot_science_collab_tempfile("ugplot-collab-events-", ".rds")
   result_path <- ugplot_science_collab_tempfile("ugplot-collab-result-", ".rds")
@@ -436,8 +484,9 @@ ugplot_science_collab_run_mission <- function(claimed, server_url, client_id, cp
 #'   port 8080.
 #' @param scientist_name Public name shown for this contributor.
 #' @param cpu_limit Maximum CPU cores offered to a mission.
-#' @param install_model_deps Whether to attempt installation of dependencies for
-#'   every missing caret model before connecting.
+#' @param install_model_deps Whether to inspect the waiting missions and attempt
+#'   installation of dependencies for the caret models they require before
+#'   connecting.
 #' @param install_client_deps Whether to install the small set of packages needed
 #'   by the headless client.
 #' @param poll_seconds Seconds between attempts when no compatible mission is
@@ -504,17 +553,68 @@ ugPlotScienceCollab <- function(coordinator, scientist_name,
     " | coordinator ", if (nzchar(coordinator_version)) coordinator_version else if (is.null(coordinator_status)) "unavailable" else "not reported",
     " | protocol ", if (is.na(preflight$protocol_version)) "unavailable" else preflight$protocol_version
   )
-  if (isTRUE(install_model_deps)) {
-    message("Checking and attempting to install dependencies for all caret models...")
+  model_status <- ugplot_model_dependency_status()
+  compatibility <- tryCatch(
+    ugplot_science_collab_compatibility(server_url, model_status),
+    error = function(e) {
+      warning(
+        "Science Collab could not inspect mission compatibility: ",
+        conditionMessage(e),
+        call. = FALSE
+      )
+      NULL
+    }
+  )
+  required_models <- ugplot_science_collab_compatibility_models(
+    compatibility, "required_models"
+  )
+  if (isTRUE(install_model_deps) && length(required_models) > 0L) {
+    message(
+      "Checking and attempting to install dependencies for ",
+      length(required_models), " caret model",
+      if (length(required_models) == 1L) "" else "s",
+      " required by the waiting missions..."
+    )
     tryCatch(
-      ugPlotInstallModelDeps(),
+      ugPlotInstallModelDeps(models = required_models),
       error = function(e) warning(
-        "Some model dependencies could not be installed: ", conditionMessage(e),
+        "Some required model dependencies could not be installed: ",
+        conditionMessage(e),
         call. = FALSE
       )
     )
+    model_status <- ugplot_model_dependency_status()
+    compatibility <- tryCatch(
+      ugplot_science_collab_compatibility(server_url, model_status),
+      error = function(e) {
+        warning(
+          "Science Collab could not recheck mission compatibility: ",
+          conditionMessage(e),
+          call. = FALSE
+        )
+        NULL
+      }
+    )
   }
-  model_status <- ugplot_model_dependency_status()
+  if (!is.null(compatibility)) {
+    ugplot_science_collab_assert_compatible(compatibility)
+    pending_missions <- ugplot_science_collab_compatibility_count(
+      compatibility, "pending"
+    )
+    compatible_missions <- ugplot_science_collab_compatibility_count(
+      compatibility, "compatible"
+    )
+    if (pending_missions > 0L) {
+      message(
+        "Science Collab compatibility: ", compatible_missions, "/",
+        pending_missions, " waiting mission",
+        if (pending_missions == 1L) " is" else "s are",
+        " compatible with this client."
+      )
+    } else {
+      message("Science Collab compatibility: no mission is currently waiting.")
+    }
+  }
   client_id <- paste0(
     "headless-", format(Sys.time(), "%Y%m%d%H%M%S"), "-",
     Sys.getpid(), "-", sample(1000:9999, 1L)

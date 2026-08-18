@@ -176,10 +176,11 @@ ugPlotScienceCollab(
 )
 ```
 
-The first run checks the local caret models and attempts to install every
-missing model dependency. It then keeps waiting for work until you press
-`Ctrl+C`. Use an HTTPS URL or a trusted private network when mission data must
-not travel over plain HTTP.
+The first run asks the coordinator which caret models the waiting missions
+require and attempts to install only their missing dependencies. It refuses to
+enter the waiting loop when none of the queued missions are compatible after
+that check. Use an HTTPS URL or a trusted private network when mission data
+must not travel over plain HTTP.
 
 To let ugPlot manage the client as a background process, use:
 

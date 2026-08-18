@@ -93,10 +93,13 @@ test_that("Science Collab keeps serving after a mission failure", {
   mission_count <- 0L
   ugplot_test_local_namespace_binding("ugplot_install_science_collab_client_deps", function(...) invisible(NULL))
   ugplot_test_local_namespace_binding("ugplot_remote_collaboration_status", function(...) {
-    list(protocol_version = 2L, ugplot_build_version = "20260816.1")
+    list(protocol_version = 2L, ugplot_build_version = "20260818.1")
   })
   ugplot_test_local_namespace_binding("ugplot_model_dependency_status", function(...) {
     list(models_installed = "lm", models_missing = character(), unknown_models = character())
+  })
+  ugplot_test_local_namespace_binding("ugplot_remote_collaboration_compatibility", function(...) {
+    list(pending = 1L, compatible = 1L, missions = list())
   })
   ugplot_test_local_namespace_binding("ugplot_remote_collaboration_claim", function(...) {
     claim_count <<- claim_count + 1L
@@ -121,6 +124,76 @@ test_that("Science Collab keeps serving after a mission failure", {
   expect_equal(mission_count, 2L)
   expect_equal(result$completed, 1L)
   expect_equal(result$accepted, 1L)
+})
+
+test_that("headless Science Collab refuses an incompatible waiting queue", {
+  run_client <- ugplot_test_internal("ugPlotScienceCollab")
+  ugplot_test_local_namespace_binding("ugplot_install_science_collab_client_deps", function(...) invisible(NULL))
+  ugplot_test_local_namespace_binding("ugplot_remote_collaboration_status", function(...) {
+    list(protocol_version = 2L, ugplot_build_version = "20260818.1")
+  })
+  ugplot_test_local_namespace_binding("ugplot_model_dependency_status", function(...) {
+    list(models_installed = "lm", models_missing = "bartMachine", unknown_models = character())
+  })
+  ugplot_test_local_namespace_binding("ugplot_remote_collaboration_compatibility", function(...) {
+    list(
+      pending = 2L, compatible = 0L,
+      missions = list(list(
+        required_models = c("lm", "bartMachine"),
+        missing_models = "bartMachine"
+      ))
+    )
+  })
+
+  expect_error(
+    run_client(
+      "coordinator.example", "Test scientist",
+      install_model_deps = FALSE, install_client_deps = FALSE,
+      max_missions = 0
+    ),
+    "incompatible with all 2 waiting missions.*bartMachine"
+  )
+})
+
+test_that("headless Science Collab installs only models required by waiting missions", {
+  run_client <- ugplot_test_internal("ugPlotScienceCollab")
+  installed <- FALSE
+  requested_models <- character()
+  ugplot_test_local_namespace_binding("ugplot_install_science_collab_client_deps", function(...) invisible(NULL))
+  ugplot_test_local_namespace_binding("ugplot_remote_collaboration_status", function(...) {
+    list(protocol_version = 2L, ugplot_build_version = "20260818.1")
+  })
+  ugplot_test_local_namespace_binding("ugplot_model_dependency_status", function(...) {
+    list(
+      models_installed = if (installed) c("lm", "bartMachine") else "lm",
+      models_missing = if (installed) character() else "bartMachine",
+      unknown_models = character()
+    )
+  })
+  ugplot_test_local_namespace_binding("ugplot_remote_collaboration_compatibility", function(server_url, capabilities, ...) {
+    compatible <- "bartMachine" %in% capabilities$models
+    list(
+      pending = 1L, compatible = as.integer(compatible),
+      missions = list(list(
+        required_models = c("lm", "bartMachine"),
+        missing_models = if (compatible) character() else "bartMachine"
+      ))
+    )
+  })
+  ugplot_test_local_namespace_binding("ugPlotInstallModelDeps", function(models, ...) {
+    requested_models <<- models
+    installed <<- TRUE
+    invisible(NULL)
+  })
+
+  result <- run_client(
+    "coordinator.example", "Test scientist",
+    install_model_deps = TRUE, install_client_deps = FALSE,
+    max_missions = 0
+  )
+
+  expect_setequal(requested_models, c("lm", "bartMachine"))
+  expect_equal(result$completed, 0L)
 })
 
 test_that("a direct Science Collab coordinator excludes configured servers", {
