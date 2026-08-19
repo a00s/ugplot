@@ -153,12 +153,55 @@ ugplot_remote_collaboration_release <- function(server_url, task_id, lease_id, c
   )
 }
 
+ugplot_collaboration_safe_importance_columns <- function(value) {
+  rows <- if (is.data.frame(value)) {
+    list(value)
+  } else if (is.list(value) && all(vapply(value, is.list, logical(1)))) {
+    value
+  } else {
+    return(value)
+  }
+  column_names <- unique(unlist(lapply(rows, names), use.names = FALSE))
+  if (length(column_names) == 0L || all(
+    !is.na(column_names) & grepl("^[A-Za-z][A-Za-z0-9_.]{0,79}$", column_names)
+  )) {
+    return(value)
+  }
+  safe_names <- vapply(column_names, function(column_name) {
+    safe <- iconv(as.character(column_name), from = "", to = "ASCII//TRANSLIT", sub = "_")
+    if (is.na(safe) || !nzchar(safe)) safe <- "Column"
+    safe <- gsub("[^A-Za-z0-9_.]", "_", safe)
+    if (!grepl("^[A-Za-z]", safe)) safe <- paste0("X", safe)
+    substr(safe, 1L, 72L)
+  }, character(1), USE.NAMES = FALSE)
+  safe_names <- make.unique(safe_names, sep = ".")
+  rename <- function(item) {
+    item_names <- names(item)
+    if (!is.null(item_names)) names(item) <- safe_names[match(item_names, column_names)]
+    item
+  }
+  if (is.data.frame(value)) {
+    names(value) <- safe_names[match(names(value), column_names)]
+    return(value)
+  }
+  lapply(value, rename)
+}
+
 ugplot_remote_collaboration_complete <- function(server_url, task_id, lease_id, client_id, result,
                                                  timeout_seconds = 600) {
   if (!exists("ugplot_collaboration_portable_result", mode = "function", inherits = TRUE)) {
     stop("Science Collab result sanitizer is unavailable.", call. = FALSE)
   }
   result <- ugplot_collaboration_portable_result(result)
+  result$importance <- ugplot_collaboration_safe_importance_columns(
+    result$importance %||% data.frame()
+  )
+  result$stability_artifacts <- lapply(result$stability_artifacts %||% list(), function(artifact) {
+    artifact$importance <- ugplot_collaboration_safe_importance_columns(
+      artifact$importance %||% data.frame()
+    )
+    artifact
+  })
   ugplot_collaboration_post_json(
     server_url, paste0("collaboration/", task_id, "/complete"),
     list(
