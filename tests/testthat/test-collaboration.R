@@ -74,6 +74,16 @@ test_that("Science Collab permits rolling builds with the same protocol", {
 test_that("Science Collab sanitizes importance column names before delivery", {
   sanitize <- ugplot_test_internal("ugplot_collaboration_safe_importance_columns")
 
+  safe_importance <- data.frame(CpG = "cg1", Importance = 0.7)
+  row.names(safe_importance) <- "cg-row-safe"
+  safe_sanitized <- sanitize(safe_importance)
+  expect_identical(row.names(safe_sanitized), "1")
+  safe_round_trip <- jsonlite::fromJSON(
+    jsonlite::toJSON(safe_sanitized, auto_unbox = TRUE, null = "null"),
+    simplifyVector = FALSE
+  )
+  expect_false("_row" %in% unique(unlist(lapply(safe_round_trip, names), use.names = FALSE)))
+
   importance <- data.frame(
     check.names = FALSE,
     "CpG" = "cg1",
@@ -124,7 +134,7 @@ test_that("Science Collab keeps serving after a mission failure", {
   mission_count <- 0L
   ugplot_test_local_namespace_binding("ugplot_install_science_collab_client_deps", function(...) invisible(NULL))
   ugplot_test_local_namespace_binding("ugplot_remote_collaboration_status", function(...) {
-    list(protocol_version = 2L, ugplot_build_version = "20260820.1")
+    list(protocol_version = 2L, ugplot_build_version = "20260820.2")
   })
   ugplot_test_local_namespace_binding("ugplot_model_dependency_status", function(...) {
     list(models_installed = "lm", models_missing = character(), unknown_models = character())
@@ -161,7 +171,7 @@ test_that("headless Science Collab refuses an incompatible waiting queue", {
   run_client <- ugplot_test_internal("ugPlotScienceCollab")
   ugplot_test_local_namespace_binding("ugplot_install_science_collab_client_deps", function(...) invisible(NULL))
   ugplot_test_local_namespace_binding("ugplot_remote_collaboration_status", function(...) {
-    list(protocol_version = 2L, ugplot_build_version = "20260820.1")
+    list(protocol_version = 2L, ugplot_build_version = "20260820.2")
   })
   ugplot_test_local_namespace_binding("ugplot_model_dependency_status", function(...) {
     list(models_installed = "lm", models_missing = "bartMachine", unknown_models = character())
@@ -192,7 +202,7 @@ test_that("headless Science Collab installs only models required by waiting miss
   requested_models <- character()
   ugplot_test_local_namespace_binding("ugplot_install_science_collab_client_deps", function(...) invisible(NULL))
   ugplot_test_local_namespace_binding("ugplot_remote_collaboration_status", function(...) {
-    list(protocol_version = 2L, ugplot_build_version = "20260820.1")
+    list(protocol_version = 2L, ugplot_build_version = "20260820.2")
   })
   ugplot_test_local_namespace_binding("ugplot_model_dependency_status", function(...) {
     list(
