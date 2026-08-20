@@ -175,6 +175,7 @@ test_that("discovery report HTML accepts a direct job link", {
   expect_match(report_html, 'id="group-stripe"', fixed = TRUE)
   expect_match(report_html, "renderGroupProgress(raw,collaboration.contributors)", fixed = TRUE)
   expect_match(report_html, "group-segment-completed", fixed = TRUE)
+  expect_match(report_html, ".group-stripe{display:grid;width:100%;height:38px;gap:0", fixed = TRUE)
   expect_match(report_html, 'name.textContent=row.scientist', fixed = TRUE)
   expect_match(report_html, 'activity.textContent=', fixed = TRUE)
   expect_false(grepl('innerHTML=row.scientist', report_html, fixed = TRUE))
