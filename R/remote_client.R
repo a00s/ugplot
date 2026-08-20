@@ -182,6 +182,10 @@ ugplot_collaboration_safe_importance_columns <- function(value) {
   }
   if (is.data.frame(value)) {
     names(value) <- safe_names[match(names(value), column_names)]
+    # jsonlite emits non-default data-frame row names as a synthetic `_row`
+    # column. Public collaboration column names must start with a letter, and
+    # importance tables already carry their feature identifier in `CpG`.
+    row.names(value) <- NULL
     return(value)
   }
   lapply(value, rename)
