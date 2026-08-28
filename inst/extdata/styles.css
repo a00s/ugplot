@@ -564,6 +564,8 @@ table.dataTable th.dt-error-column {
 
 #shiny-modal:has(.remote-group-dataset-modal) .modal-dialog { width: min(980px, calc(100vw - 36px)); }
 #shiny-modal:has(.remote-group-dataset-modal) .modal-content { overflow: hidden; border-radius: 18px; }
+#shiny-modal:has(.remote-group-track-dialog) .modal-dialog { width: min(1500px, calc(100vw - 36px)); }
+#shiny-modal:has(.remote-group-track-dialog) .modal-content { overflow: hidden; border-radius: 18px; }
 .remote-group-dataset-modal { padding: 20px 26px 24px !important; }
 .remote-group-dataset-intro { margin-bottom: 18px; color: #59657d; font-size: 15px; line-height: 1.55; }
 .remote-group-dataset-intro p { margin: 0; }
@@ -597,8 +599,26 @@ table.dataTable th.dt-error-column {
 .remote-group-dataset-table-wrap table.dataTable tbody td { padding: 12px 10px; vertical-align: middle; }
 .remote-group-dataset-table-wrap table.dataTable tbody tr { cursor: pointer; }
 .remote-group-dataset-table-wrap .dataTables_paginate { padding-top: 12px; }
+.remote-group-track-dialog { padding: 18px 22px 20px !important; }
+.remote-group-track-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 9px; }
+.remote-group-track-summary > span {
+  padding: 7px 10px;
+  color: #53617c;
+  border: 1px solid #dbe3f2;
+  border-radius: 999px;
+  background: #f7f9ff;
+}
+.remote-group-track-note { margin: 0 0 12px; color: #68758e; }
+.remote-group-track-plot {
+  overflow: hidden;
+  padding: 8px 10px 2px;
+  border: 1px solid #e0e5f1;
+  border-radius: 14px;
+  background: #fff;
+}
 @media (max-width: 700px) {
   .remote-group-dataset-modal { padding: 16px !important; }
+  .remote-group-track-dialog { padding: 14px !important; }
   .remote-group-dataset-table-wrap { padding: 10px 8px 5px; overflow-x: auto; }
   .remote-group-dataset-table-wrap .dataTables_filter input { width: 100%; margin: 7px 0 0; }
 }

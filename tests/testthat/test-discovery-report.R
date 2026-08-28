@@ -161,6 +161,14 @@ test_that("discovery report HTML accepts a direct job link", {
   expect_match(report_html, "fmt(r.cpgs)", fixed = TRUE)
   expect_match(report_html, "Best overall performance", fixed = TRUE)
   expect_match(report_html, 'data-sort-key="median_r2"', fixed = TRUE)
+  expect_false(grepl('data-sort-key="min_r2"', report_html, fixed = TRUE))
+  expect_false(grepl('data-sort-key="max_r2"', report_html, fixed = TRUE))
+  expect_match(report_html, 'class="data-row"', fixed = TRUE)
+  expect_match(report_html, "detailHtml(r,key)", fixed = TRUE)
+  expect_match(report_html, "Min R²", fixed = TRUE)
+  expect_match(report_html, "Max R²", fixed = TRUE)
+  expect_match(report_html, "drawTrack(host,payload)", fixed = TRUE)
+  expect_match(report_html, "/groups/${encodeURIComponent(group)}/track", fixed = TRUE)
   expect_match(report_html, 'data-sort-type="number"', fixed = TRUE)
   expect_match(report_html, "activateHeader(th)", fixed = TRUE)
   expect_match(report_html, "columnCompare(a,b)", fixed = TRUE)
@@ -284,6 +292,21 @@ test_that("one cached GEO group dataset can be listed and read while its job is 
     DatasetPath = c(tg2_path, tg1_path, file.path(cache_dir, "missing.csv")),
     stringsAsFactors = FALSE
   ), paths$groups, row.names = FALSE)
+  expected_details <- data.frame(
+    GroupID = c("TG1", "TG2"), Transcript = c("ENST1", "ENST2"),
+    Gene = c("GENE1", "GENE2"), CpG = c("cg1", "cg2"),
+    GeneRegion = c("Body", "TSS1500"), Chr = c("chr1", "chr2"),
+    Position = c(101L, 202L), SpearmanRho = c(0.8, -0.7), AbsRho = c(0.8, 0.7),
+    stringsAsFactors = FALSE
+  )
+  utils::write.csv(expected_details, paths$group_details, row.names = FALSE)
+  importance_path <- file.path(cache_dir, "TG1-importance.csv")
+  expected_importance <- data.frame(CpG = "cg1", Importance = 0.75, ImportanceRank = 1L)
+  utils::write.csv(expected_importance, importance_path, row.names = FALSE)
+  dir.create(dirname(paths$screening), recursive = TRUE, showWarnings = FALSE)
+  utils::write.csv(data.frame(
+    GroupID = "TG1", ImportancePath = importance_path, stringsAsFactors = FALSE
+  ), paths$screening, row.names = FALSE)
 
   catalog <- ugplot_test_internal("ugplot_job_geo_group_datasets")(status$id, jobs_dir)
   expect_equal(catalog$group_id, c("TG1", "TG2"))
@@ -295,6 +318,15 @@ test_that("one cached GEO group dataset can be listed and read while its job is 
   expect_equal(payload$accession, "GSE87571")
   expect_equal(payload$target, "age")
   expect_equal(payload$dataset, expected)
+  expect_equal(payload$details, expected_details[1, , drop = FALSE])
+  expect_equal(payload$importance, expected_importance)
+  public_track <- ugplot_test_internal("ugplot_job_discovery_group_track")(status$id, "TG1", jobs_dir)
+  expect_equal(public_track$group, "TG1")
+  expect_length(public_track$points, 1L)
+  expect_equal(public_track$points[[1]]$cpg, "cg1")
+  expect_equal(public_track$points[[1]]$position, 101)
+  expect_equal(public_track$points[[1]]$region, "Body")
+  expect_equal(public_track$points[[1]]$rho, 0.8)
   expect_equal(ugplot_test_internal("ugplot_read_job_status")(status$id, jobs_dir)$state, "running")
   expect_error(
     ugplot_test_internal("ugplot_read_job_geo_group_dataset")(status$id, "../TG1", jobs_dir),

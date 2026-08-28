@@ -2609,6 +2609,7 @@ server <- function(input, output, session) {
   remote_job_progress_estimates <- reactiveVal(list())
   remote_job_loading <- reactiveVal(FALSE)
   remote_group_dataset_picker <- reactiveVal(list(groups = data.frame(), action = NULL))
+  remote_group_dataset_track <- reactiveVal(NULL)
   remote_job_monitor_state <- reactiveVal(list(checked_at = "", error = ""))
   remote_job_monitor_inflight <- reactiveVal(FALSE)
   remote_geo_result_applying <- reactiveVal(FALSE)
@@ -13678,7 +13679,7 @@ server <- function(input, output, session) {
         if (isTRUE(can_drain[[i]])) {
           buttons <- c(buttons, icon_button(
             "remote-job-action-pause", "pause",
-            "Pause safely after active tasks finish and save the checkpoint", "remote_drain_job_row"
+            "Pause safely on every worker server and save their checkpoints", "remote_drain_job_row"
           ))
         }
         if (isTRUE(can_resume[[i]])) {
@@ -13999,6 +14000,12 @@ server <- function(input, output, session) {
         easyClose = TRUE,
         footer = tagList(
           modalButton("Cancel"),
+          actionButton(
+            "remote_view_group_cpg_track",
+            "View CpG track",
+            icon = icon("stats"),
+            class = "btn-default"
+          ),
           actionButton("remote_load_group_dataset_confirm", "Load dataset", class = "btn-primary")
         )
       ))
@@ -14051,25 +14058,226 @@ server <- function(input, output, session) {
     )
   })
 
-  observeEvent(input$remote_load_group_dataset_confirm, {
-    tryCatch({
-      picker <- remote_group_dataset_picker()
-      action <- picker$action
-      groups <- picker$groups
-      selected <- input$remote_group_dataset_table_rows_selected
-      if (is.null(action) || !is.data.frame(groups) || length(selected) != 1L ||
-          selected < 1L || selected > nrow(groups)) {
-        stop("Select one transcript group in the table first.", call. = FALSE)
-      }
-      group_id <- as.character(groups$group_id[[selected]] %||% "")
-      req(nzchar(group_id))
+  remote_selected_group_dataset <- function() {
+    picker <- remote_group_dataset_picker()
+    action <- picker$action
+    groups <- picker$groups
+    selected <- input$remote_group_dataset_table_rows_selected
+    if (length(selected) != 1L) selected <- picker$selected %||% integer(0)
+    if (is.null(action) || !is.data.frame(groups) || length(selected) != 1L ||
+        selected < 1L || selected > nrow(groups)) {
+      stop("Select one transcript group in the table first.", call. = FALSE)
+    }
+    group_id <- as.character(groups$group_id[[selected]] %||% "")
+    if (!nzchar(group_id)) stop("The selected transcript group has no id.", call. = FALSE)
+
+    cached <- remote_group_dataset_track()
+    payload <- if (is.list(cached) && identical(as.character(cached$group_id %||% ""), group_id) &&
+        identical(as.character(cached$job_id %||% ""), as.character(action$job_id %||% "")) &&
+        identical(as.character(cached$server_name %||% ""), as.character(action$server %||% ""))) {
+      cached
+    } else {
       server <- remote_server_by_name(action$server)
-      payload <- ugplot_remote_get_job_group_dataset(
+      ugplot_remote_get_job_group_dataset(
         server_url = server$url,
         job_id = action$job_id,
         group_id = group_id,
         token = server$token %||% ""
       )
+    }
+    payload$server_name <- as.character(action$server %||% "")
+    remote_group_dataset_picker(list(
+      groups = groups, action = action, selected = as.integer(selected), payload = payload
+    ))
+    list(payload = payload, action = action, groups = groups, selected = as.integer(selected), group_id = group_id)
+  }
+
+  observeEvent(input$remote_view_group_cpg_track, {
+    tryCatch({
+      selection <- withProgress(
+        message = "Loading CpG track",
+        detail = "Downloading the selected group and its genomic annotation.",
+        value = 0.35,
+        remote_selected_group_dataset()
+      )
+      payload <- selection$payload
+      details <- payload$details %||% data.frame()
+      required <- c("CpG", "Position")
+      if (!is.data.frame(details) || nrow(details) == 0L || !all(required %in% names(details))) {
+        stop(
+          "This server did not include the CpG genomic track for the selected group. Update ugPlotServer and try again.",
+          call. = FALSE
+        )
+      }
+      remote_group_dataset_track(payload)
+      cpg_count <- length(unique(as.character(details$CpG)))
+      showModal(modalDialog(
+        title = paste0("CpG genomic track — ", payload$group_id %||% selection$group_id),
+        tags$div(
+          class = "remote-group-track-modal",
+          tags$div(
+            class = "remote-group-track-summary",
+            tags$span(tags$strong(payload$transcript %||% "Unknown transcript"), " transcript"),
+            tags$span(tags$strong(payload$gene %||% "Unknown gene"), " gene"),
+            tags$span(tags$strong(format(nrow(payload$dataset), big.mark = ",")), " samples"),
+            tags$span(tags$strong(cpg_count), " CpGs"),
+            if (nzchar(as.character(payload$target %||% ""))) {
+              tags$span(tags$strong(payload$target), " target")
+            } else NULL
+          ),
+          tags$p(
+            class = "remote-group-track-note",
+            "CpGs are placed by genomic position. Height and color show the Spearman rho signal; shaded bands show annotated transcript regions. Hover over a point for details."
+          ),
+          tags$div(
+            class = "remote-group-track-plot",
+            plotlyOutput("remote_group_cpg_track_plot", height = "570px")
+          )
+        ),
+        size = "l",
+        class = "remote-group-track-dialog",
+        easyClose = TRUE,
+        footer = tagList(
+          modalButton("Cancel"),
+          actionButton("remote_load_group_dataset_confirm", "Load dataset", class = "btn-primary")
+        )
+      ))
+    }, error = function(e) {
+      remote_job_status_text(paste("Remote CpG track failed:", conditionMessage(e)))
+      showNotification(conditionMessage(e), type = "error", duration = 7)
+    })
+  })
+
+  output$remote_group_cpg_track_plot <- plotly::renderPlotly({
+    payload <- remote_group_dataset_track()
+    track <- payload$details %||% data.frame()
+    req(is.data.frame(track), nrow(track) > 0L, all(c("CpG", "Position") %in% names(track)))
+    if (!"Transcript" %in% names(track)) track$Transcript <- payload$transcript %||% "Transcript"
+    if (!"GeneRegion" %in% names(track)) track$GeneRegion <- ""
+    if (!"Chr" %in% names(track)) track$Chr <- ""
+    if (!"Strand" %in% names(track)) track$Strand <- ""
+    if (!"SpearmanRho" %in% names(track)) track$SpearmanRho <- NA_real_
+    if (!"AbsRho" %in% names(track)) track$AbsRho <- abs(suppressWarnings(as.numeric(track$SpearmanRho)))
+    if (!"CpGKeptForML" %in% names(track)) track$CpGKeptForML <- TRUE
+    importance <- payload$importance %||% data.frame()
+    if (is.data.frame(importance) && nrow(importance) > 0L && all(c("CpG", "Importance") %in% names(importance))) {
+      importance <- importance[!duplicated(as.character(importance$CpG)), intersect(c("CpG", "Importance", "ImportanceRank"), names(importance)), drop = FALSE]
+      track <- merge(track, importance, by = "CpG", all.x = TRUE, sort = FALSE)
+    }
+    if (!"Importance" %in% names(track)) track$Importance <- NA_real_
+    if (!"ImportanceRank" %in% names(track)) track$ImportanceRank <- NA_real_
+    track$PositionNumeric <- suppressWarnings(as.numeric(track$Position))
+    track <- track[is.finite(track$PositionNumeric), , drop = FALSE]
+    req(nrow(track) > 0L)
+
+    region_order <- c("Promoter", "TSS1500", "TSS200", "5'UTR", "Exon", "1stExon", "Intron", "Body", "3'UTR")
+    region_labels <- c(
+      Promoter = "Promoter", TSS1500 = "Promoter TSS1500", TSS200 = "Promoter TSS200",
+      `5'UTR` = "5' UTR", Exon = "Exon", `1stExon` = "First exon", Intron = "Intron",
+      Body = "Gene body", `3'UTR` = "3' UTR"
+    )
+    region_colors <- c(
+      Promoter = "#f6c85f", TSS1500 = "#f6c85f", TSS200 = "#f08a4b",
+      `5'UTR` = "#8ecae6", Exon = "#4dab6d", `1stExon` = "#4dab6d",
+      Intron = "#d9e2ec", Body = "#b8c0ff", `3'UTR` = "#c77dff"
+    )
+    band_rows <- lapply(split(track, as.character(track$Transcript)), function(tx) {
+      tx <- tx[order(tx$PositionNumeric), , drop = FALSE]
+      regions <- vapply(strsplit(trimws(as.character(tx$GeneRegion)), ";", fixed = TRUE), function(parts) {
+        matched <- trimws(parts)[trimws(parts) %in% region_order]
+        if (length(matched) > 0L) matched[[1]] else NA_character_
+      }, character(1))
+      keep <- !is.na(regions)
+      tx <- tx[keep, , drop = FALSE]
+      regions <- regions[keep]
+      if (nrow(tx) == 0L) return(NULL)
+      padding <- diff(range(track$PositionNumeric)) * 0.01
+      if (!is.finite(padding) || padding <= 0) padding <- 1
+      x <- tx$PositionNumeric
+      bounds <- if (length(x) == 1L) c(x - padding, x + padding) else c(min(x) - padding, (head(x, -1) + tail(x, -1)) / 2, max(x) + padding)
+      runs <- rle(regions)
+      ends <- cumsum(runs$lengths)
+      starts <- c(1L, head(ends, -1) + 1L)
+      do.call(rbind, lapply(seq_along(runs$values), function(i) {
+        xmin <- bounds[starts[[i]]]
+        xmax <- bounds[ends[[i]] + 1L]
+        data.frame(
+          Transcript = as.character(tx$Transcript[[1]]), Sector = runs$values[[i]],
+          x = (xmin + xmax) / 2, width = max(padding, xmax - xmin),
+          Label = paste0("Transcript: ", tx$Transcript[[1]], "<br>Region: ", unname(region_labels[runs$values[[i]]]), "<br>Approx. span: ", round(xmin), "-", round(xmax)),
+          stringsAsFactors = FALSE
+        )
+      }))
+    })
+    band_rows <- Filter(Negate(is.null), band_rows)
+    bands <- if (length(band_rows) > 0L) do.call(rbind, band_rows) else data.frame()
+
+    transcript_levels <- rev(unique(as.character(track$Transcript)))
+    track$Transcript <- factor(track$Transcript, levels = transcript_levels)
+    if (nrow(bands) > 0L) {
+      bands$Transcript <- factor(bands$Transcript, levels = transcript_levels)
+      bands$Sector <- factor(bands$Sector, levels = region_order)
+    }
+    track$Rho <- pmax(-1, pmin(1, suppressWarnings(as.numeric(track$SpearmanRho))))
+    track$AbsRho <- pmax(0, pmin(1, suppressWarnings(as.numeric(track$AbsRho))))
+    track$Importance <- suppressWarnings(as.numeric(track$Importance))
+    max_importance <- suppressWarnings(max(track$Importance, na.rm = TRUE))
+    track$ImportanceScaled <- if (is.finite(max_importance) && max_importance > 0) {
+      pmax(0, pmin(1, track$Importance / max_importance))
+    } else {
+      0
+    }
+    track$YBase <- as.numeric(track$Transcript)
+    track$YEnd <- track$YBase + ifelse(is.finite(track$Rho), 0.34 * track$Rho, 0)
+    kept <- as.logical(track$CpGKeptForML)
+    kept[is.na(kept)] <- TRUE
+    track$Kept <- kept
+    track$Label <- paste0(
+      "Transcript: ", track$Transcript, "<br>CpG: ", track$CpG,
+      "<br>Gene region: ", track$GeneRegion,
+      "<br><b>Position: ", track$Chr, ":", track$Position, "</b>",
+      "<br>Strand: ", track$Strand,
+      "<br><b>Spearman rho: ", signif(track$Rho, 4), "</b>",
+      "<br><b>|rho|: ", signif(track$AbsRho, 4), "</b>",
+      "<br>ML importance: ", ifelse(is.finite(track$Importance), signif(track$Importance, 4), "not run"),
+      "<br>Importance rank: ", ifelse(is.finite(track$ImportanceRank), track$ImportanceRank, "not run"),
+      "<br>Kept for ML: ", ifelse(track$Kept, "yes", "no")
+    )
+    segments <- do.call(rbind, lapply(split(track, track$Transcript), function(tx) data.frame(
+      Transcript = tx$Transcript[[1]], x1 = min(tx$PositionNumeric), x2 = max(tx$PositionNumeric)
+    )))
+
+    p <- ggplot(track, aes(x = PositionNumeric, y = Transcript))
+    if (nrow(bands) > 0L) {
+      p <- p + geom_tile(
+        data = bands, aes(x = x, y = Transcript, width = width, height = 0.20, fill = Sector, text = Label),
+        inherit.aes = FALSE, alpha = 0.32, color = NA
+      ) + scale_fill_manual(values = region_colors, labels = region_labels, na.translate = FALSE, name = "Region")
+    }
+    p <- p +
+      geom_segment(data = segments, aes(x = x1, xend = x2, y = Transcript, yend = Transcript), inherit.aes = FALSE, color = "#68778a", linewidth = 0.85) +
+      geom_segment(aes(xend = PositionNumeric, y = YBase, yend = YEnd, color = AbsRho, alpha = Kept, text = Label), linewidth = 1.2) +
+      geom_point(aes(y = YEnd, color = AbsRho, alpha = Kept, size = ImportanceScaled, text = Label), shape = 21, stroke = 0.8, fill = "white") +
+      viridis::scale_color_viridis(option = "plasma", limits = c(0, 1), na.value = "#8792a2", name = "|rho|") +
+      scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.3), guide = "none") +
+      scale_size_continuous(range = c(3, 7), breaks = c(0, 0.5, 1), labels = c("none", "mid", "high"), name = "ML importance") +
+      scale_y_discrete(expand = expansion(mult = c(0.35, 0.35))) +
+      labs(x = "Genomic position", y = NULL) +
+      theme_minimal(base_size = 12) +
+      theme(panel.grid.major.y = element_blank(), panel.grid.minor = element_blank(), axis.text.y = element_text(face = "bold"), legend.position = "right")
+    plotly::layout(
+      plotly::ggplotly(p, tooltip = "text") %>% plotly::config(displaylogo = FALSE),
+      margin = list(l = 90, r = 40, t = 10, b = 45),
+      xaxis = list(rangeslider = list(visible = TRUE))
+    )
+  })
+
+  observeEvent(input$remote_load_group_dataset_confirm, {
+    tryCatch({
+      selection <- remote_selected_group_dataset()
+      action <- selection$action
+      group_id <- selection$group_id
+      payload <- selection$payload
       dataset <- payload$dataset
       if (!is.data.frame(dataset) || nrow(dataset) == 0L) {
         stop("The selected transcript-group dataset is empty or invalid.", call. = FALSE)

@@ -1978,6 +1978,44 @@ ugplot_geo_drain_ready <- function(busy_workers, collaboration_leased = logical(
   length(busy_workers) == 0L && !any(as.logical(collaboration_leased))
 }
 
+ugplot_geo_request_remote_drains <- function(manifest, workers, draining = FALSE) {
+  if (!isTRUE(draining) || !is.data.frame(manifest) || nrow(manifest) == 0L) {
+    return(manifest)
+  }
+  if (!"DrainRequested" %in% names(manifest)) {
+    manifest$DrainRequested <- FALSE
+  }
+  active_rows <- which(
+    as.character(manifest$State) %in% c("submitted", "running") &
+      nzchar(trimws(as.character(manifest$JobID))) &
+      !as.logical(manifest$DrainRequested)
+  )
+  for (row_index in active_rows) {
+    worker_name <- as.character(manifest$Worker[[row_index]] %||% "")
+    matches <- Filter(function(worker) {
+      identical(as.character(worker$name %||% ""), worker_name)
+    }, workers)
+    if (length(matches) == 0L) next
+    worker <- matches[[1]]
+    requested <- tryCatch(
+      ugplot_remote_drain_job(
+        worker$url,
+        manifest$JobID[[row_index]],
+        worker$token %||% ""
+      ),
+      error = function(e) NULL
+    )
+    if (!is.null(requested)) {
+      manifest$DrainRequested[[row_index]] <- TRUE
+      manifest$Message[[row_index]] <- paste0(
+        "Pause requested on ", worker_name, "; waiting for a safe checkpoint"
+      )
+      manifest$UpdatedAt[[row_index]] <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+    }
+  }
+  manifest
+}
+
 ugplot_geo_collaboration_blocks_drain <- function(task) {
   is.list(task) && identical(task$state %||% "", "leased") &&
     !isTRUE(task$offline_delivery)
@@ -2126,7 +2164,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
   }
   required <- c(
     "GroupID", "Worker", "JobID", "State", "Progress", "Message", "UpdatedAt",
-    "Attempts", "PollFailures", "Error", "RequestNonce"
+    "Attempts", "PollFailures", "Error", "RequestNonce", "DrainRequested"
   )
   if (!is.data.frame(manifest)) {
     manifest <- data.frame()
@@ -2137,10 +2175,16 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
       Progress = numeric(nrow(manifest)),
       Attempts = integer(nrow(manifest)),
       PollFailures = integer(nrow(manifest)),
+      DrainRequested = logical(nrow(manifest)),
       rep("", nrow(manifest))
     )
   }
   manifest <- manifest[, required, drop = FALSE]
+  # A deliberately paused remote assignment keeps its remote job id so a
+  # resumed coordinator continues that exact checkpoint instead of creating a
+  # replacement job. Re-enter it through the normal status/resume path.
+  manifest$State[manifest$State == "paused"] <- "running"
+  manifest$DrainRequested[] <- FALSE
   manifest$State[manifest$State == "dispatching"] <- "pending"
   missing_job_rows <- manifest$State %in% c("submitted", "running") &
     !nzchar(trimws(as.character(manifest$JobID)))
@@ -2165,6 +2209,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         PollFailures = 0L,
         Error = "",
         RequestNonce = "",
+        DrainRequested = FALSE,
         stringsAsFactors = FALSE
       )
     )
@@ -2393,6 +2438,8 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
   repeat {
     draining <- exists("ugplot_job_drain_requested", mode = "function", inherits = TRUE) &&
       ugplot_job_drain_requested(config$job_dir %||% "")
+    manifest <- ugplot_geo_request_remote_drains(manifest, workers, draining)
+    ugplot_geo_write_distributed_manifest(manifest, manifest_path)
     if (isTRUE(collaboration_enabled)) {
       completed_task_ids <- collaboration_index_ids("completed")
       for (task_id in completed_task_ids) {
@@ -2549,6 +2596,16 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
             manifest$JobID[[row_index]],
             worker$token %||% ""
           ), silent = TRUE)
+        } else if (isTRUE(draining)) {
+          # The remote job reached a usable checkpoint while maintenance drain
+          # is active. Keep its id and do not immediately start its next stage.
+          manifest$State[[row_index]] <- "paused"
+          manifest$Message[[row_index]] <- paste0(
+            manifest$GroupID[[row_index]],
+            " paused at its saved model/seed checkpoint"
+          )
+          manifest$Error[[row_index]] <- ""
+          manifest$UpdatedAt[[row_index]] <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
         } else {
           resume_error <- NULL
           resumed <- tryCatch(
@@ -2576,6 +2633,16 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
           manifest$UpdatedAt[[row_index]] <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
         }
       } else if (remote_state %in% c("failed", "stopped")) {
+        if (isTRUE(draining)) {
+          manifest$State[[row_index]] <- "paused"
+          manifest$Message[[row_index]] <- paste0(
+            manifest$GroupID[[row_index]],
+            " paused on ", as.character(worker$name), " with checkpoint saved"
+          )
+          manifest$Error[[row_index]] <- ""
+          manifest$UpdatedAt[[row_index]] <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
+          next
+        }
         if (ugplot_geo_can_resume_worker_task(
           status, manifest$Attempts[[row_index]], max_attempts, draining
         )) {
@@ -2746,6 +2813,7 @@ ugplot_geo_run_transcript_ml_distributed <- function(eligible, summaries, summar
         manifest$UpdatedAt[[row_index]] <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %z")
         manifest$Attempts[[row_index]] <- manifest$Attempts[[row_index]] + 1L
         manifest$Error[[row_index]] <- ""
+        manifest$DrainRequested[[row_index]] <- FALSE
         ugplot_geo_write_distributed_manifest(manifest, manifest_path)
         started <- tryCatch(
           ugplot_remote_create_job(

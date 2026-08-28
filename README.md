@@ -537,6 +537,8 @@ If a server card shows **VERSION MISMATCH**, update the remote server package so
 
 The remote jobs queue includes a **CpGs** column whenever the job dataset or GEO transcript matrix has established that count. After selecting a job, ugPlot downloads only its compact per-model timing summary; use **Load selected job details** for the larger checkpoint, logs, and telemetry.
 
+For a running GEO job, open the transcript-group dataset picker and select **View CpG track** to inspect where the group's CpGs fall across genomic position and annotated transcript regions. The preview uses the same Spearman-rho track language as the GEO import results, leaves the remote job running, and reuses the same group download if you then choose **Load dataset**.
+
 After loading a job result, ugPlot displays the best-result summary, metric distribution, stability information, and job logs. It also shows a per-model runtime and timeout summary with attempts, completed runs, skipped runs, timeout rate, and typical/maximum elapsed time. Repeated timeout signals help identify models that should be reconsidered for future analyses; a single timeout is shown separately from a recurring pattern. For multi-seed jobs, prefer the median and interquartile range over the best single seed when reporting model performance.
 
 #### Live discovery report
@@ -567,6 +569,8 @@ job:
   server's latest saved snapshot.
 
 The page is public and refreshes automatically. As soon as a transcript group and CpG are known, a gray **awaiting analysis** row appears. Orange **preliminary** rows have completed model screening, and green **stabilized** rows have completed the configured seed stability analysis. Use the search field to find a gene, transcript, CpG, model, or transcript group.
+
+Click a discovery row to expand it. The detail panel contains the median, minimum and maximum R2, metric uncertainty, seed/sample context, resolver information, and an on-demand CpG genomic track. Keeping minimum and maximum R2 inside the expanded panel makes the main discovery table narrower while preserving the full evidence for inspection.
 
 The job is selected exclusively by the report URL; there is no server or job selector inside the report. A report opened on Fy2 therefore belongs only to Fy2 and cannot redirect to another ugPlot server. ugPlot maintains a small static JSON snapshot inside the job directory and updates it as discoveries emerge, so visitors do not trigger a reconstruction of the analysis. By default, the table combines ML R2 and absolute CpG correlation with equal weight; the ordering control can also rank either metric separately.
 
@@ -1144,8 +1148,10 @@ The highlighted result is the best result found so far, not a final biological c
 Click **Stop after current mission** when you no longer want to receive new work. ugPlot finishes the current mission when possible and then stops. Closing the contributor does not erase the main job or make its completed groups start over.
 
 For coordinator maintenance, request a drain on the parent job before stopping
-the server. The coordinator stops publishing new missions and closes unclaimed
-offers. Headless clients that advertise offline delivery may continue their
+the server. The coordinator stops publishing new missions, closes unclaimed
+offers, and asks each active fixed worker server to pause at a safe checkpoint.
+Those remote assignments keep their job IDs and resume from the same checkpoints
+when the parent job is resumed. Headless clients that advertise offline delivery may continue their
 already leased group while the coordinator is down and submit it after the
 server returns; legacy clients still block the drain until their current lease
 finishes or expires. Start the server with the same jobs directory and resume a

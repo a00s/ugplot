@@ -438,6 +438,37 @@ test_that("smooth drain waits for every fixed and collaborative worker", {
   expect_true(drain_ready(character(0), logical(0)))
 })
 
+test_that("maintenance drain is propagated once to every active fixed worker", {
+  request_drains <- ugplot_test_internal("ugplot_geo_request_remote_drains")
+  calls <- character(0)
+  ugplot_test_local_namespace_binding("ugplot_remote_drain_job", function(server_url, job_id, ...) {
+    calls <<- c(calls, paste(server_url, job_id, sep = "/"))
+    list(state = "draining")
+  })
+  manifest <- data.frame(
+    GroupID = c("TG1", "TG2", "TG3"),
+    Worker = c("Fy2", "Fy3", "Fy2"),
+    JobID = c("job-1", "job-2", "job-3"),
+    State = c("running", "submitted", "completed"),
+    Message = "",
+    UpdatedAt = "",
+    DrainRequested = FALSE,
+    stringsAsFactors = FALSE
+  )
+  workers <- list(
+    list(name = "Fy2", url = "http://fy2:8080", token = "a"),
+    list(name = "Fy3", url = "http://fy3:8080", token = "b")
+  )
+
+  drained <- request_drains(manifest, workers, draining = TRUE)
+  drained_again <- request_drains(drained, workers, draining = TRUE)
+
+  expect_equal(calls, c("http://fy2:8080/job-1", "http://fy3:8080/job-2"))
+  expect_equal(drained$DrainRequested, c(TRUE, TRUE, FALSE))
+  expect_equal(drained_again$DrainRequested, drained$DrainRequested)
+  expect_match(drained$Message[[1]], "Pause requested on Fy2")
+})
+
 test_that("offline-capable collaboration missions do not block maintenance drain", {
   blocks_drain <- ugplot_test_internal("ugplot_geo_collaboration_blocks_drain")
 
