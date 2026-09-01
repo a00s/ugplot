@@ -235,6 +235,13 @@ test_that("public collaboration text is bounded and cannot become report markup"
   expect_match(html, "Background annotation", fixed = TRUE)
   expect_match(html, 'viewBox","0 0 1120 320', fixed = TRUE)
   expect_match(html, 'label:"+0.5"', fixed = TRUE)
+  expect_match(html, ".table-wrap{max-width:100%;overflow-x:hidden}", fixed = TRUE)
+  expect_match(html, ".table-wrap table{width:100%;min-width:0;table-layout:fixed}", fixed = TRUE)
+  expect_match(html, ".track-plot{width:100%;overflow:hidden}", fixed = TRUE)
+  expect_match(html, ".track-svg{display:block;width:100%;height:auto}", fixed = TRUE)
+  expect_match(html, "270-266*x} 84% ${34+18*x}", fixed = TRUE)
+  expect_match(html, "hsl(4 84% 52%)", fixed = TRUE)
+  expect_match(html, "@media(max-width:1050px){.track-layout{grid-template-columns:minmax(0,1fr)}", fixed = TRUE)
 })
 
 test_that("discovery report snapshot is a reusable static JSON artifact", {
