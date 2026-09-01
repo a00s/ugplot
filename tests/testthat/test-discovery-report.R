@@ -243,6 +243,13 @@ test_that("public collaboration text is bounded and cannot become report markup"
   expect_match(html, "hsl(4 84% 52%)", fixed = TRUE)
   expect_match(html, "@media(max-width:1050px){.track-layout{grid-template-columns:minmax(0,1fr)}", fixed = TRUE)
   expect_match(html, ".shell{width:calc(100% - 24px);max-width:1920px", fixed = TRUE)
+  expect_match(html, ".table-wrap th:nth-child(2),.table-wrap td:nth-child(2)", fixed = TRUE)
+  expect_match(html, ".indicator-dot.stabilized{background:var(--green)}", fixed = TRUE)
+  expect_match(html, "Table colour legend", fixed = TRUE)
+  expect_match(html, "Stability complete", fixed = TRUE)
+  expect_match(html, 'aria-label="Status: ${v}"', fixed = TRUE)
+  expect_match(html, 'aria-label="Type: ${v}"', fixed = TRUE)
+  expect_false(grepl('return `<span class="badge ${c}">${v}</span>`', html, fixed = TRUE))
 })
 
 test_that("discovery report snapshot is a reusable static JSON artifact", {
