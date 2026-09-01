@@ -36,6 +36,12 @@ test_that("incremental discovery report upgrades screened groups with stability"
     MedianMetric = c(0.84, 0.77), BestMetric = c(0.86, 0.79), SeedsRun = c(3, 3),
     stringsAsFactors = FALSE
   )
+  tg1_dataset_path <- file.path(cache_dir, "TG1.csv")
+  utils::write.csv(
+    data.frame(sample_id = paste0("S", 1:5), age = 1:5, cg1 = c(1, 2, 3, 5, 4)),
+    tg1_dataset_path, row.names = FALSE
+  )
+  screening$DatasetPath <- c(tg1_dataset_path, "")
   stability <- screening[1, , drop = FALSE]
   stability$Phase <- "stability"
   stability$MedianMetric <- 0.82
@@ -99,14 +105,17 @@ test_that("incremental discovery report upgrades screened groups with stability"
   expect_equal(report$progress$total, 3L)
   expect_equal(report$progress$screened, 2L)
   expect_equal(report$progress$stabilized, 1L)
-  expect_equal(report$protocol_version, 2L)
+  expect_equal(report$protocol_version, 3L)
   expect_length(report$discoveries, 3L)
   expect_equal(report$discoveries[[1]]$status, "stabilized")
   expect_equal(report$discoveries[[1]]$gene, "GENE1")
   expect_equal(report$discoveries[[1]]$transcript, "ENST1;ENST1_ALT")
   expect_equal(report$discoveries[[1]]$transcript_count, 2)
   expect_equal(report$discoveries[[1]]$cpgs, 12)
-  expect_equal(report$discoveries[[1]]$cpg_rho, 0.71)
+  expect_equal(report$discoveries[[1]]$cpg_rho_original, 0.71)
+  expect_equal(report$discoveries[[1]]$cpg_rho_ml, 0.9)
+  expect_equal(report$discoveries[[1]]$cpg_rho_ml_n, 5)
+  expect_equal(report$discoveries[[1]]$cpg_rho, 0.9)
   expect_equal(report$discoveries[[1]]$median_r2, 0.82)
   expect_equal(report$discoveries[[1]]$min_r2, 0.71)
   expect_equal(report$discoveries[[1]]$max_r2, 0.91)
@@ -156,6 +165,10 @@ test_that("discovery report HTML accepts a direct job link", {
   expect_false(grepl("Open report", report_html, fixed = TRUE))
   expect_match(report_html, "/reports/assets/ugplot.png", fixed = TRUE)
   expect_match(report_html, "Best CpG correlation", fixed = TRUE)
+  expect_match(report_html, 'data-sort-key="cpg_rho_original"', fixed = TRUE)
+  expect_match(report_html, 'data-sort-key="cpg_rho_ml"', fixed = TRUE)
+  expect_match(report_html, "How ranking and discovery types are defined", fixed = TRUE)
+  expect_match(report_html, "They measure different properties", fixed = TRUE)
   expect_match(report_html, 'data-sort-key="cpgs"', fixed = TRUE)
   expect_match(report_html, 'data-sort-key="resolved_by"', fixed = TRUE)
   expect_match(report_html, "resolverBadge(r.resolved_by)", fixed = TRUE)
@@ -177,7 +190,8 @@ test_that("discovery report HTML accepts a direct job link", {
   expect_match(report_html, "new Map(source.map", fixed = TRUE)
   expect_match(report_html, 'className="track-tooltip"', fixed = TRUE)
   expect_match(report_html, "Spearman ρ", fixed = TRUE)
-  expect_match(report_html, "Best CpG |ρ|", fixed = TRUE)
+  expect_match(report_html, "Best CpG |ρ| · ML dataset", fixed = TRUE)
+  expect_match(report_html, "Best CpG |ρ| · original", fixed = TRUE)
   expect_match(report_html, "Sample group", fixed = TRUE)
   expect_match(report_html, "All samples", fixed = TRUE)
   expect_match(report_html, "/groups/${encodeURIComponent(group)}/track", fixed = TRUE)
@@ -189,6 +203,10 @@ test_that("discovery report HTML accepts a direct job link", {
   expect_match(report_html, "computational group may contain multiple biological transcripts", fixed = TRUE)
   expect_match(report_html, "Math.max(...values)", fixed = TRUE)
   expect_false(grepl("(ml+cpg)/2", report_html, fixed = TRUE))
+  expect_false(grepl("max-height:70vh", report_html, fixed = TRUE))
+  expect_match(report_html, "overflow-y:visible", fixed = TRUE)
+  expect_match(report_html, '<button type="button" class="expand-icon"', fixed = TRUE)
+  expect_false(grepl("row.onclick=toggle", report_html, fixed = TRUE))
   expect_match(report_html, 'class="controls"', fixed = TRUE)
   expect_match(report_html, "Science collaboration", fixed = TRUE)
   expect_match(report_html, "Group completion map", fixed = TRUE)

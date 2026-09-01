@@ -4519,6 +4519,8 @@ server <- function(input, output, session) {
         TriggerMaxAbsRho = principal$TriggerMaxAbsRho[[1]],
         TriggerBestCpG = if ("TriggerBestCpG" %in% names(principal)) principal$TriggerBestCpG[[1]] else "",
         TriggerBestRho = if ("TriggerBestRho" %in% names(principal)) principal$TriggerBestRho[[1]] else NA_real_,
+        TriggerBestRhoML = if ("TriggerBestRhoML" %in% names(principal)) principal$TriggerBestRhoML[[1]] else NA_real_,
+        TriggerBestNML = if ("TriggerBestNML" %in% names(principal)) principal$TriggerBestNML[[1]] else NA_integer_,
         DatasetPath = principal$DatasetPath[[1]],
         GroupKey = group_keys[[group_index]],
         stringsAsFactors = FALSE
@@ -4887,6 +4889,7 @@ server <- function(input, output, session) {
     metric_values <- geo_ml_result_metric_values(screen_result)
     model_counts <- geo_ml_model_run_counts(screen_result)
     metric_name <- screen_result$final_summary$metric_name %||% "R2"
+    ml_rho <- ugplot_geo_cpg_spearman(dataset, group$TriggerBestCpG[[1]] %||% "", "target")
     summary <- data.frame(
       Source = source,
       Phase = "screening",
@@ -4903,6 +4906,8 @@ server <- function(input, output, session) {
       TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
       TriggerBestCpG = if ("TriggerBestCpG" %in% names(group)) as.character(group$TriggerBestCpG[[1]]) else "",
       TriggerBestRho = if ("TriggerBestRho" %in% names(group)) suppressWarnings(as.numeric(group$TriggerBestRho[[1]])) else NA_real_,
+      TriggerBestRhoML = unname(ml_rho[["rho"]]),
+      TriggerBestNML = as.integer(ml_rho[["n"]]),
       BestModel = best_model,
       MetricName = metric_name,
       BestMetric = suppressWarnings(as.numeric(screen_result$final_summary$metric_value %||% NA_real_)),
@@ -5029,6 +5034,7 @@ server <- function(input, output, session) {
 
     metric_values <- geo_ml_result_metric_values(stability_result)
     metric_name <- stability_result$final_summary$metric_name %||% "R2"
+    ml_rho <- ugplot_geo_cpg_spearman(dataset, group$TriggerBestCpG[[1]] %||% "", "target")
     summary <- data.frame(
       Source = source,
       Phase = "stability",
@@ -5048,6 +5054,8 @@ server <- function(input, output, session) {
       TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
       TriggerBestCpG = if ("TriggerBestCpG" %in% names(group)) as.character(group$TriggerBestCpG[[1]]) else "",
       TriggerBestRho = if ("TriggerBestRho" %in% names(group)) suppressWarnings(as.numeric(group$TriggerBestRho[[1]])) else NA_real_,
+      TriggerBestRhoML = unname(ml_rho[["rho"]]),
+      TriggerBestNML = as.integer(ml_rho[["n"]]),
       BestModel = best_model,
       MetricName = metric_name,
       BestMetric = suppressWarnings(as.numeric(stability_result$final_summary$metric_value %||% NA_real_)),
@@ -7669,6 +7677,10 @@ server <- function(input, output, session) {
       if (!is.finite(trigger_max)) {
         trigger_max <- NA_real_
       }
+      trigger_best_cpg <- if ("TriggerBestCpG" %in% names(transcript_rows)) as.character(transcript_rows$TriggerBestCpG[[1]]) else ""
+      ml_rho <- if (identical(status, "compatible")) {
+        ugplot_geo_cpg_spearman(filtered_dataset, trigger_best_cpg, target_column)
+      } else c(rho = NA_real_, n = 0)
       progress_row <- data.frame(
         Transcript = transcript_id,
         Gene = paste(unique(stats::na.omit(transcript_rows$Gene)), collapse = ";"),
@@ -7679,8 +7691,10 @@ server <- function(input, output, session) {
         CpGKey = geo_group_key(kept_cpgs),
         SampleKey = geo_group_key(kept_samples),
         TriggerMaxAbsRho = trigger_max,
-        TriggerBestCpG = if ("TriggerBestCpG" %in% names(transcript_rows)) as.character(transcript_rows$TriggerBestCpG[[1]]) else "",
+        TriggerBestCpG = trigger_best_cpg,
         TriggerBestRho = if ("TriggerBestRho" %in% names(transcript_rows)) suppressWarnings(as.numeric(transcript_rows$TriggerBestRho[[1]])) else NA_real_,
+        TriggerBestRhoML = unname(ml_rho[["rho"]]),
+        TriggerBestNML = as.integer(ml_rho[["n"]]),
         ThresholdCols = if (nrow(best) > 0) best$thr_col[[1]] else NA_real_,
         ThresholdRows = if (nrow(best) > 0) best$thr_row[[1]] else NA_real_,
         FilterOrder = if (nrow(best) > 0) as.character(best$scan_order[[1]]) else "",
@@ -7688,6 +7702,9 @@ server <- function(input, output, session) {
         RawDatasetPath = raw_dataset_path,
         stringsAsFactors = FALSE
       )
+      for (column in setdiff(names(progress_row), names(progress_rows))) progress_rows[[column]] <- NA
+      for (column in setdiff(names(progress_rows), names(progress_row))) progress_row[[column]] <- NA
+      progress_row <- progress_row[, names(progress_rows), drop = FALSE]
       progress_rows <- rbind(progress_rows, progress_row)
       tables <- geo_build_group_tables(
         progress_rows, candidates, existing_summary = existing_group_summary

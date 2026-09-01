@@ -48,6 +48,29 @@ ugplot_geo_transcript_missing_definition <- function() {
   c("empty", "na", "zero")
 }
 
+ugplot_geo_cpg_spearman <- function(dataset, cpg, target_column = "target") {
+  empty <- c(rho = NA_real_, n = 0)
+  if (!is.data.frame(dataset) || nrow(dataset) == 0L) return(empty)
+  cpg <- as.character(cpg %||% "")
+  target_column <- as.character(target_column %||% "target")
+  if (length(cpg) != 1L || !nzchar(cpg) || !cpg %in% names(dataset)) return(empty)
+  if (length(target_column) != 1L || !nzchar(target_column) || !target_column %in% names(dataset)) {
+    target_candidates <- setdiff(names(dataset), c("sample_id", grep("^cg", names(dataset), value = TRUE, ignore.case = TRUE)))
+    if (length(target_candidates) == 0L) return(empty)
+    target_column <- target_candidates[[1]]
+  }
+  x <- suppressWarnings(as.numeric(as.character(dataset[[cpg]])))
+  y <- suppressWarnings(as.numeric(as.character(dataset[[target_column]])))
+  keep <- is.finite(x) & is.finite(y)
+  n <- sum(keep)
+  if (n < 3L || length(unique(x[keep])) < 2L || length(unique(y[keep])) < 2L) {
+    return(c(rho = NA_real_, n = n))
+  }
+  rho <- suppressWarnings(stats::cor(x[keep], y[keep], method = "spearman"))
+  if (!is.finite(rho)) rho <- NA_real_
+  c(rho = unname(rho), n = n)
+}
+
 ugplot_geo_group_key <- function(values) {
   paste(sort(unique(as.character(values))), collapse = "\r")
 }
@@ -576,6 +599,8 @@ ugplot_geo_build_group_tables_remote <- function(progress_rows, candidates = NUL
       TriggerMaxAbsRho = principal$TriggerMaxAbsRho[[1]],
       TriggerBestCpG = principal$TriggerBestCpG[[1]] %||% "",
       TriggerBestRho = suppressWarnings(as.numeric(principal$TriggerBestRho[[1]] %||% NA_real_)),
+      TriggerBestRhoML = suppressWarnings(as.numeric(principal$TriggerBestRhoML[[1]] %||% NA_real_)),
+      TriggerBestNML = suppressWarnings(as.integer(principal$TriggerBestNML[[1]] %||% NA_integer_)),
       DatasetPath = principal$DatasetPath[[1]],
       GroupKey = group_keys[[group_index]],
       stringsAsFactors = FALSE
@@ -751,6 +776,10 @@ ugplot_geo_build_transcript_group_progress_row <- function(transcript_id, candid
   if (!is.finite(trigger_max)) {
     trigger_max <- NA_real_
   }
+  trigger_best_cpg <- if ("TriggerBestCpG" %in% names(transcript_rows)) transcript_rows$TriggerBestCpG[[1]] else transcript_rows$CpG[[1]] %||% ""
+  ml_rho <- if (identical(filtered$status, "compatible")) {
+    ugplot_geo_cpg_spearman(filtered$dataset, trigger_best_cpg, target_column)
+  } else c(rho = NA_real_, n = 0)
   data.frame(
     Transcript = transcript_id,
     Gene = paste(unique(stats::na.omit(transcript_rows$Gene)), collapse = ";"),
@@ -761,8 +790,10 @@ ugplot_geo_build_transcript_group_progress_row <- function(transcript_id, candid
     CpGKey = ugplot_geo_group_key(filtered$kept_cpgs),
     SampleKey = ugplot_geo_group_key(filtered$kept_samples),
     TriggerMaxAbsRho = trigger_max,
-    TriggerBestCpG = if ("TriggerBestCpG" %in% names(transcript_rows)) transcript_rows$TriggerBestCpG[[1]] else transcript_rows$CpG[[1]] %||% "",
+    TriggerBestCpG = trigger_best_cpg,
     TriggerBestRho = if ("TriggerBestRho" %in% names(transcript_rows)) suppressWarnings(as.numeric(transcript_rows$TriggerBestRho[[1]])) else suppressWarnings(as.numeric(transcript_rows$SpearmanRho[[1]] %||% NA_real_)),
+    TriggerBestRhoML = unname(ml_rho[["rho"]]),
+    TriggerBestNML = as.integer(ml_rho[["n"]]),
     DatasetPath = if (identical(filtered$status, "compatible")) dataset_path else "",
     RawDatasetPath = raw_dataset_path,
     stringsAsFactors = FALSE
@@ -1638,6 +1669,7 @@ ugplot_geo_screen_group <- function(dataset, group, source, config, screen_path,
   ugplot_geo_write_checkpoint(screen_result, screen_path)
   metric_values <- ugplot_geo_ml_metric_values(screen_result)
   model_counts <- ugplot_geo_ml_model_run_counts(screen_result)
+  ml_rho <- ugplot_geo_cpg_spearman(dataset, group$TriggerBestCpG[[1]] %||% "", "target")
   importance <- ugplot_geo_ml_importance_table(screen_result$best_model, group, source, "screening")
   if (is.data.frame(importance) && nrow(importance) > 0) {
     utils::write.csv(importance, importance_path, row.names = FALSE)
@@ -1659,6 +1691,8 @@ ugplot_geo_screen_group <- function(dataset, group, source, config, screen_path,
     TriggerMaxAbsRho = suppressWarnings(as.numeric(group$TriggerMaxAbsRho[[1]])),
     TriggerBestCpG = group$TriggerBestCpG[[1]] %||% "",
     TriggerBestRho = suppressWarnings(as.numeric(group$TriggerBestRho[[1]] %||% NA_real_)),
+    TriggerBestRhoML = unname(ml_rho[["rho"]]),
+    TriggerBestNML = as.integer(ml_rho[["n"]]),
     BestModel = screen_result$best_model_name %||% "",
     MetricName = screen_result$final_summary$metric_name %||% "R2",
     BestMetric = suppressWarnings(as.numeric(screen_result$final_summary$metric_value %||% NA_real_)),
@@ -3212,6 +3246,9 @@ ugplot_geo_run_transcript_stability_remote <- function(screen_summary, cache_dir
       summary_row$StratumColumn <- stratum$StratumColumn[[1]]
       summary_row$StratumValue <- stratum$StratumValue[[1]]
       summary_row$StratumSamples <- if (nzchar(stratum$StratumColumn[[1]])) dataset_info$sample_count else NA_integer_
+      ml_rho <- ugplot_geo_cpg_spearman(dataset, summary_row$TriggerBestCpG[[1]] %||% "", "target")
+      summary_row$TriggerBestRhoML <- unname(ml_rho[["rho"]])
+      summary_row$TriggerBestNML <- as.integer(ml_rho[["n"]])
       summary_row$BestMetric <- suppressWarnings(as.numeric(stability_result$final_summary$metric_value %||% NA_real_))
       summary_row$MedianMetric <- if (length(metric_values) > 0) stats::median(metric_values) else NA_real_
       summary_row$MeanMetric <- if (length(metric_values) > 0) mean(metric_values) else NA_real_
