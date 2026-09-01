@@ -242,6 +242,7 @@ test_that("public collaboration text is bounded and cannot become report markup"
   expect_match(html, "270-266*x} 84% ${34+18*x}", fixed = TRUE)
   expect_match(html, "hsl(4 84% 52%)", fixed = TRUE)
   expect_match(html, "@media(max-width:1050px){.track-layout{grid-template-columns:minmax(0,1fr)}", fixed = TRUE)
+  expect_match(html, ".shell{width:calc(100% - 24px);max-width:1920px", fixed = TRUE)
 })
 
 test_that("discovery report snapshot is a reusable static JSON artifact", {
