@@ -230,6 +230,11 @@ test_that("public collaboration text is bounded and cannot become report markup"
   html <- ugplot_test_internal("ugplot_discovery_report_html")("job-safe")
   expect_match(html, 'name.textContent=row.scientist', fixed = TRUE)
   expect_false(grepl(malicious, html, fixed = TRUE))
+  expect_match(html, "How to read this track", fixed = TRUE)
+  expect_match(html, "Point colour", fixed = TRUE)
+  expect_match(html, "Background annotation", fixed = TRUE)
+  expect_match(html, 'viewBox","0 0 1120 320', fixed = TRUE)
+  expect_match(html, 'label:"+0.5"', fixed = TRUE)
 })
 
 test_that("discovery report snapshot is a reusable static JSON artifact", {
@@ -257,6 +262,68 @@ test_that("discovery report snapshot is a reusable static JSON artifact", {
   expect_equal(snapshot$job$id, status$id)
   expect_equal(snapshot$collaboration$active, 0L)
   expect_identical(snapshot$discoveries, list())
+})
+
+test_that("missing discovery snapshots are prepared outside the HTTP request", {
+  jobs_dir <- tempfile("ugplot-report-async-")
+  dir.create(jobs_dir, recursive = TRUE)
+  status <- ugplot_test_internal("ugplot_create_job")(
+    data.frame(x = 1), jobs_dir = jobs_dir, type = "geo"
+  )
+  starts <- 0L
+  ugplot_test_local_namespace_binding(
+    "ugplot_start_job_discovery_snapshot_refresh",
+    function(job_id, requested_jobs_dir) {
+      expect_equal(job_id, status$id)
+      expect_equal(requested_jobs_dir, jobs_dir)
+      starts <<- starts + 1L
+      invisible(NULL)
+    }
+  )
+  ugplot_test_local_namespace_binding(
+    "ugplot_refresh_job_discovery_snapshot",
+    function(...) stop("synchronous refresh must not run")
+  )
+
+  response <- ugplot_test_internal("ugplot_discovery_snapshot_response")(status$id, jobs_dir)
+  payload <- jsonlite::fromJSON(response$body, simplifyVector = FALSE)
+  expect_equal(response$status, 202L)
+  expect_true(response$refreshing)
+  expect_equal(starts, 1L)
+  expect_equal(payload$protocol_version, 3L)
+  expect_true(payload$refreshing)
+})
+
+test_that("old discovery snapshots remain available while upgrading asynchronously", {
+  jobs_dir <- tempfile("ugplot-report-upgrade-")
+  dir.create(jobs_dir, recursive = TRUE)
+  status <- ugplot_test_internal("ugplot_create_job")(
+    data.frame(x = 1), jobs_dir = jobs_dir, type = "geo"
+  )
+  snapshot_path <- ugplot_test_internal("ugplot_job_discovery_snapshot_path")(status$id, jobs_dir)
+  jsonlite::write_json(list(
+    protocol_version = 2L,
+    job = list(id = status$id, state = "queued", message = "Cached"),
+    progress = list(total = 3L, screened = 1L, stabilized = 0L),
+    collaboration = list(active = 0L, contributors = list()),
+    discoveries = list()
+  ), snapshot_path, auto_unbox = TRUE)
+  starts <- 0L
+  ugplot_test_local_namespace_binding(
+    "ugplot_start_job_discovery_snapshot_refresh",
+    function(...) {
+      starts <<- starts + 1L
+      invisible(NULL)
+    }
+  )
+
+  response <- ugplot_test_internal("ugplot_discovery_snapshot_response")(status$id, jobs_dir)
+  payload <- jsonlite::fromJSON(response$body, simplifyVector = FALSE)
+  expect_equal(response$status, 200L)
+  expect_true(response$refreshing)
+  expect_equal(starts, 1L)
+  expect_equal(payload$protocol_version, 2L)
+  expect_equal(payload$progress$total, 3L)
 })
 
 test_that("live report overlay clears stale workers after stop", {

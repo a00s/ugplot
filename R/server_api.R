@@ -762,6 +762,116 @@ ugplot_refresh_job_discovery_snapshot <- function(job_id,
   invisible(file.exists(path))
 }
 
+ugplot_discovery_snapshot_refresh_lock_path <- function(job_id,
+                                                        jobs_dir = ugplot_default_jobs_dir()) {
+  paste0(ugplot_job_discovery_snapshot_path(job_id, jobs_dir), ".refresh.lock")
+}
+
+ugplot_start_job_discovery_snapshot_refresh <- function(
+    job_id, jobs_dir = ugplot_default_jobs_dir()) {
+  job_id <- ugplot_validate_job_id(job_id)
+  if (!requireNamespace("callr", quietly = TRUE)) return(invisible(NULL))
+
+  lock_path <- ugplot_discovery_snapshot_refresh_lock_path(job_id, jobs_dir)
+  pid_path <- file.path(lock_path, "pid")
+  if (dir.exists(lock_path)) {
+    refresh_pid <- tryCatch(
+      suppressWarnings(as.integer(readLines(pid_path, warn = FALSE, n = 1L))),
+      error = function(e) NA_integer_
+    )
+    refresh_alive <- !is.na(refresh_pid) &&
+      exists("ugplot_process_alive", mode = "function", inherits = TRUE) &&
+      isTRUE(ugplot_process_alive(refresh_pid))
+    if (refresh_alive) return(invisible(NULL))
+    unlink(lock_path, recursive = TRUE, force = TRUE)
+  }
+  if (!dir.create(lock_path, recursive = FALSE, showWarnings = FALSE)) {
+    return(invisible(NULL))
+  }
+
+  process <- tryCatch(
+    callr::r_bg(
+      func = function(job_id, jobs_dir, lock_path, lib_paths) {
+        on.exit(unlink(lock_path, recursive = TRUE, force = TRUE), add = TRUE)
+        .libPaths(lib_paths)
+        library(ugplot)
+        refresh <- get("ugplot_refresh_job_discovery_snapshot", asNamespace("ugplot"))
+        refresh(job_id, jobs_dir)
+      },
+      args = list(
+        job_id = job_id, jobs_dir = jobs_dir, lock_path = lock_path,
+        lib_paths = .libPaths()
+      ),
+      supervise = FALSE,
+      cleanup = FALSE,
+      stdout = file.path(ugplot_job_dir(job_id, jobs_dir), "discovery-report-refresh.stdout.log"),
+      stderr = file.path(ugplot_job_dir(job_id, jobs_dir), "discovery-report-refresh.stderr.log")
+    ),
+    error = function(e) {
+      unlink(lock_path, recursive = TRUE, force = TRUE)
+      NULL
+    }
+  )
+  if (!is.null(process) && dir.exists(lock_path)) {
+    try(writeLines(as.character(process$get_pid()), pid_path), silent = TRUE)
+  }
+  invisible(process)
+}
+
+ugplot_discovery_snapshot_response <- function(job_id,
+                                               jobs_dir = ugplot_default_jobs_dir()) {
+  job_id <- ugplot_validate_job_id(job_id)
+  snapshot_path <- ugplot_job_discovery_snapshot_path(job_id, jobs_dir)
+  snapshot <- if (file.exists(snapshot_path)) {
+    paste(readLines(snapshot_path, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
+  } else {
+    ""
+  }
+  snapshot_data <- if (nzchar(snapshot)) {
+    tryCatch(jsonlite::fromJSON(snapshot, simplifyVector = FALSE), error = function(e) NULL)
+  } else {
+    NULL
+  }
+  snapshot_version <- suppressWarnings(as.integer(snapshot_data$protocol_version %||% 0L))
+  needs_refresh <- !is.list(snapshot_data) || is.na(snapshot_version) || snapshot_version < 3L
+  if (needs_refresh) {
+    try(ugplot_start_job_discovery_snapshot_refresh(job_id, jobs_dir), silent = TRUE)
+  }
+  if (is.list(snapshot_data)) {
+    return(list(
+      body = ugplot_discovery_snapshot_live_status(snapshot, job_id, jobs_dir),
+      status = 200L,
+      refreshing = needs_refresh
+    ))
+  }
+
+  status <- tryCatch(
+    ugplot_read_job_status_lightweight(job_id, jobs_dir),
+    error = function(e) list(id = job_id, state = "unknown", message = conditionMessage(e))
+  )
+  pending <- list(
+    protocol_version = 3L,
+    job = list(
+      id = job_id,
+      name = as.character(status$name %||% ""),
+      state = as.character(status$state %||% "unknown"),
+      message = paste("Preparing discovery report", as.character(status$message %||% "")),
+      accession = "",
+      target = "",
+      updated_at = as.character(status$updated_at %||% "")
+    ),
+    progress = list(total = 0L, screened = 0L, stabilized = 0L),
+    collaboration = list(active = 0L, contributors = list()),
+    discoveries = list(),
+    refreshing = TRUE
+  )
+  list(
+    body = jsonlite::toJSON(pending, auto_unbox = TRUE, na = "null"),
+    status = 202L,
+    refreshing = TRUE
+  )
+}
+
 ugplot_discovery_snapshot_live_status <- function(snapshot_json, job_id,
                                                    jobs_dir = ugplot_default_jobs_dir()) {
   if (!requireNamespace("jsonlite", quietly = TRUE)) return(snapshot_json)
@@ -872,6 +982,7 @@ ugplot_discovery_report_html <- function(job_id = "") {
     '.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:20px 0}.stat{padding:18px 20px;background:#ffffffd9;border:1px solid #fff;border-radius:18px}.stat b{display:block;font-size:28px}.stat span{color:var(--muted);font-size:12px;text-transform:uppercase;font-weight:800}.panel{padding:20px}.toolbar{display:flex;align-items:center;gap:18px;justify-content:space-between;margin-bottom:16px}.toolbar strong{font-size:17px}.live{color:var(--green);font-weight:800}.table-wrap{overflow-x:auto;overflow-y:visible;border:1px solid var(--line);border-radius:16px}table{border-collapse:separate;border-spacing:0;width:100%;min-width:1180px}th{position:sticky;top:0;background:#f7f8fe;text-align:left;padding:13px 12px;color:#687392;font-size:11px;letter-spacing:.08em;text-transform:uppercase;z-index:1}th.sortable{cursor:pointer;user-select:none;transition:color .15s,box-shadow .15s}th.sortable:hover,th.sortable:focus{color:#4f3fd0;background:#eeecff;outline:none}th.sortable::after{content:"\u2195";display:inline-block;margin-left:7px;color:#b4bbce;font-size:10px}th.sortable[aria-sort="ascending"]::after{content:"\u2191";color:var(--violet)}th.sortable[aria-sort="descending"]::after{content:"\u2193";color:var(--violet)}td{padding:11px 12px;border-top:1px solid #edf0f8;white-space:nowrap}.data-row:hover td,.data-row[aria-expanded="true"] td{background:#f7fbff}.expand-cell{width:34px;padding-right:2px}.expand-icon{display:inline-grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:8px;color:var(--violet);background:#eeebff;font:inherit;font-weight:900;cursor:pointer;user-select:none;transition:transform .18s,box-shadow .15s}.expand-icon:focus-visible{outline:none;box-shadow:0 0 0 3px #715cff30}.data-row[aria-expanded="true"] .expand-icon{transform:rotate(90deg)}.detail-row td{padding:0;white-space:normal;background:#f8faff}.row-detail{padding:18px 22px 22px;border-top:1px solid #dddff2;border-bottom:1px solid #dddff2}.detail-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:9px;margin-bottom:15px}.detail-metric{padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:#fff}.detail-metric.primary-metric{border-color:#8f7cff;background:linear-gradient(135deg,#f2efff,#f2fdff);box-shadow:0 0 0 2px #715cff12}.detail-metric.primary-metric b{color:#4d39cc;font-size:20px}.detail-metric b{display:block;font-size:17px}.detail-metric span{color:var(--muted);font-size:10px;text-transform:uppercase;font-weight:850;letter-spacing:.06em}.track-box{position:relative;min-height:270px;padding:14px;border:1px solid var(--line);border-radius:14px;background:#fff;overflow-x:auto}.track-state{display:grid;place-items:center;min-height:240px;color:var(--muted)}.track-transcripts{min-width:720px;margin:0 4px 5px;color:#34405f;font-size:12px;line-height:1.5}.track-transcripts b{color:var(--violet);text-transform:uppercase;font-size:10px;letter-spacing:.06em;margin-right:7px}.track-svg{display:block;width:100%;min-width:720px;height:auto}.track-tooltip{position:fixed;z-index:20;pointer-events:none;max-width:290px;padding:9px 11px;border-radius:10px;background:#101a3a;color:#fff;box-shadow:0 8px 25px #101a3a3d;font-size:12px;line-height:1.45;transform:translate(12px,12px)}.track-tooltip b{color:#bdb3ff}.badge{padding:5px 9px;border-radius:999px;font-size:11px;font-weight:800}.resolver{display:inline-block;padding:4px 8px;border-radius:999px;background:#ece8ff;color:#5945c8;font-size:11px;font-weight:800}.awaiting-analysis{background:#eef1f8;color:#69738d}.preliminary{background:#fff0dc;color:#a96000}.stabilized{background:#dcfaef;color:#087958}.stability-complete{background:#e8efff;color:#3159a5}.type-ml{background:#fff0e7;color:#d65b18}.type-cpg{background:#dff6ff;color:#0878a7}.type-both{background:#f5ddff;color:#8c189a}.empty{text-align:center;padding:60px;color:var(--muted)}.note{font-size:12px;color:var(--muted);margin-top:10px}',
     '.group-progress{margin-bottom:20px}.group-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}.group-head strong{display:block;font-size:18px}.group-summary{color:var(--muted);font-size:13px;margin-top:2px}.group-legend{display:flex;gap:13px;flex-wrap:wrap;color:var(--muted);font-size:11px;font-weight:750}.group-legend span:before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}.group-legend .completed:before{background:var(--green)}.group-legend .processing:before{background:var(--violet)}.group-legend .screened:before{background:var(--orange)}.group-legend .waiting:before{background:#d9dfeb}.group-stripe{display:grid;width:100%;height:38px;gap:0;overflow:hidden;border-radius:9px;background:#edf0f6;box-shadow:inset 0 0 0 1px #3c4a6e14}.group-segment{display:block;min-width:1px;height:100%;cursor:help;transition:filter .15s,transform .15s}.group-segment:hover{filter:brightness(.88) saturate(1.2);transform:scaleY(1.08);z-index:2}.group-segment-completed{background:var(--green)}.group-segment-processing{background:linear-gradient(180deg,#8875ff,var(--cyan));animation:group-pulse 1.7s ease-in-out infinite alternate}.group-segment-screened{background:var(--orange)}.group-segment-waiting{background:#d9dfeb}.group-note{font-size:11px;color:var(--muted);margin-top:8px}@keyframes group-pulse{from{opacity:.68}to{opacity:1}}',
     '.collab{margin-bottom:20px}.collab-head{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:14px}.collab-head strong{font-size:18px}.collab-head span{color:var(--green);font-weight:800}.contributors{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.contributor{padding:15px;border:1px solid var(--line);border-radius:17px;background:linear-gradient(135deg,#fbfaff,#f3fdff)}.contributor-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.contributor-name{font-size:16px;font-weight:850}.contributor-kind{color:var(--violet);font-size:10px;text-transform:uppercase;font-weight:850;letter-spacing:.08em}.contributor-group{padding:4px 8px;border-radius:999px;background:#e8e2ff;color:#5640c9;font-size:11px;font-weight:800}.contributor-activity{color:var(--muted);font-size:13px;margin:8px 0}.contributor-track{height:7px;border-radius:999px;background:#e8ebf5;overflow:hidden}.contributor-fill{height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--violet),var(--cyan))}.contributor-progress{display:block;text-align:right;color:var(--muted);font-size:11px;margin-top:4px}.collab-empty{color:var(--muted);padding:8px 2px}.method-note{margin:0 0 16px;padding:14px 16px;border:1px solid #dddff2;border-radius:14px;background:linear-gradient(135deg,#f8f6ff,#f3fdff);color:#52607e;font-size:12px;line-height:1.55}.method-note strong{color:var(--ink)}',
+    '.track-box{min-height:430px;overflow:visible;padding:18px}.track-state{min-height:390px}.track-transcripts{min-width:0;margin-bottom:12px;font-size:13px}.track-layout{display:grid;grid-template-columns:minmax(720px,1fr) 210px;gap:20px;align-items:stretch}.track-plot{min-width:0;overflow-x:auto}.track-svg{min-width:720px}.track-legend{padding:16px;border:1px solid #e2e6f2;border-radius:13px;background:#f8faff;color:#52607e;font-size:11px;line-height:1.35}.track-legend>strong{display:block;color:var(--ink);font-size:13px;margin-bottom:13px}.legend-item{display:grid;grid-template-columns:24px 1fr;gap:8px;align-items:center;margin-bottom:12px}.legend-item b{display:block;color:#34405f;font-size:11px}.legend-item small{display:block;color:var(--muted);font-size:10px}.rho-gradient{width:24px;height:8px;border-radius:999px;background:linear-gradient(90deg,hsl(270 82% 34%),hsl(160 82% 45%),hsl(50 82% 56%))}.height-mark{position:relative;width:24px;height:26px;border-bottom:1px solid #68778a}.height-mark:before{content:"";position:absolute;left:11px;bottom:0;width:2px;height:23px;background:#1ba6a1}.height-mark:after{content:"";position:absolute;left:7px;top:0;width:10px;height:10px;border:2px solid #1ba6a1;border-radius:50%;background:#fff}.faded-mark{width:13px;height:13px;margin-left:5px;border:2px solid #5d47c5;border-radius:50%;opacity:.32}.legend-regions{padding-top:10px;border-top:1px solid #e2e6f2}.legend-regions>b{display:block;color:#34405f;margin-bottom:8px}.region-key{display:flex;align-items:center;gap:7px;margin:6px 0}.region-key i{width:13px;height:13px;border-radius:3px}.region-promoter{background:#f6c85f}.region-utr{background:#8ecae6}.region-exon{background:#4dab6d}.region-intron{background:#d9e2ec}.region-body{background:#b8c0ff}.region-utr3{background:#c77dff}@media(max-width:1050px){.track-layout{grid-template-columns:1fr}.track-legend{display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:10px}.legend-regions{grid-column:1/-1;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-top:10px}.legend-regions>b{margin:0}}',
     '@media(max-width:900px){.shell{padding:12px}.brand{align-items:flex-start;flex-direction:column}.brand img{width:210px}.stats{grid-template-columns:1fr 1fr}.toolbar{align-items:stretch;flex-direction:column}.controls{align-items:stretch;flex-direction:column}.controls select,.controls input{width:100%;min-width:0}}</style></head><body>',
     '<main class="shell"><section class="hero"><div class="brand"><img src="/reports/assets/ugplot.png" alt="ugPlot"><div class="brand-copy"><div class="eyebrow">UGPLOT LIVE DISCOVERY REPORT</div><h1 id="title">Scientific discoveries as they emerge</h1><p id="subtitle">The report is loading the job identified by this URL.</p></div></div></section>',
     '<section class="stats"><div class="stat"><b id="total">&mdash;</b><span>Total groups</span></div><div class="stat"><b id="screened">&mdash;</b><span>Screened</span></div><div class="stat"><b id="stabilized">&mdash;</b><span>Stabilized</span></div><div class="stat"><b id="best">&mdash;</b><span>Best median R&sup2;</span></div></section>',
@@ -888,6 +999,7 @@ ugplot_discovery_report_html <- function(job_id = "") {
     'const expandedRows=new Set(),trackCache=new Map();const rowKey=r=>[r.group||"",r.stratum||""].join("\\r");function metricCard(label,value,primary=false){return `<div class="detail-metric${primary?" primary-metric":""}"><b>${value}</b><span>${label}</span></div>`}function detailHtml(r,key){return `<tr class="detail-row"><td colspan="15"><div class="row-detail"><div class="detail-metrics">${metricCard("Best CpG |ρ| · ML dataset",fmt(r.cpg_rho_ml),true)}${metricCard("Best CpG |ρ| · original",fmt(r.cpg_rho_original))}${metricCard("CpG correlation N · ML",fmt(r.cpg_rho_ml_n).replace(".000",""))}${metricCard("Median R²",fmt(r.median_r2))}${metricCard("Min R²",fmt(r.min_r2))}${metricCard("Max R²",fmt(r.max_r2))}${metricCard("Metric SE",fmt(r.metric_se))}${metricCard("Seeds",fmt(r.seeds).replace(".000",""))}${metricCard("Samples",fmt(r.samples).replace(".000",""))}${metricCard("Sample group",esc(r.stratum)||"All samples")}${metricCard("Resolved by",esc(r.resolved_by)||"—")}</div><div class="track-box" data-track-group="${esc(r.group)}"><div class="track-state">Loading CpG genomic positions…</div></div></div></td></tr>`}',
     'const svgNS="http://www.w3.org/2000/svg";function svgNode(name,attrs={},text=""){const node=document.createElementNS(svgNS,name);Object.entries(attrs).forEach(([k,v])=>node.setAttribute(k,String(v)));if(text!=="")node.textContent=text;return node}function rhoColor(v){const x=Math.max(0,Math.min(1,Number(v)||0));return `hsl(${270-220*x} 82% ${34+22*x}%)`}const regionColors={Promoter:"#f6c85f",TSS1500:"#f6c85f",TSS200:"#f08a4b","5\u0027UTR":"#8ecae6",Exon:"#4dab6d","1stExon":"#4dab6d",Intron:"#d9e2ec",Body:"#b8c0ff","3\u0027UTR":"#c77dff"};function primaryRegion(v){return String(v||"").split(";").map(x=>x.trim()).find(x=>regionColors[x])||""}',
     'function drawTrack(host,payload){host.replaceChildren();const source=(Array.isArray(payload.points)?payload.points:Object.values(payload.points||{})).map(normalize).filter(p=>Number.isFinite(Number(p.position)));if(!source.length){const state=document.createElement("div");state.className="track-state";state.textContent="CpG genomic positions are not available for this group yet.";host.append(state);return}const transcripts=[...new Set(source.map(p=>String(p.transcript||"")).filter(Boolean))];const rows=[...new Map(source.map(p=>[`${p.cpg||""}\\r${p.position}`,p])).values()].sort((a,b)=>Number(a.position)-Number(b.position));const heading=document.createElement("div");heading.className="track-transcripts";const headingLabel=document.createElement("b");headingLabel.textContent=transcripts.length===1?"Transcript":"Transcripts";heading.append(headingLabel,document.createTextNode(transcripts.join(" · ")||"Not annotated"));host.append(heading);const tooltip=document.createElement("div");tooltip.className="track-tooltip";tooltip.hidden=true;host.append(tooltip);const moveTip=event=>{tooltip.style.left=`${Math.min(event.clientX,window.innerWidth-320)}px`;tooltip.style.top=`${Math.min(event.clientY,window.innerHeight-110)}px`};const showTip=(event,p)=>{const rho=Number(p.rho),abs=Number.isFinite(Number(p.abs_rho))?Number(p.abs_rho):Math.abs(rho);tooltip.innerHTML=`<b>${esc(p.cpg||"CpG")}</b><br>Spearman ρ: <b>${Number.isFinite(rho)?rho.toFixed(4):"—"}</b> · |ρ|: <b>${Number.isFinite(abs)?abs.toFixed(4):"—"}</b><br>${esc(p.chr||"")}:${Number(p.position).toLocaleString()} · ${esc(p.region||"region unknown")}`;tooltip.hidden=false;moveTip(event)};const hideTip=()=>{tooltip.hidden=true};const W=1120,left=58,right=42,H=190,y=88;const min=Math.min(...rows.map(p=>Number(p.position))),max=Math.max(...rows.map(p=>Number(p.position)));const span=Math.max(1,max-min),x=v=>left+(Number(v)-min)/span*(W-left-right);const svg=svgNode("svg",{class:"track-svg",viewBox:`0 0 ${W} ${H}`,role:"img","aria-label":`${payload.group||"Group"} CpG genomic track; point height is signed Spearman rho`});svg.append(svgNode("text",{x:left-9,y:y-43,fill:"#8a93aa","font-size":9,"text-anchor":"end"},"+1 ρ"));svg.append(svgNode("text",{x:left-9,y:y+46,fill:"#8a93aa","font-size":9,"text-anchor":"end"},"−1 ρ"));svg.append(svgNode("line",{x1:left,x2:W-right,y1:y-42,y2:y-42,stroke:"#e1e5f1","stroke-width":1,"stroke-dasharray":"3 4"}));svg.append(svgNode("line",{x1:left,x2:W-right,y1:y+42,y2:y+42,stroke:"#e1e5f1","stroke-width":1,"stroke-dasharray":"3 4"}));svg.append(svgNode("line",{x1:left,x2:W-right,y1:y,y2:y,stroke:"#68778a","stroke-width":1.4}));rows.forEach((p,i)=>{const region=primaryRegion(p.region);if(region){const x0=i?x((Number(rows[i-1].position)+Number(p.position))/2):Math.max(left,x(p.position)-7),x1=i<rows.length-1?x((Number(rows[i+1].position)+Number(p.position))/2):Math.min(W-right,x(p.position)+7);svg.append(svgNode("rect",{x:x0,y:y-13,width:Math.max(2,x1-x0),height:26,fill:regionColors[region],opacity:.28}))}});rows.forEach(p=>{const px=x(p.position),rho=Number(p.rho),signal=Number.isFinite(rho)?rho:0,py=y-signal*42,abs=Number.isFinite(Number(p.abs_rho))?Number(p.abs_rho):Math.abs(signal),opacity=p.kept===false?.32:1,color=rhoColor(abs);svg.append(svgNode("line",{x1:px,x2:px,y1:y,y2:py,stroke:color,"stroke-width":2.2,opacity}));const label=`${p.cpg||"CpG"}; Spearman rho ${Number.isFinite(rho)?rho.toFixed(4):"unavailable"}; absolute rho ${Number.isFinite(abs)?abs.toFixed(4):"unavailable"}`;const circle=svgNode("circle",{cx:px,cy:py,r:5.4,fill:"white",stroke:color,"stroke-width":2.4,opacity,tabindex:0,role:"img","aria-label":label});circle.addEventListener("pointerenter",event=>showTip(event,p));circle.addEventListener("pointermove",moveTip);circle.addEventListener("pointerleave",hideTip);circle.addEventListener("focus",()=>{const rect=circle.getBoundingClientRect();showTip({clientX:rect.right,clientY:rect.top},p)});circle.addEventListener("blur",hideTip);svg.append(circle)});svg.append(svgNode("text",{x:left,y:H-10,fill:"#7a849f","font-size":11},Math.round(min).toLocaleString()));svg.append(svgNode("text",{x:W-right,y:H-10,fill:"#7a849f","font-size":11,"text-anchor":"end"},Math.round(max).toLocaleString()));svg.append(svgNode("text",{x:(left+W-right)/2,y:H-10,fill:"#59657d","font-size":11,"text-anchor":"middle"},"Genomic position"));host.append(svg)}',
+    'const drawTrackCompact=drawTrack;function drawTrackEnhanced(host,payload){drawTrackCompact(host,payload);const svg=host.querySelector("svg.track-svg");if(!svg)return;const oldY=88,newY=145,amplitude=102,mapY=value=>newY+(Number(value)-oldY)*(amplitude/42);svg.setAttribute("viewBox","0 0 1120 320");svg.querySelectorAll("circle").forEach(node=>node.setAttribute("cy",mapY(node.getAttribute("cy"))));svg.querySelectorAll("line").forEach(node=>{node.setAttribute("y1",mapY(node.getAttribute("y1")));node.setAttribute("y2",mapY(node.getAttribute("y2")))});svg.querySelectorAll("rect").forEach(node=>{node.setAttribute("y",newY-17);node.setAttribute("height",34)});svg.querySelectorAll("text").forEach(node=>{if(node.textContent==="+1 ρ")node.setAttribute("y",newY-amplitude+3);else if(node.textContent==="−1 ρ")node.setAttribute("y",newY+amplitude+3);else node.setAttribute("y",308)});[{value:.5,label:"+0.5"},{value:0,label:"0"},{value:-.5,label:"−0.5"}].forEach(level=>{const gy=newY-level.value*amplitude,line=svgNode("line",{x1:58,x2:1078,y1:gy,y2:gy,stroke:level.value===0?"#68778a":"#e1e5f1","stroke-width":level.value===0?1.4:1,"stroke-dasharray":level.value===0?"":"2 6"}),label=svgNode("text",{x:49,y:gy+3,fill:"#8a93aa","font-size":9,"text-anchor":"end"},level.label);svg.insertBefore(line,svg.firstChild);svg.insertBefore(label,svg.firstChild)});const plot=document.createElement("div");plot.className="track-plot";svg.replaceWith(plot);plot.append(svg);const legend=document.createElement("aside");legend.className="track-legend";legend.setAttribute("aria-label","Genomic track colour legend");legend.innerHTML=`<strong>How to read this track</strong><div class=\"legend-item\"><span class=\"rho-gradient\"></span><div><b>Point colour</b><small>|ρ|: weaker → stronger</small></div></div><div class=\"legend-item\"><span class=\"height-mark\"></span><div><b>Point height</b><small>Signed ρ: above positive, below negative</small></div></div><div class=\"legend-item\"><span class=\"faded-mark\"></span><div><b>Faded point</b><small>Not retained for machine learning</small></div></div><div class=\"legend-regions\"><b>Background annotation</b><span class=\"region-key\"><i class=\"region-promoter\"></i>Promoter / TSS</span><span class=\"region-key\"><i class=\"region-utr\"></i>5′ UTR</span><span class=\"region-key\"><i class=\"region-exon\"></i>Exon</span><span class=\"region-key\"><i class=\"region-intron\"></i>Intron</span><span class=\"region-key\"><i class=\"region-body\"></i>Body</span><span class=\"region-key\"><i class=\"region-utr3\"></i>3′ UTR</span></div>`;const layout=document.createElement("div");layout.className="track-layout";plot.replaceWith(layout);layout.append(plot,legend);host.append(layout)}drawTrack=drawTrackEnhanced;',
     'async function loadTrack(host,group){if(!group)return;if(trackCache.has(group)){drawTrack(host,trackCache.get(group));return}try{const response=await fetch(`/reports/${encodeURIComponent(initialJob)}/groups/${encodeURIComponent(group)}/track`,{cache:"no-store"});if(!response.ok)throw Error(await response.text());const payload=await response.json();trackCache.set(group,payload);drawTrack(host,payload)}catch(error){host.innerHTML=`<div class="track-state">Could not load CpG track: ${esc(error.message)}</div>`}}',
     'function render(){const q=$("search").value.toLowerCase(),selectedType=$("type-filter").value,mode=$("sort").value;const score=r=>{const numeric=v=>v===null||v===undefined||v===""?NaN:Number(v),ml=numeric(r.median_r2),mlCpg=numeric(r.cpg_rho_ml),legacyCpg=numeric(r.cpg_rho),cpg=Number.isFinite(mlCpg)?Math.abs(mlCpg):Math.abs(legacyCpg);if(mode==="combined"){const values=[ml,cpg].filter(Number.isFinite);return values.length?Math.max(...values):-Infinity}const v=mode==="cpg"?cpg:ml;return Number.isFinite(v)?v:-Infinity};const data=all.filter(r=>(!selectedType||r.type===selectedType)&&Object.values(r).join(" ").toLowerCase().includes(q)).sort((a,b)=>columnSort?columnCompare(a,b):score(b)-score(a));$("rows").innerHTML=data.map((r,i)=>{const key=rowKey(r),open=expandedRows.has(key);const main=`<tr class="data-row" data-row-index="${i}" aria-expanded="${open}"><td class="expand-cell"><button type="button" class="expand-icon" aria-label="${open?"Collapse":"Expand"} discovery details" aria-expanded="${open}">›</button></td><td>${badge(esc(r.status))}</td><td>${typeBadge(esc(r.type))}</td><td><b>${memberList(r.gene)}</b></td><td>${memberList(r.transcript)}</td><td>${esc(r.best_cpg)}</td><td>${fmt(r.cpgs).replace(".000","")}</td><td>${fmt(r.cpg_rho_original)}</td><td>${fmt(r.cpg_rho_ml)}</td><td>${esc(r.model)}</td><td><b>${fmt(r.median_r2)}</b></td><td>${fmt(r.seeds).replace(".000","")}</td><td>${fmt(r.samples).replace(".000","")}</td><td>${resolverBadge(r.resolved_by)}</td><td>${esc(r.group)}</td></tr>`;return main+(open?detailHtml(r,key):"")}).join("");document.querySelectorAll(".data-row").forEach(row=>{const button=row.querySelector(".expand-icon");button.onclick=()=>{const item=data[Number(row.dataset.rowIndex)],key=rowKey(item);expandedRows.has(key)?expandedRows.delete(key):expandedRows.add(key);render()}});document.querySelectorAll(".track-box[data-track-group]").forEach(host=>loadTrack(host,host.dataset.trackGroup));$("empty").style.display=data.length?"none":"block"}$("search").oninput=render;$("type-filter").onchange=render;$("sort").onchange=()=>{columnSort=null;updateHeaderSort();render()};',
     'async function load(){if(!initialJob)return;try{const r=await fetch(`/reports/${encodeURIComponent(initialJob)}/data`,{cache:"no-store"});if(!r.ok)throw Error(await r.text());const d=await r.json();const job=normalize(d.job);const progress=normalize(d.progress);const collaboration=d.collaboration||{};const raw=Array.isArray(d.discoveries)?d.discoveries:Object.values(d.discoveries||{});all=raw.map(normalize);renderGroupProgress(raw,collaboration.contributors);renderContributors(collaboration.contributors);$("total").textContent=progress.total||"\\u2014";$("screened").textContent=progress.screened||0;$("stabilized").textContent=progress.stabilized||0;const vals=all.map(x=>Number(x.median_r2)).filter(Number.isFinite);$("best").textContent=vals.length?Math.max(...vals).toFixed(3):"\\u2014";$("title").textContent=(job.accession||"ugPlot")+" live discoveries";$("subtitle").textContent=(job.target?"Target: "+job.target+" \\u00b7 ":"")+(job.message||job.state);$("live").textContent="\\u25cf updated "+new Date().toLocaleTimeString();render()}catch(e){$("live").textContent="\\u25cf "+e.message;$("live").style.color="#d44"}}load();setInterval(load,10000);</script></body></html>')
@@ -1158,20 +1270,9 @@ ugPlotServer <- function(host = "0.0.0.0", port = 8080,
     "GET", "/reports/<job_id>/data", function(job_id, res) {
       tryCatch({
         res$setHeader("Cache-Control", "no-store")
-        snapshot_path <- ugplot_job_discovery_snapshot_path(job_id, jobs_dir)
-        if (!file.exists(snapshot_path)) {
-          ugplot_refresh_job_discovery_snapshot(job_id, jobs_dir)
-        }
-        snapshot <- paste(readLines(snapshot_path, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
-        snapshot_version <- tryCatch(
-          suppressWarnings(as.integer(jsonlite::fromJSON(snapshot, simplifyVector = FALSE)$protocol_version %||% 0L)),
-          error = function(e) 0L
-        )
-        if (is.na(snapshot_version) || snapshot_version < 3L) {
-          ugplot_refresh_job_discovery_snapshot(job_id, jobs_dir)
-          snapshot <- paste(readLines(snapshot_path, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
-        }
-        ugplot_discovery_snapshot_live_status(snapshot, job_id, jobs_dir)
+        response <- ugplot_discovery_snapshot_response(job_id, jobs_dir)
+        res$status <- response$status
+        response$body
       }, error = function(e) {
         res$status <- 404
         jsonlite::toJSON(list(error = conditionMessage(e)), auto_unbox = TRUE)
