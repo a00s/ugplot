@@ -447,10 +447,30 @@ ugplot_science_collab_run_mission <- function(claimed, server_url, client_id, cp
   delivery_stored <- TRUE
   attempt <- 0L
   response <- NULL
+  last_delivery_heartbeat <- as.POSIXct(NA)
   repeat {
     attempt <- attempt + 1L
     response <- ugplot_science_collab_attempt_delivery(delivery_path)
     if (isTRUE(response$done)) break
+    # Delivery may be delayed by a coordinator outage or by a rolling schema
+    # update. Keep the completed mission visible and its lease fresh while the
+    # locally saved result is retried.
+    if (is.na(last_delivery_heartbeat) ||
+        difftime(Sys.time(), last_delivery_heartbeat, units = "secs") >= 25) {
+      try(
+        ugplot_remote_collaboration_heartbeat(
+          server_url, task_id, lease_id, client_id,
+          telemetry = list(
+            progress = 1,
+            message = "Result saved locally; waiting to deliver",
+            candidate = "",
+            completed = 1L
+          )
+        ),
+        silent = TRUE
+      )
+      last_delivery_heartbeat <- Sys.time()
+    }
     if (attempt == 1L || attempt %% 10L == 0L) {
       message(
         "Mission ", task_id,

@@ -57,6 +57,69 @@ test_that("Science Collab keeps completed results until delivery succeeds", {
   expect_false(file.exists(path))
 })
 
+test_that("Science Collab refreshes its lease while delivery is pending", {
+  state_dir <- tempfile("ugplot-collab-delivery-heartbeat-")
+  withr::local_envvar(UGPLOT_SCIENCE_COLLAB_STATE_DIR = state_dir)
+  result_path <- tempfile(fileext = ".rds")
+  saveRDS(list(kind = "test-result"), result_path)
+  alive_checks <- 0L
+  delivery_calls <- 0L
+  heartbeats <- list()
+  process <- new.env(parent = emptyenv())
+  process$is_alive <- function() {
+    alive_checks <<- alive_checks + 1L
+    alive_checks == 1L
+  }
+  process$get_exit_status <- function() 0L
+  process$kill_tree <- function() invisible(TRUE)
+
+  ugplot_test_local_namespace_binding("ugplot_model_dependency_status", function(...) {
+    list(models_missing = character(), unknown_models = character())
+  })
+  ugplot_test_local_namespace_binding("ugplot_science_collab_worker", function(...) {
+    list(
+      process = process, event_path = tempfile(), result_path = result_path,
+      files = result_path, stderr_path = tempfile()
+    )
+  })
+  ugplot_test_local_namespace_binding("ugplot_science_collab_attempt_delivery", function(...) {
+    delivery_calls <<- delivery_calls + 1L
+    if (delivery_calls == 1L) {
+      return(list(done = FALSE, accepted = FALSE, error = "schema update pending"))
+    }
+    list(done = TRUE, accepted = TRUE, reason = "")
+  })
+  ugplot_test_local_namespace_binding("ugplot_remote_collaboration_heartbeat", function(...) {
+    heartbeats[[length(heartbeats) + 1L]] <<- list(...)
+    list(accepted = TRUE)
+  })
+
+  claimed <- list(
+    task = list(
+      task_id = "parent:analyze:TG383", lease_id = "lease-1",
+      requirements = list(models = "lm"), offline_delivery = TRUE
+    ),
+    payload_path = tempfile(fileext = ".rds")
+  )
+  saveRDS(list(), claimed$payload_path)
+  run <- ugplot_test_internal("ugplot_science_collab_run_mission")
+
+  expect_message(
+    accepted <- run(
+      claimed, "http://coordinator:8080", "client-1", 1L,
+      spool_dir = file.path(state_dir, "spool"), poll_seconds = 1
+    ),
+    "waiting to deliver: schema update pending",
+    fixed = TRUE
+  )
+
+  expect_true(accepted)
+  expect_length(heartbeats, 2L)
+  delivery_heartbeat <- utils::tail(heartbeats, 1L)[[1]]
+  expect_equal(delivery_heartbeat$telemetry$progress, 1)
+  expect_match(delivery_heartbeat$telemetry$message, "waiting to deliver", fixed = TRUE)
+})
+
 test_that("Science Collab computation survives a coordinator heartbeat outage", {
   state_dir <- tempfile("ugplot-collab-offline-run-")
   withr::local_envvar(UGPLOT_SCIENCE_COLLAB_STATE_DIR = state_dir)

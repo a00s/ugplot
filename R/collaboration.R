@@ -456,7 +456,8 @@ ugplot_collaboration_validate_result <- function(result, task) {
   summary_columns <- c(
     "Source", "Phase", "GroupID", "GroupKey", "PrincipalTranscript", "Gene", "Columns", "Samples",
     "TranscriptCount", "TranscriptMembers", "GeneMembers", "ExtraTranscripts", "CpGs", "TriggerMaxAbsRho",
-    "TriggerBestCpG", "TriggerBestRho", "BestModel", "MetricName", "BestMetric", "MedianMetric", "MeanMetric",
+    "TriggerBestCpG", "TriggerBestRho", "TriggerBestRhoML", "TriggerBestNML",
+    "BestModel", "MetricName", "BestMetric", "MedianMetric", "MeanMetric",
     "MinMetric", "MaxMetric", "MetricSE", "SeedsRun", "SeedStrategy", "ModelsRun", "ModelsOK", "DatasetPath",
     "ScreenResultPath", "ImportancePath", "StratumColumn", "StratumValue", "StratumSamples", "Stable",
     "StabilityDetail", "StabilityResultPath", "ModelRank", "RhoRank", "CombinedRank"

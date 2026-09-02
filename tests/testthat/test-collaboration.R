@@ -601,6 +601,26 @@ test_that("collaboration omits coordinator-owned summary fields from portable re
   )
 })
 
+test_that("collaboration accepts ML-sample correlation summary columns", {
+  validate <- ugplot_test_internal("ugplot_collaboration_validate_result")
+  result <- ugplot_test_collaboration_result("TG383", "lm")
+  result$summary$TriggerBestRhoML <- 0.73
+  result$summary$TriggerBestNML <- 604L
+  task <- list(
+    task_id = "parent:analyze:TG383",
+    requirements = list(models = "lm"),
+    mission = list(entity = list(id = "TG383")),
+    payload_path = tempfile(fileext = ".rds")
+  )
+  saveRDS(list(config = list()), task$payload_path)
+  on.exit(unlink(task$payload_path), add = TRUE)
+
+  accepted <- validate(result, task)
+
+  expect_equal(accepted$summary$TriggerBestRhoML, 0.73)
+  expect_equal(accepted$summary$TriggerBestNML, 604)
+})
+
 test_that("collaboration bounds run errors without discarding their tail", {
   validate <- ugplot_test_internal("ugplot_collaboration_validate_result")
   result <- ugplot_test_collaboration_result("TG11", "lm")
